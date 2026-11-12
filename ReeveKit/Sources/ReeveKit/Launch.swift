@@ -27,13 +27,22 @@ public enum Launch {
         return String(decoding: data, as: UTF8.self)
     }
 
+    /// The models a card can be started on, as `--model` aliases.
+    public static let models = ["fable", "opus", "sonnet", "haiku"]
+    /// The effort levels a card can be started at, as `--effort` takes them.
+    public static let efforts = ["low", "medium", "high", "xhigh", "max"]
+
     /// `claude`'s arguments for a card: a new session under the card's id, in
     /// the mode the card was started in, or the card's session picked up again.
+    /// The card's model and effort come along on a resume too, so a card woken
+    /// after a restart keeps them.
     public static func claudeArguments(for card: Card, prompt: String? = nil) -> [String] {
         var args = card.hasConversation
             ? ["--resume", card.sessionId.uuidString.lowercased()]
             : ["--session-id", card.sessionId.uuidString.lowercased()]
         args += ["--settings", hookSettings()]
+        if let model = card.model { args += ["--model", model] }
+        if let effort = card.effort { args += ["--effort", effort] }
         // Only a fresh session: a resumed one is wherever the person left it,
         // and plan mode again would undo an approved plan.
         if let mode = card.startMode, !card.hasConversation {

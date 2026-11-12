@@ -110,10 +110,12 @@ final class Board: ObservableObject {
     /// A card in a git repo gets its own worktree, on a branch from the
     /// folder's HEAD; anywhere else it works in the folder itself. It starts
     /// in the column its mode begins in.
-    func create(cwd: String, title: String, prompt: String?, mode: StartMode) {
+    func create(cwd: String, title: String, prompt: String?, mode: StartMode, model: String? = nil, effort: String? = nil) {
         RecentFolders.add(cwd)
         var card = Card(title: title.trimmingCharacters(in: .whitespacesAndNewlines), cwd: cwd, stage: mode.stage)
         card.startMode = mode
+        card.model = model
+        card.effort = effort
         Task {
             do {
                 if let made = try await Worktrees.make(for: card.id, in: cwd, env: environment) {

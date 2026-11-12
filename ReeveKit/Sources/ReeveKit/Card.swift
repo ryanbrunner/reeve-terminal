@@ -81,6 +81,12 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     public var worktreePath: String?
     /// The branch checked out in the card's worktree.
     public var branch: String?
+    /// The model the card's `claude` runs, as `--model` takes it. Nil leaves
+    /// it to the person's own settings.
+    public var model: String?
+    /// The effort level the card's `claude` runs at, as `--effort` takes it.
+    /// Nil leaves it to the person's own settings.
+    public var effort: String?
     public var stage: Stage
     public var activity: Activity
     /// How the session starts. Nil for cards made before there was a choice,

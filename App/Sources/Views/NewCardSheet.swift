@@ -3,8 +3,8 @@ import ReeveKit
 import SwiftUI
 
 /// A new card: a folder to work in, and whether to plan first or start right
-/// away. A name and a first prompt are there if you want them; everything
-/// else happens in the terminal.
+/// away. The model, effort, a name and a first prompt are there if you want
+/// them; everything else happens in the terminal.
 struct NewCardSheet: View {
     @EnvironmentObject var board: Board
     @Environment(\.dismiss) private var dismiss
@@ -12,6 +12,10 @@ struct NewCardSheet: View {
     @State private var title = ""
     @State private var prompt = ""
     @State private var showingDetails = false
+    /// The last card's choices, so a run of cards starts the same way. Empty
+    /// means the person's own default.
+    @AppStorage("newCardModel") private var model = ""
+    @AppStorage("newCardEffort") private var effort = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -40,6 +44,11 @@ struct NewCardSheet: View {
                     .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Theme.edge))
                     Button("Choose…", action: choose).buttonStyle(SecondaryButtonStyle(height: 32))
                 }
+            }
+
+            HStack(spacing: 12) {
+                OptionMenu(label: "Model", choices: Launch.models, selection: $model)
+                OptionMenu(label: "Effort", choices: Launch.efforts, selection: $effort)
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -119,7 +128,14 @@ struct NewCardSheet: View {
 
     private func start(_ mode: StartMode) {
         let first = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        board.create(cwd: folder, title: title, prompt: first.isEmpty ? nil : first, mode: mode)
+        board.create(
+            cwd: folder,
+            title: title,
+            prompt: first.isEmpty ? nil : first,
+            mode: mode,
+            model: model.isEmpty ? nil : model,
+            effort: effort.isEmpty ? nil : effort
+        )
         dismiss()
     }
 
@@ -175,5 +191,40 @@ private struct StartChoiceStyle: ButtonStyle {
             .background(RoundedRectangle(cornerRadius: 8).fill(configuration.isPressed ? Theme.edge : Theme.ink))
             .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(hovering ? Theme.sky600 : Theme.edge))
             .contentShape(Rectangle())
+    }
+}
+
+/// A labelled menu of `claude` options, led by "Default", which passes nothing
+/// and leaves the choice to the person's own settings.
+private struct OptionMenu: View {
+    let label: String
+    let choices: [String]
+    @Binding var selection: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            SectionLabel(text: label)
+            Menu {
+                Button("Default") { selection = "" }
+                Divider()
+                ForEach(choices, id: \.self) { choice in
+                    Button(name(choice)) { selection = choice }
+                }
+            } label: {
+                Text(selection.isEmpty ? "Default" : name(selection))
+                    .font(.geist(13))
+                    .foregroundStyle(selection.isEmpty ? Theme.muted : Theme.text)
+            }
+            .menuStyle(.borderlessButton)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Theme.ink))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Theme.edge))
+        }
+    }
+
+    private func name(_ choice: String) -> String {
+        choice == "xhigh" ? "Extra high" : choice.capitalized
     }
 }

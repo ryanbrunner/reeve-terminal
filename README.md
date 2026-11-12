@@ -33,6 +33,10 @@ feature parity. What Reeve adds is the board.
 - **Sessions survive restarts.** A card owns its session id (`--session-id`
   the first time, `--resume` after that). After a restart it sleeps until you
   open it.
+- **Pick a model and effort per card.** The new card sheet passes them as
+  `--model` and `--effort`, including on every resume, so a card keeps them
+  across restarts. "Default" passes neither, which leaves your own settings
+  in charge. The sheet remembers your last choice.
 
 ## Build
 

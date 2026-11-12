@@ -112,6 +112,34 @@ import Testing
         #expect(!Launch.claudeArguments(for: card).contains("--permission-mode"))
     }
 
+    @Test func modelAndEffortRideAlongWhenSet() {
+        var card = Card(cwd: "/tmp")
+        let plain = Launch.claudeArguments(for: card, prompt: "go")
+        #expect(!plain.contains("--model"))
+        #expect(!plain.contains("--effort"))
+        card.model = "opus"
+        card.effort = "high"
+        card.startMode = .plan
+        let args = Launch.claudeArguments(for: card, prompt: "go")
+        #expect(args.firstIndex(of: "--model").map { args[$0 + 1] } == "opus")
+        #expect(args.firstIndex(of: "--effort").map { args[$0 + 1] } == "high")
+        #expect(args.last == "go")
+        card.hasConversation = true
+        let resumed = Launch.claudeArguments(for: card)
+        #expect(resumed.firstIndex(of: "--model").map { resumed[$0 + 1] } == "opus")
+        #expect(resumed.firstIndex(of: "--effort").map { resumed[$0 + 1] } == "high")
+    }
+
+    @Test func cardsSavedBeforeModelsStillLoad() throws {
+        let card = Card(cwd: "/tmp")
+        var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(card)) as! [String: Any]
+        json["model"] = nil
+        json["effort"] = nil
+        let decoded = try JSONDecoder().decode(Card.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(decoded.model == nil)
+        #expect(decoded.effort == nil)
+    }
+
     @Test func hookSettingsCoverEveryEvent() throws {
         let settings = try JSONSerialization.jsonObject(with: Data(Launch.hookSettings().utf8)) as! [String: Any]
         let hooks = settings["hooks"] as! [String: Any]
