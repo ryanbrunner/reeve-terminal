@@ -1,0 +1,99 @@
+import ReeveKit
+import SwiftUI
+
+/// A card on the board: its title, what it is waiting on or where it stands,
+/// and its folder, wearing its activity as light.
+struct CardFace: View {
+    @EnvironmentObject var board: Board
+    let card: Card
+    var selected = false
+    var dragging = false
+
+    var body: some View {
+        let tone = GlowTone(card.activity)
+        VStack(alignment: .leading, spacing: 6) {
+            Text(board.displayTitle(card))
+                .font(.geist(13, .medium))
+                .tracking(-0.13)
+                .foregroundStyle(card.title.isEmpty ? Theme.text.opacity(0.7) : Theme.text)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let waiting = card.waitingOn {
+                // What Claude is waiting on, so a waiting card says why without being opened.
+                Text(waiting)
+                    .font(.geist(12))
+                    .foregroundStyle(Theme.amber100.opacity(0.85))
+                    .lineLimit(2)
+            } else if let summary = card.summary {
+                Text(summary)
+                    .font(.mono(11))
+                    .foregroundStyle(card.activity == .running ? Theme.sky200.opacity(0.7) : Theme.muted)
+                    .lineLimit(2)
+            }
+            footer
+        }
+        .padding(10)
+        .background {
+            ZStack {
+                GlowBackground(tone: tone)
+                if let tone { ActivityMark(tone: tone) }
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if card.activity == .running {
+                RunningRail().clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        // The open card is ringed, the way the web board rings a traced
+        // dependency: an outline, so the activity's border keeps its colour.
+        .overlay {
+            if selected {
+                RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.sky400, lineWidth: 1.5).padding(-3)
+            }
+        }
+        .rotationEffect(.degrees(dragging ? 2 : 0))
+        .shadow(color: .black.opacity(dragging ? 0.4 : 0), radius: 12, y: 6)
+        .contentShape(RoundedRectangle(cornerRadius: 6))
+        .help(help)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(board.displayTitle(card)), \(label)")
+    }
+
+    private var footer: some View {
+        HStack(spacing: 6) {
+            Chip(text: card.folderName, color: Theme.folderColor(card.folderName), fill: Theme.folderColor(card.folderName).opacity(0.2))
+            if board.classifying.contains(card.id) {
+                Chip(text: "sorting…", color: Theme.sky300, fill: Theme.sky500.opacity(0.15))
+            } else if board.classifyErrors[card.id] != nil {
+                Chip(text: "unsorted", color: Theme.muted)
+            }
+            if !board.live.contains(card.id) {
+                Chip(text: card.hasConversation ? "asleep" : "not started")
+            }
+            if card.stagePinned {
+                Image(systemName: "pin.fill")
+                    .font(.system(size: 8))
+                    .foregroundStyle(Theme.muted)
+                    .help("You put this card here. It stays until you next prompt Claude.")
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var label: String {
+        switch card.activity {
+        case .idle: "idle"
+        case .running: "Claude running"
+        case .needsReview: "ready for review"
+        case .needsInput: "needs your answer"
+        case .error: "error"
+        }
+    }
+
+    private var help: String {
+        var lines = [board.displayTitle(card), card.cwd]
+        if let error = board.classifyErrors[card.id] { lines.append("Couldn't sort: \(error)") }
+        return lines.joined(separator: "\n")
+    }
+}

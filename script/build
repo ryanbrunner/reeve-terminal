@@ -1,0 +1,14 @@
+#!/bin/sh
+# Builds Reeve.app into build/Build/Products/<Configuration>/.
+#   script/build           Debug
+#   script/build Release   Release
+set -e
+cd "$(dirname "$0")/.."
+export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
+xcodegen generate --quiet
+# SwiftTerm ships a build-info plugin; Xcode asks to trust it once, the command
+# line needs telling.
+xcodebuild -project Reeve.xcodeproj -scheme Reeve -configuration "${1:-Debug}" \
+  -derivedDataPath build -destination 'platform=macOS,arch=arm64' \
+  -skipPackagePluginValidation -skipMacroValidation build | grep -E "error:|warning: .*App/Sources|BUILD" || true
+echo "→ build/Build/Products/${1:-Debug}/Reeve.app"
