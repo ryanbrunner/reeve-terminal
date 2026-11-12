@@ -27,13 +27,18 @@ public enum Launch {
         return String(decoding: data, as: UTF8.self)
     }
 
-    /// `claude`'s arguments for a card: a new session under the card's id, or
-    /// the card's session picked up again.
+    /// `claude`'s arguments for a card: a new session under the card's id, in
+    /// the mode the card was started in, or the card's session picked up again.
     public static func claudeArguments(for card: Card, prompt: String? = nil) -> [String] {
         var args = card.hasConversation
             ? ["--resume", card.sessionId.uuidString.lowercased()]
             : ["--session-id", card.sessionId.uuidString.lowercased()]
         args += ["--settings", hookSettings()]
+        // Only a fresh session: a resumed one is wherever the person left it,
+        // and plan mode again would undo an approved plan.
+        if let mode = card.startMode, !card.hasConversation {
+            args += ["--permission-mode", mode.permissionMode]
+        }
         if let prompt, !prompt.isEmpty, !card.hasConversation {
             args.append(prompt)
         }

@@ -100,6 +100,18 @@ import Testing
         #expect(resumed.last != "go")
     }
 
+    @Test func newSessionsStartInTheCardsModeAndResumedOnesDont() {
+        var card = Card(cwd: "/tmp")
+        #expect(!Launch.claudeArguments(for: card).contains("--permission-mode"))
+        card.startMode = .plan
+        let planned = Launch.claudeArguments(for: card, prompt: "go")
+        #expect(planned.suffix(3) == ["--permission-mode", "plan", "go"])
+        card.startMode = .build
+        #expect(Launch.claudeArguments(for: card).suffix(2) == ["--permission-mode", "auto"])
+        card.hasConversation = true
+        #expect(!Launch.claudeArguments(for: card).contains("--permission-mode"))
+    }
+
     @Test func hookSettingsCoverEveryEvent() throws {
         let settings = try JSONSerialization.jsonObject(with: Data(Launch.hookSettings().utf8)) as! [String: Any]
         let hooks = settings["hooks"] as! [String: Any]
@@ -150,6 +162,7 @@ import Testing
         decoder.dateDecodingStrategy = .iso8601
         let card = try decoder.decode(Card.self, from: Data(json.utf8))
         #expect(card.worktreePath == nil)
+        #expect(card.startMode == nil)
         #expect(card.folderName == "app")
     }
 }

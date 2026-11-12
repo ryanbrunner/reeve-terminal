@@ -8,7 +8,8 @@ import ReeveKit
 /// every few seconds into `REEVE_SMOKE_OUT`, and quits once the card has been
 /// sorted after its first turn — or after two and a half minutes. Point
 /// `REEVE_DATA_DIR` somewhere else too, so it never touches the real board.
-/// Set `REEVE_SMOKE_CLOSE` to close the card at the end, removing its worktree.
+/// Set `REEVE_SMOKE_CLOSE` to close the card at the end, removing its worktree,
+/// and `REEVE_SMOKE_START=plan` to start the card planning rather than building.
 @MainActor
 enum Smoke {
     static func runIfAsked(board: Board) {
@@ -41,7 +42,7 @@ enum Smoke {
         if mode == "resume", let card = board.cards.first {
             board.select(card.id)
         } else {
-            board.create(cwd: dir, title: "", prompt: prompt)
+            board.create(cwd: dir, title: "", prompt: prompt, mode: env["REEVE_SMOKE_START"] == "plan" ? .plan : .build)
         }
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { timer in
             MainActor.assumeIsolated {

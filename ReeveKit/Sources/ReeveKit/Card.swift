@@ -39,6 +39,29 @@ public enum Activity: String, Codable, Sendable {
     case error
 }
 
+/// How a new card's session begins: planning first, or straight to work.
+public enum StartMode: String, Codable, CaseIterable, Sendable {
+    /// Claude starts in plan mode, and the card in Planning.
+    case plan
+    /// Claude starts in auto mode, and the card in In Progress.
+    case build
+
+    /// The `--permission-mode` the session starts in.
+    public var permissionMode: String {
+        switch self {
+        case .plan: "plan"
+        case .build: "auto"
+        }
+    }
+
+    public var stage: Stage {
+        switch self {
+        case .plan: .planning
+        case .build: .inProgress
+        }
+    }
+}
+
 /// One piece of work: a Claude Code session running in a terminal, in a folder.
 public struct Card: Codable, Identifiable, Equatable, Sendable {
     public var id: UUID
@@ -60,6 +83,9 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     public var branch: String?
     public var stage: Stage
     public var activity: Activity
+    /// How the session starts. Nil for cards made before there was a choice,
+    /// which start in the person's own default mode.
+    public var startMode: StartMode?
     /// One line on where the work stands, from the classifier.
     public var summary: String?
     /// What Claude is waiting on a person for, when it is.
