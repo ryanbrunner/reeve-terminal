@@ -83,6 +83,14 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     public var branch: String?
     /// The pull request opened from the card's branch, once there is one.
     public var pullRequest: PullRequest?
+    /// The commit the card's worktree started from, which its changes are
+    /// shown against. Nil for cards made before Reeve kept it.
+    public var baseCommit: String?
+    /// The session's latest plan, as `ExitPlanMode` carried it.
+    public var plan: String?
+    /// The file Claude Code keeps the plan in, read in place of `plan` while
+    /// it is there, since it may have been edited since.
+    public var planPath: String?
     /// The model the card's `claude` runs, as `--model` takes it. Nil leaves
     /// it to the person's own settings.
     public var model: String?

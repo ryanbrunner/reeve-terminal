@@ -35,6 +35,11 @@ feature parity. What Reeve adds is the board.
   as a draft, violet once merged, red if closed. Reeve asks your own `gh`
   at launch, when a turn ends and when you open the card. Without `gh` or a
   GitHub remote there is simply no badge.
+- **Each open card has three tabs.** Terminal is the session. Plan shows
+  the plan Claude wrote in plan mode, read from its file so later edits show,
+  with a dot on the tab when a new one arrives. Changes is everything the card
+  has done in its worktree since it started: commits, uncommitted edits and
+  new files, read again as Claude works. ⌥⌘1–3 switch between them.
 - **Sessions survive restarts.** A card owns its session id (`--session-id`
   the first time, `--resume` after that). After a restart it sleeps until you
   open it.
@@ -68,6 +73,7 @@ toolchain, and 1.99 doesn't compile with the current Swift.
 | ⌘1…⌘9 | Open card 1–9, in board order |
 | ⇧⌘] / ⇧⌘[ | Next / previous card |
 | ⌘B | Back to the board (the session keeps running) |
+| ⌥⌘1 / ⌥⌘2 / ⌥⌘3 | The open card's Terminal / Plan / Changes |
 
 Esc goes to Claude Code, where it interrupts a turn, so it doesn't close an
 open card. Use ⌘B, the × in the card's header or a click outside it.
