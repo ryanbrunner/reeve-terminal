@@ -22,6 +22,7 @@ final class Terminals: NSObject, LocalProcessTerminalViewDelegate {
         view.cardId = cardId
         view.processDelegate = self
         TerminalStyle.apply(to: view)
+        view.terminal.changeHistorySize(10_000)
         views[cardId] = view
         return view
     }
@@ -88,9 +89,65 @@ final class Terminals: NSObject, LocalProcessTerminalViewDelegate {
 
 /// A card's terminal. Knows which card it belongs to and whether it has ever
 /// started a process, so a restart can say so in the scrollback.
+///
+/// SwiftTerm's own `scrollWheel` only scrolls the view's history, and can't be
+/// overridden from here, so a wheel event meant for a program that turned
+/// mouse tracking on (as `claude`'s fullscreen mode does) is reported to it by
+/// a monitor instead. Everything else is left to SwiftTerm.
 final class CardTerminalView: LocalProcessTerminalView {
     var cardId: UUID?
     var hasRun = false
+    private var wheelMonitor: Any?
+    /// Scroll distance, in lines, not yet sent: a trackpad drag moves a fraction
+    /// of a line per event, and sending a whole line for each made it race.
+    private var wheelRemainder: CGFloat = 0
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let wheelMonitor { NSEvent.removeMonitor(wheelMonitor) }
+        wheelMonitor = nil
+        guard window != nil else { return }
+        wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            MainActor.assumeIsolated { self?.reportWheel(event) ?? event }
+        }
+    }
+
+    /// Sends the wheel event to the program as mouse button 4 or 5 and returns
+    /// nil, or returns the event if SwiftTerm should handle it: the program
+    /// isn't tracking the mouse, Shift or Option asks for the local behaviour,
+    /// or something drawn over the terminal (the Plan and Changes tabs) is under
+    /// the pointer.
+    private func reportWheel(_ event: NSEvent) -> NSEvent? {
+        guard event.window === window, !isHidden, let terminal,
+              allowMouseReporting, terminal.mouseMode != .off,
+              event.modifierFlags.isDisjoint(with: [.shift, .option]),
+              window?.contentView?.hitTest(event.locationInWindow)?.isDescendant(of: self) == true
+        else { return event }
+
+        let point = convert(event.locationInWindow, from: nil)
+        guard bounds.contains(point), bounds.width > 0, bounds.height > 0 else { return event }
+        if event.phase.contains(.began) || event.phase.contains(.mayBegin) { wheelRemainder = 0 }
+        let cellHeight = bounds.height / CGFloat(terminal.rows)
+        let delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY / cellHeight : event.deltaY
+        // Reverse direction drops what was left over from the last one.
+        if delta * wheelRemainder < 0 { wheelRemainder = 0 }
+        wheelRemainder += delta
+        let lines = Int(wheelRemainder.magnitude.rounded(.down))
+        guard lines > 0 else { return nil }
+        wheelRemainder -= CGFloat(lines) * (wheelRemainder < 0 ? -1 : 1)
+
+        let col = min(max(Int(point.x / bounds.width * CGFloat(terminal.cols)), 0), terminal.cols - 1)
+        let row = min(max(Int((bounds.height - point.y) / bounds.height * CGFloat(terminal.rows)), 0), terminal.rows - 1)
+        let flags = event.modifierFlags
+        let buttonFlags = terminal.encodeButton(
+            button: delta > 0 ? 4 : 5, release: false,
+            shift: false, meta: false, control: flags.contains(.control)
+        )
+        for _ in 0..<min(lines, terminal.rows) {
+            terminal.sendEvent(buttonFlags: buttonFlags, x: col, y: row)
+        }
+        return nil
+    }
 }
 
 /// The terminal in Reeve's colours: the board's ink behind GitHub-dark ANSI
