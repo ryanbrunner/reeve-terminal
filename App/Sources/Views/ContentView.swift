@@ -130,81 +130,83 @@ private struct Wordmark: View {
 }
 
 /// The stage's two motions: a glitch on its own clock, and a jump each time
-/// something ships. Always applied, at nothing while calm, so turning VIBES
-/// MODE on doesn't rebuild the board underneath it.
+/// something ships. Only in VIBES MODE, where the board is a different tree
+/// anyway: a repeating animator costs a frame every frame, even at nothing.
 private struct VibesStage: ViewModifier {
     let on: Bool
     let beat: Int
-    @Environment(\.vibesStill) private var still
-
-    private struct Jolt {
-        var x = 0.0, y = 0.0, skew = 0.0, hue = 0.0, stretch = 1.0
-    }
 
     func body(content: Content) -> some View {
-        let a = on && !still ? 1.0 : 0.0
-        content
-            // `sk-jolt`: mostly still, with two hard glitches per 3.4 seconds.
-            // The stillness is what makes them read as faults.
-            .keyframeAnimator(initialValue: Jolt(), repeating: true) { view, j in
-                view
-                    .modifier(Skew(degrees: j.skew * a))
-                    .offset(x: j.x * a, y: j.y * a)
-                    .scaleEffect(x: 1, y: 1 + (j.stretch - 1) * a)
-                    .hueRotation(.degrees(j.hue * a))
-            } keyframes: { _ in
-                KeyframeTrack(\.x) {
-                    LinearKeyframe(0, duration: 1.054)
-                    LinearKeyframe(-9, duration: 0.02)
-                    LinearKeyframe(6, duration: 0.034)
-                    LinearKeyframe(0, duration: 0.031)
-                    LinearKeyframe(0, duration: 2.261)
-                }
-                KeyframeTrack(\.skew) {
-                    LinearKeyframe(0, duration: 1.054)
-                    LinearKeyframe(7, duration: 0.02)
-                    LinearKeyframe(-4, duration: 0.034)
-                    LinearKeyframe(0, duration: 0.031)
-                    LinearKeyframe(0, duration: 2.261)
-                }
-                KeyframeTrack(\.hue) {
-                    LinearKeyframe(0, duration: 1.054)
-                    LinearKeyframe(90, duration: 0.02)
-                    LinearKeyframe(-40, duration: 0.034)
-                    LinearKeyframe(0, duration: 0.031)
-                    LinearKeyframe(0, duration: 1.309)
-                    LinearKeyframe(-70, duration: 0.017)
-                    LinearKeyframe(0, duration: 0.034)
-                    LinearKeyframe(0, duration: 0.901)
-                }
-                KeyframeTrack(\.y) {
-                    LinearKeyframe(0, duration: 2.448)
-                    LinearKeyframe(3, duration: 0.017)
-                    LinearKeyframe(0, duration: 0.034)
-                    LinearKeyframe(0, duration: 0.901)
-                }
-                KeyframeTrack(\.stretch) {
-                    LinearKeyframe(1, duration: 2.448)
-                    LinearKeyframe(1.015, duration: 0.017)
-                    LinearKeyframe(1, duration: 0.034)
-                    LinearKeyframe(1, duration: 0.901)
-                }
+        if on {
+            content.modifier(VibesMotion(beat: beat))
+        } else {
+            content
+        }
+    }
+}
+
+private struct VibesMotion: ViewModifier {
+    let beat: Int
+    @Environment(\.vibesStill) private var still
+
+    func body(content: Content) -> some View {
+        // `sk-jolt`: mostly still, with two hard glitches per 3.4 seconds.
+        // The stillness is what makes them read as faults. Paused, not just
+        // zeroed, behind an open card and under Reduce Motion.
+        TimelineView(.animation(paused: still)) { context in
+            let j = still ? Jolt() : Jolt(Vibe.phase(context.date, 3.4))
+            content
+                .modifier(Skew(degrees: j.skew))
+                .offset(x: j.x, y: j.y)
+                .scaleEffect(x: 1, y: j.stretch)
+                .hueRotation(.degrees(j.hue))
+        }
+        // `sk-shake`: the board jumps when something ships.
+        .keyframeAnimator(initialValue: CGSize.zero, trigger: beat) { view, shake in
+            view.offset(still ? .zero : shake)
+        } keyframes: { _ in
+            let s = beat % 2 == 0 ? 1.0 : -1.0
+            KeyframeTrack {
+                LinearKeyframe(CGSize(width: -7 * s, height: 3 * s), duration: 0.042)
+                LinearKeyframe(CGSize(width: 6 * s, height: -4 * s), duration: 0.042)
+                LinearKeyframe(CGSize(width: -5 * s, height: -2 * s), duration: 0.042)
+                LinearKeyframe(CGSize(width: 4 * s, height: 4 * s), duration: 0.042)
+                LinearKeyframe(CGSize(width: -2 * s, height: 1 * s), duration: 0.063)
+                LinearKeyframe(CGSize(width: 2 * s, height: -1 * s), duration: 0.063)
+                LinearKeyframe(.zero, duration: 0.126)
             }
-            // `sk-shake`: the board jumps when something ships.
-            .keyframeAnimator(initialValue: CGSize.zero, trigger: beat) { view, shake in
-                view.offset(on && !still ? shake : .zero)
-            } keyframes: { _ in
-                let s = beat % 2 == 0 ? 1.0 : -1.0
-                KeyframeTrack {
-                    LinearKeyframe(CGSize(width: -7 * s, height: 3 * s), duration: 0.042)
-                    LinearKeyframe(CGSize(width: 6 * s, height: -4 * s), duration: 0.042)
-                    LinearKeyframe(CGSize(width: -5 * s, height: -2 * s), duration: 0.042)
-                    LinearKeyframe(CGSize(width: 4 * s, height: 4 * s), duration: 0.042)
-                    LinearKeyframe(CGSize(width: -2 * s, height: 1 * s), duration: 0.063)
-                    LinearKeyframe(CGSize(width: 2 * s, height: -1 * s), duration: 0.063)
-                    LinearKeyframe(.zero, duration: 0.126)
-                }
-            }
+        }
+    }
+}
+
+/// Where `sk-jolt` has the stage at `p` through its loop: still, but for the
+/// two faults, run through between their keyframes.
+private struct Jolt {
+    var x = 0.0, y = 0.0, skew = 0.0, hue = 0.0, stretch = 1.0
+
+    init() {}
+
+    init(_ p: Double) {
+        func mix(_ a: Double, _ b: Double, _ t: Double) -> Double { a + (b - a) * t }
+        switch p {
+        case 0.31..<0.316:
+            let t = (p - 0.31) / 0.006
+            (x, skew, hue) = (mix(0, -9, t), mix(0, 7, t), mix(0, 90, t))
+        case 0.316..<0.326:
+            let t = (p - 0.316) / 0.01
+            (x, skew, hue) = (mix(-9, 6, t), mix(7, -4, t), mix(90, -40, t))
+        case 0.326..<0.335:
+            let t = (p - 0.326) / 0.009
+            (x, skew, hue) = (mix(6, 0, t), mix(-4, 0, t), mix(-40, 0, t))
+        case 0.72..<0.725:
+            let t = (p - 0.72) / 0.005
+            (y, stretch, hue) = (mix(0, 3, t), mix(1, 1.015, t), mix(0, -70, t))
+        case 0.725..<0.735:
+            let t = (p - 0.725) / 0.01
+            (y, stretch, hue) = (mix(3, 0, t), mix(1.015, 1, t), mix(-70, 0, t))
+        default:
+            break
+        }
     }
 }
 

@@ -57,6 +57,21 @@ enum Worktrees {
         return status.split(separator: "\n").count
     }
 
+    /// Whether a card's branch really landed: its pull request says MERGED,
+    /// or it has commits of its own and they are in the repo's checked-out
+    /// branch. A branch nobody committed to is in HEAD's history too, which
+    /// is why the commits are asked about.
+    static func isMerged(branch: String, repo: String, env: ShellEnvironment?) async -> Bool {
+        let environment = (env?.baseEnvironment ?? ProcessInfo.processInfo.environment).filter { !$0.key.hasPrefix("GIT_") }
+        if let pr = try? await Subprocess.run("/usr/bin/env", ["gh", "pr", "view", branch, "--json", "state", "-q", ".state"], environment: environment, currentDirectory: repo, timeout: 20),
+           String(decoding: pr.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == "MERGED" {
+            return true
+        }
+        guard let reflog = try? await git(["reflog", "show", "--format=%H", branch], in: repo, env: env),
+              reflog.split(separator: "\n").count > 1 else { return false }
+        return (try? await git(["merge-base", "--is-ancestor", branch, "HEAD"], in: repo, env: env)) != nil
+    }
+
     /// Keeps the worktrees out of `git status` in the repo, without touching
     /// its `.gitignore`.
     private static func exclude(commonDir: String) {

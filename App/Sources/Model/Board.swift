@@ -63,6 +63,9 @@ final class Board: ObservableObject {
     /// What VIBES MODE last typed into each card, so its prompt is told apart
     /// from a person's when the hook reports it.
     private var vibesPrompts: [UUID: String] = [:]
+    /// Cards whose plan dialog VIBES MODE has pressed Enter on and not yet
+    /// seen go: a key sent before the dialog drew is sent again.
+    private var approvingPlans: Set<UUID> = []
     private let storeURL: URL
 
     init() {
@@ -87,6 +90,7 @@ final class Board: ObservableObject {
                 self?.drainStarts()
             }
             server.onEvent = { [weak self] id, body, reply in self?.receive(id, body, reply: reply) }
+            server.vibesCards.set(Set(cards.filter(inVibes).map(\.id)))
             server.start()
             hooks = server
         } catch {
@@ -175,6 +179,8 @@ final class Board: ObservableObject {
         if let card = card(id), !live.contains(id) {
             start(card)
         }
+        // The card left behind is nobody's to type into any more.
+        vibesSweep()
     }
 
     /// Back to the board. The card's session keeps running.
@@ -231,6 +237,7 @@ final class Board: ObservableObject {
         pendingClassify[id]?.cancel()
         stopped.remove(id)
         settled.remove(id)
+        approvingPlans.remove(id)
         vibesPrompts[id] = nil
         cards.removeAll { $0.id == id }
         live.remove(id)
@@ -348,6 +355,7 @@ final class Board: ObservableObject {
         }
         if let reply { noteVibesReply(reply, on: before) }
         if Vibes.showsPlanDialog(event), inVibes(before) { approvePlan(before) }
+        if event.hookEventName == "PostToolUse", event.toolName == "ExitPlanMode" { approvingPlans.remove(cardId) }
         if event.hookEventName == "UserPromptSubmit", inVibes(before) { notePrompt(event.prompt, on: before) }
         if effect.startsConversation { turns[cardId, default: 0] += 1 }
         update(cardId) { card in
@@ -443,10 +451,16 @@ final class Board: ObservableObject {
             vibes = VibesLedger()
             vibesToast = nil
             vibesArming = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.vibesArming = false }
+            // The two seconds are the undo: nothing is typed anywhere until
+            // they are up, and nothing at all if the switch went off again.
+            let since = vibes?.since
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                guard let self, self.vibes?.since == since else { return }
+                self.vibesArming = false
+                self.vibesSweep()
+            }
         }
         save()
-        vibesSweep()
     }
 
     /// A card in VIBES MODE on its own, or back out of it.
@@ -497,27 +511,59 @@ final class Board: ObservableObject {
                 card.shippedAt = Date()
                 card.vibesNudges = nil
             }
-            if vibesOptions.autoMerge {
-                vibes?.merged += 1
-                vibes?.note("Claude merged \(name) → main · 0 reviews")
-            } else {
-                vibes?.note("Pull request open on \(name) · yours to merge")
-            }
-            justShipped.insert(id)
-            shipBeat += 1
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) { [weak self] in self?.justShipped.remove(id) }
+            Task { await landed(id, name: name) }
         case .giveUp:
             vibes?.note("Gave up pushing \(name) · left for you")
         }
         save()
     }
 
+    /// Claude says it shipped; whether it is on main is git's to say. Only a
+    /// branch found there is counted and stamped MERGED.
+    private func landed(_ id: UUID, name: String) async {
+        guard let card = card(id) else { return }
+        var merged = false
+        if let branch = card.branch, let repo = card.repoPath {
+            merged = await Worktrees.isMerged(branch: branch, repo: repo, env: environment)
+        }
+        update(id) { $0.merged = merged }
+        if merged {
+            vibes?.merged += 1
+            vibes?.note("Claude merged \(name) → main · 0 reviews")
+        } else if vibesOptions.autoMerge {
+            vibes?.note("Claude called \(name) shipped · not on main")
+        } else {
+            vibes?.note("Pull request open on \(name) · yours to merge")
+        }
+        justShipped.insert(id)
+        shipBeat += 1
+        save()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) { [weak self] in self?.justShipped.remove(id) }
+    }
+
     /// The plan dialog, approved unread. Enter takes its first option, a yes,
     /// which is selected when it opens; a moment's wait lets it draw first.
+    /// A key that beat the dialog is sent again, twice, and after that the
+    /// card says it is waiting rather than claim to be running.
     /// Done even with the card open: a dialog has no half-typed line to spoil.
     private func approvePlan(_ card: Card) {
-        let view = terminals.view(for: card.id)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { view.send(txt: "\r") }
+        let id = card.id
+        let view = terminals.view(for: id)
+        approvingPlans.insert(id)
+        for delay in [0.6, 2.1, 3.6] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard self?.approvingPlans.contains(id) == true else { return }
+                view.send(txt: "\r")
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.5) { [weak self] in
+            guard let self, self.approvingPlans.remove(id) != nil else { return }
+            self.update(id) { card in
+                card.activity = .needsInput
+                card.waitingOn = "Approve the plan?"
+            }
+            self.updateBadge()
+        }
         vibes?.reviewsSkipped += 1
         vibes?.note("Claude approved its own plan on “\(displayTitle(card))” · nobody read it")
         save()

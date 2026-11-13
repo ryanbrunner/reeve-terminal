@@ -9,6 +9,7 @@ import SwiftUI
 /// the two layouts land in the same places.
 struct VibesBoardView: View {
     @EnvironmentObject var board: Board
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Column padding, the header line and its gap, and the list's own inset.
     private static let top: CGFloat = 6 + 16 + 8 + 4
@@ -42,8 +43,9 @@ struct VibesBoardView: View {
                         .rotationEffect(.degrees(tilt(card)))
                         .offset(x: place.x, y: place.y)
                         .zIndex(place.z)
-                        .animation(.spring(duration: 0.5, bounce: 0.4), value: card.stage)
-                        .animation(.spring(duration: 0.5, bounce: 0.4), value: place.y)
+                        // Under Reduce Motion a card still goes where it went, briefly.
+                        .animation(reduceMotion ? .easeOut(duration: 0.2) : .spring(duration: 0.5, bounce: 0.4), value: card.stage)
+                        .animation(reduceMotion ? .easeOut(duration: 0.2) : .spring(duration: 0.5, bounce: 0.4), value: place.y)
                 }
             }
             .padding(.horizontal, 14)
@@ -255,9 +257,9 @@ private struct VibesCardSlot: View {
         }
         .keyframeAnimator(initialValue: Slam(), trigger: card.stage) { content, slam in
             content
-                .scaleEffect(slam.scale)
-                .rotationEffect(.degrees(left ? -slam.turn : slam.turn))
-                .brightness(slam.bright)
+                .scaleEffect(still ? 1 : slam.scale)
+                .rotationEffect(.degrees(still ? 0 : left ? -slam.turn : slam.turn))
+                .brightness(still ? 0 : slam.bright)
         } keyframes: { _ in
             KeyframeTrack(\.scale) {
                 CubicKeyframe(1.45, duration: 0.01)

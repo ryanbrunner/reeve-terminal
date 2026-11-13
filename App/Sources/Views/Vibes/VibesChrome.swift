@@ -127,7 +127,12 @@ struct VibesTicker: View {
                     // Twice, because the run scrolls by exactly half its own
                     // width: at the wrap the second copy is where the first was.
                     HStack(spacing: 0) {
-                        run.background(GeometryReader { geo in Color.clear.onAppear { runWidth = geo.size.width } })
+                        // Measured again when the options change the words.
+                        run.background(GeometryReader { geo in
+                            Color.clear
+                                .onAppear { runWidth = geo.size.width }
+                                .onChange(of: geo.size.width) { runWidth = geo.size.width }
+                        })
                         run
                     }
                     .fixedSize()
@@ -138,7 +143,7 @@ struct VibesTicker: View {
         .overlay(alignment: .bottom) { Rectangle().fill(Color.white.opacity(0.1)).frame(height: 1) }
         .offset(y: arrived ? 0 : -30)
         .opacity(arrived ? 1 : 0)
-        .onAppear { withAnimation(.spring(duration: 0.4, bounce: 0.4)) { arrived = true } }
+        .onAppear { withAnimation(still ? nil : .spring(duration: 0.4, bounce: 0.4)) { arrived = true } }
         .accessibilityHidden(true)
     }
 
@@ -246,10 +251,15 @@ struct VibesArming: View {
     }
 
     private func play() {
+        guard !still else {
+            slam = true
+            shown = rows.count
+            return
+        }
         withAnimation(.spring(duration: 0.7, bounce: 0.45)) { slam = true }
         for i in rows.indices {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.45 + 0.14 * Double(i)) {
-                withAnimation(.easeOut(duration: still ? 0.01 : 0.25)) { shown = i + 1 }
+                withAnimation(.easeOut(duration: 0.25)) { shown = i + 1 }
             }
         }
     }
@@ -273,6 +283,7 @@ struct VibesHud: View {
     let ledger: VibesLedger
     let beat: Int
     @State private var arrived = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 0) {
@@ -301,7 +312,7 @@ struct VibesHud: View {
         .padding(.horizontal, 16)
         .padding(.bottom, 12)
         .offset(y: arrived ? 0 : 80)
-        .onAppear { withAnimation(.spring(duration: 0.5, bounce: 0.45)) { arrived = true } }
+        .onAppear { withAnimation(reduceMotion ? nil : .spring(duration: 0.5, bounce: 0.45)) { arrived = true } }
     }
 
     private struct Stat: View {
@@ -309,6 +320,7 @@ struct VibesHud: View {
         let value: Int
         var beat = 0
         @State private var popped = false
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
         var body: some View {
             VStack(alignment: .leading, spacing: 2) {
@@ -333,6 +345,7 @@ struct VibesHud: View {
             .overlay(alignment: .trailing) { Rectangle().fill(Color.white.opacity(0.08)).frame(width: 1) }
             .fixedSize(horizontal: true, vertical: false)
             .onChange(of: beat) {
+                guard !reduceMotion else { return }
                 popped = true
                 withAnimation(.spring(duration: 0.45, bounce: 0.5)) { popped = false }
             }

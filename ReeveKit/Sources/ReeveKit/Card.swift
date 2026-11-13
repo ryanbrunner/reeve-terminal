@@ -110,6 +110,8 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     public var vibesNudges: VibesNudges?
     /// When VIBES MODE saw the card through to the end. Nothing pushes it after.
     public var shippedAt: Date?
+    /// Its branch was found on main once it shipped, not just said to be.
+    public var merged: Bool?
     public var createdAt: Date
     public var updatedAt: Date
 

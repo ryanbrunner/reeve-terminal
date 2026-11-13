@@ -75,7 +75,7 @@ struct CardFace: View {
             }
         }
         .overlay(alignment: .topTrailing) {
-            if stamped { ShippedStamp(merged: board.vibesOptions.autoMerge) }
+            if stamped { ShippedStamp(merged: card.merged == true) }
         }
         .clipShape(RoundedRectangle(cornerRadius: 6))
         // The open card is ringed, the way the web board rings a traced
@@ -97,7 +97,7 @@ struct CardFace: View {
     private var footer: some View {
         if vibes {
             HStack(spacing: 6) {
-                Text(Vibes.chip(stage: card.stage, activity: card.activity, shipped: card.shippedAt != nil, options: board.vibesOptions))
+                Text(Vibes.chip(stage: card.stage, activity: card.activity, shipped: card.shippedAt != nil, merged: card.merged == true, options: board.vibesOptions))
                     .font(.mono(10))
                     .tracking(0.4)
                     .foregroundStyle(.white)
@@ -192,6 +192,7 @@ private struct ShippedBackground: View {
 private struct ShippedStamp: View {
     let merged: Bool
     @State private var landed = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Text(merged ? "MERGED" : "SHIPPED")
@@ -208,7 +209,7 @@ private struct ShippedStamp: View {
             .opacity(landed ? 1 : 0)
             .padding(.top, 30)
             .padding(.trailing, 10)
-            .onAppear { withAnimation(.spring(duration: 0.4, bounce: 0.5)) { landed = true } }
+            .onAppear { withAnimation(reduceMotion ? nil : .spring(duration: 0.4, bounce: 0.5)) { landed = true } }
             .allowsHitTesting(false)
     }
 }

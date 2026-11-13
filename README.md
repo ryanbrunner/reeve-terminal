@@ -58,10 +58,13 @@ For a card in VIBES MODE, Reeve does what you would otherwise have to:
   Reeve types the next step into its terminal: implement, test, then commit,
   push, open a pull request and (with Merge to Main on) merge it. A card told
   to ship whose turn ends in Release is done, and nothing pushes it after
-  that. A card pushed from the same column three times running is left for
-  you.
+  that. It is counted and stamped as merged only when git finds its commits
+  on the repo's checked-out branch, or GitHub says its pull request merged.
+  A card pushed from the same column three times running is left for you.
 
-Claude Code's own tool permissions stay yours: a permission prompt still
+Flipping the board's switch arms it for two seconds before anything is
+typed, so flipping it back in that time undoes it. Claude Code's own tool
+permissions stay yours: a permission prompt still
 waits for a person. Reeve never types into the card you have open, since you
 may have something half-typed there; it pushes it once you go back to the
 board. It only drives live sessions. After a relaunch a card sleeps until you
@@ -73,8 +76,9 @@ is taped off on the board, and a new card skips planning by starting
 straight in auto mode. Every number on the scoreboard is counted from when
 the switch was flipped and kept with the board.
 
-Under Reduce Motion the colours stay and the movement stops. The lights also
-hold still while a card is open, so the terminal stays quick.
+Under Reduce Motion the colours stay and the movement stops, except that a
+card still moves to its new column, quickly. The lights also hold still while
+a card is open, so the terminal stays quick.
 
 ## Build
 
