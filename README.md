@@ -20,10 +20,10 @@ feature parity. What Reeve adds is the board.
   permission mode, so a card moves as the session does:
   - plan mode → **Planning**
   - working in any other mode (auto, default, accept edits) → **In Progress**
-  - a turn that ends with changed code (an edit, or uncommitted changes in
-    the folder) → **Testing**
-  - an open or merged pull request for the card's branch, as `gh pr view`
-    sees it at the end of each turn → **Release**
+  - a turn that ends with changed code (an edit, uncommitted changes, or
+    commits since the worktree was made) → **Testing**
+  - an open, draft or merged pull request for the card's branch (see the
+    badge below) → **Release**
 
   A pull request wins over everything else. Switching modes with ⇧⇥ fires no
   hook, so the card moves on the next prompt or tool call.
@@ -41,6 +41,16 @@ feature parity. What Reeve adds is the board.
   deletes the worktree, uncommitted changes and all (it asks first if there
   are any). The branch is deleted too unless it has commits, which stay in
   the repo. A folder outside git is used as it is.
+- **A card shows its pull request.** Once a pull request is opened from a
+  card's branch, the card wears its number as a badge: green when open, grey
+  as a draft, violet once merged, red if closed. Reeve asks your own `gh`
+  at launch, when a turn ends and when you open the card. Without `gh` or a
+  GitHub remote there is simply no badge.
+- **Each open card has three tabs.** Terminal is the session. Plan shows
+  the plan Claude wrote in plan mode, read from its file so later edits show,
+  with a dot on the tab when a new one arrives. Changes is everything the card
+  has done in its worktree since it started: commits, uncommitted edits and
+  new files, read again as Claude works. ⌥⌘1–3 switch between them.
 - **Sessions survive restarts.** A card owns its session id (`--session-id`
   the first time, `--resume` after that). After a restart it sleeps until you
   open it.
@@ -74,6 +84,7 @@ toolchain, and 1.99 doesn't compile with the current Swift.
 | ⌘1…⌘9 | Open card 1–9, in board order |
 | ⇧⌘] / ⇧⌘[ | Next / previous card |
 | ⌘B | Back to the board (the session keeps running) |
+| ⌥⌘1 / ⌥⌘2 / ⌥⌘3 | The open card's Terminal / Plan / Changes |
 
 Esc goes to Claude Code, where it interrupts a turn, so it doesn't close an
 open card. Use ⌘B, the × in the card's header or a click outside it.

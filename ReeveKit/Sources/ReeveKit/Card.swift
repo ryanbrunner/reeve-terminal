@@ -81,9 +81,16 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     public var worktreePath: String?
     /// The branch checked out in the card's worktree.
     public var branch: String?
-    /// The commit the card's worktree started from, so commits made since
-    /// count as changed code.
+    /// The pull request opened from the card's branch, once there is one.
+    public var pullRequest: PullRequest?
+    /// The commit the card's worktree started from, which its changes are
+    /// shown against. Nil for cards made before Reeve kept it.
     public var baseCommit: String?
+    /// The session's latest plan, as `ExitPlanMode` carried it.
+    public var plan: String?
+    /// The file Claude Code keeps the plan in, read in place of `plan` while
+    /// it is there, since it may have been edited since.
+    public var planPath: String?
     /// The model the card's `claude` runs, as `--model` takes it. Nil leaves
     /// it to the person's own settings.
     public var model: String?
@@ -107,8 +114,6 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     public var permissionMode: String?
     /// When Claude last changed a file with one of its editing tools.
     public var lastEditAt: Date?
-    /// The pull request for the card's branch, as `gh` last saw it.
-    public var pullRequest: PullRequestState?
     /// The session has at least one prompt in it, so it can be resumed.
     public var hasConversation: Bool
     /// Where Claude Code keeps the session's transcript, once a hook has said.
@@ -144,17 +149,16 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
-/// Where a pull request stands, as `gh pr view` reports it.
-public enum PullRequestState: String, Codable, Sendable {
-    case open = "OPEN"
-    case merged = "MERGED"
-    case closed = "CLOSED"
-}
-
 extension Card {
+    /// The card's branch has a pull request that is open (draft or not) or
+    /// merged: the work has gone out for release.
+    public var hasLivePullRequest: Bool {
+        pullRequest.map { $0.state != .closed } ?? false
+    }
+
     /// The column the session's state puts the card in. First match wins:
     ///
-    /// - a pull request is open or merged: release
+    /// - a pull request is open, draft or merged: release
     /// - Claude is in plan mode: planning
     /// - Claude is working in any other mode: in progress
     /// - Claude's turn is over and the code has changed: testing (ready to try)
@@ -164,7 +168,7 @@ extension Card {
     /// stays there.
     public func stage(running: Bool, hasChanges: Bool) -> Stage {
         if stagePinned { return stage }
-        if pullRequest == .open || pullRequest == .merged { return .release }
+        if hasLivePullRequest { return .release }
         guard let permissionMode else { return stage }
         if permissionMode == "plan" { return .planning }
         if running { return .inProgress }

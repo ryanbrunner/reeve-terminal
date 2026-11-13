@@ -9,10 +9,10 @@ enum Worktrees {
         let repo: String
         let path: String
         let branch: String
-        /// The commit the branch starts from.
-        let baseCommit: String?
         /// Where the card works in it: the same subfolder the person chose.
         let cwd: String
+        /// The commit it started from.
+        let base: String?
     }
 
     struct Failure: LocalizedError {
@@ -33,7 +33,7 @@ enum Worktrees {
         exclude(commonDir: commonDir)
         _ = try await git(["worktree", "add", "-b", branch, path, "HEAD"], in: folder, env: env)
         let base = try? await git(["rev-parse", "HEAD"], in: path, env: env).trimmingCharacters(in: .whitespacesAndNewlines)
-        return Made(repo: repo, path: path, branch: branch, baseCommit: base, cwd: Worktree.workingDirectory(worktree: path, prefix: prefix))
+        return Made(repo: repo, path: path, branch: branch, cwd: Worktree.workingDirectory(worktree: path, prefix: prefix), base: base)
     }
 
     /// Removes a card's worktree, uncommitted changes and all. Its branch goes
@@ -66,19 +66,71 @@ enum Worktrees {
         return Int(count.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
     }
 
-    /// The pull request for the branch checked out at `path`, from `gh`. Nil
-    /// when the branch has none; throws when `gh` couldn't say (not installed,
-    /// not logged in, offline, not a GitHub repo), so what's known isn't lost.
-    static func pullRequest(at path: String, env: ShellEnvironment?) async throws -> PullRequestState? {
-        let environment = (env?.baseEnvironment ?? ProcessInfo.processInfo.environment).filter { !$0.key.hasPrefix("GIT_") }
-        let result = try await Subprocess.run("/usr/bin/env", ["gh", "pr", "view", "--json", "state", "--jq", ".state"], environment: environment, currentDirectory: path, timeout: 20)
-        let out = String(decoding: result.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard result.status == 0 else {
-            let err = String(decoding: result.stderr, as: UTF8.self)
-            if err.contains("no pull requests found") { return nil }
-            throw Failure(message: err.isEmpty ? "gh pr view exited \(result.status)" : err)
+    /// The branch checked out at `path` now, which Claude may have switched
+    /// from the one Reeve made. Nil when HEAD is detached.
+    static func currentBranch(at path: String, env: ShellEnvironment?) async -> String? {
+        let branch = (try? await git(["symbolic-ref", "--short", "-q", "HEAD"], in: path, env: env))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return branch?.isEmpty == false ? branch : nil
+    }
+
+    /// Everything a card has changed: its commits since `base` and what isn't
+    /// committed yet, new files included. Nil outside a git repo.
+    static func changes(in folder: String, base: String?, env: ShellEnvironment?) async throws -> Changes? {
+        guard let top = try? await git(["rev-parse", "--show-toplevel"], in: folder, env: env)
+            .trimmingCharacters(in: .whitespacesAndNewlines), !top.isEmpty else { return nil }
+        // A base git no longer has (a rewritten branch) falls back to HEAD:
+        // what isn't committed, at least.
+        var against = "HEAD"
+        if let base, (try? await git(["rev-parse", "--verify", "--quiet", base + "^{commit}"], in: top, env: env)) != nil {
+            against = base
         }
-        return PullRequestState(rawValue: out)
+        let pinned = ["-c", "core.quotePath=false", "diff"] + DiffParser.arguments
+        var text = try await git(pinned + [against, "--"], in: top, env: env)
+        let untracked = try await git(["ls-files", "--others", "--exclude-standard", "-z"], in: top, env: env)
+            .split(separator: "\0").map(String.init)
+        // A folder nobody ignored (a build, node_modules) shouldn't mean a
+        // process per file.
+        var leftOut = max(0, untracked.count - Changes.untrackedLimit)
+        for file in untracked.prefix(Changes.untrackedLimit) {
+            // A stray log or dump would be read whole before the cap below.
+            let size = (try? FileManager.default.attributesOfItem(atPath: top + "/" + file)[.size] as? Int) ?? 0
+            if size > Changes.untrackedByteLimit || text.utf8.count > Changes.byteLimit {
+                leftOut += 1
+                continue
+            }
+            // `--no-index` exits 1 when there is a difference, which there
+            // always is. A nested repo, listed as its folder, it refuses.
+            if let diff = try? await git(pinned + ["--no-index", "--", "/dev/null", file], in: top, env: env, allowing: [1]) {
+                text += diff
+            }
+        }
+        var truncated = false
+        if text.utf8.count > Changes.byteLimit {
+            text = String(decoding: text.utf8.prefix(Changes.byteLimit), as: UTF8.self)
+            if let end = text.lastIndex(of: "\n") { text = String(text[...end]) }
+            truncated = true
+        }
+        return Changes(
+            files: DiffParser.parse(text),
+            base: against == "HEAD" ? nil : String(against.prefix(7)),
+            untrackedLeftOut: leftOut,
+            truncated: truncated
+        )
+    }
+
+    struct Changes {
+        static let untrackedLimit = 100
+        static let byteLimit = 4_000_000
+        static let untrackedByteLimit = 1_000_000
+
+        let files: [FileDiff]
+        /// The short commit they are shown against; nil when it is HEAD.
+        let base: String?
+        /// New files not shown: past `untrackedLimit`, too big, or past `byteLimit`.
+        let untrackedLeftOut: Int
+        /// The diff ran past `byteLimit` and was cut there.
+        let truncated: Bool
     }
 
     /// Keeps the worktrees out of `git status` in the repo, without touching
@@ -91,14 +143,33 @@ enum Worktrees {
         try? updated.write(to: url, atomically: true, encoding: .utf8)
     }
 
-    private static func git(_ args: [String], in directory: String, env: ShellEnvironment?) async throws -> String {
+    private static func git(_ args: [String], in directory: String, env: ShellEnvironment?, allowing ok: Set<Int32> = []) async throws -> String {
         // The person's PATH finds their git; launchd's still finds /usr/bin/git.
         let environment = (env?.baseEnvironment ?? ProcessInfo.processInfo.environment).filter { !$0.key.hasPrefix("GIT_") }
         let result = try await Subprocess.run("/usr/bin/env", ["git", "-C", directory] + args, environment: environment, timeout: 60)
-        guard result.status == 0 else {
+        guard result.status == 0 || ok.contains(result.status) else {
             let err = String(decoding: result.stderr, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             throw Failure(message: err.isEmpty ? "git \(args.first ?? "") exited \(result.status)" : err)
         }
         return String(decoding: result.stdout, as: UTF8.self)
+    }
+}
+
+/// Finds the pull request opened from a card's branch, with the person's own
+/// `gh` and its login.
+enum PullRequests {
+    /// The branch's pull request, `.some(nil)` when it has none, or nil when
+    /// gh couldn't say: not installed, not logged in, or not a GitHub repo.
+    static func find(branch: String, in directory: String, env: ShellEnvironment?) async -> PullRequest?? {
+        let environment = (env?.baseEnvironment ?? ProcessInfo.processInfo.environment).filter { !$0.key.hasPrefix("GIT_") }
+        guard let result = try? await Subprocess.run(
+            "/usr/bin/env", ["gh"] + PullRequest.listArguments(branch: branch),
+            environment: environment, currentDirectory: directory, timeout: 15
+        ), result.status == 0 else { return nil }
+        do {
+            return .some(try PullRequest.parse(result.stdout))
+        } catch {
+            return nil
+        }
     }
 }

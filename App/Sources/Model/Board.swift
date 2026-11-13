@@ -23,6 +23,13 @@ final class Board: ObservableObject {
     @Published private(set) var classifyErrors: [UUID: String] = [:]
     /// What `claude` last set as each terminal's title.
     @Published private(set) var terminalTitles: [UUID: String] = [:]
+    /// Which tab each open card shows. Every card starts on its terminal.
+    @Published private(set) var tabs: [UUID: CardTab] = [:]
+    /// Cards with a plan nobody has looked at in the Plan tab yet.
+    @Published private(set) var unseenPlans: Set<UUID> = []
+    /// Raised when a card showing its changes may have new ones, so the tab
+    /// reads them again. Only for that card, so others' tool calls cost nothing.
+    @Published private(set) var changeTicks: [UUID: Int] = [:]
     @Published var showingNewCard = false
     @Published private(set) var environment: ShellEnvironment?
 
@@ -33,6 +40,8 @@ final class Board: ObservableObject {
     /// overtaken leaves the card's activity alone.
     private var turns: [UUID: Int] = [:]
     private var pendingClassify: [UUID: Task<Void, Never>] = [:]
+    /// Cards whose pull request is being looked up right now.
+    private var findingPullRequests: Set<UUID> = []
     private var restarting: Set<UUID> = []
     private var pendingRemovals: [WorktreeRemoval] = []
     /// Starts waiting on the shell environment or the hook port.
@@ -71,6 +80,7 @@ final class Board: ObservableObject {
             let env = await ShellEnvironment.load()
             self.environment = env
             self.drainStarts()
+            for card in self.cards { self.refreshPullRequest(card.id) }
         }
     }
 
@@ -125,7 +135,7 @@ final class Board: ObservableObject {
                     card.repoPath = made.repo
                     card.worktreePath = made.path
                     card.branch = made.branch
-                    card.baseCommit = made.baseCommit
+                    card.baseCommit = made.base
                 }
             } catch {
                 let alert = NSAlert()
@@ -144,6 +154,9 @@ final class Board: ObservableObject {
 
     func select(_ id: UUID) {
         selectedId = id
+        refreshPullRequest(id)
+        // Whatever Claude is asking is in the terminal.
+        if card(id)?.activity == .needsInput { tabs[id] = .terminal }
         if let card = card(id), !live.contains(id) {
             start(card)
         }
@@ -165,6 +178,37 @@ final class Board: ObservableObject {
     func selectIndex(_ index: Int) {
         let order = ordered
         if order.indices.contains(index) { select(order[index].id) }
+    }
+
+    func tab(_ id: UUID) -> CardTab {
+        tabs[id] ?? .terminal
+    }
+
+    func show(_ tab: CardTab, for id: UUID) {
+        tabs[id] = tab
+        if tab == .plan { unseenPlans.remove(id) }
+    }
+
+    /// The text of the card's plan: its file, which may have been edited since
+    /// Claude asked for approval, else what the approval carried. A card that
+    /// missed the hook finds its plan in the transcript.
+    func loadPlan(_ id: UUID) async -> String? {
+        guard var card = card(id) else { return nil }
+        if card.plan == nil, card.planPath == nil, let transcript = card.transcriptPath {
+            let found = await Task.detached { PlanSighting.latest(inTranscriptAt: transcript) }.value
+            if let found {
+                update(id) { card in
+                    card.plan = found.text
+                    card.planPath = found.path
+                }
+                card = self.card(id) ?? card
+            }
+        }
+        if let path = card.planPath {
+            let text = await Task.detached { try? String(contentsOfFile: path, encoding: .utf8) }.value
+            if let text, !text.isEmpty { return text }
+        }
+        return card.plan
     }
 
     /// A person put the card here. It stays until they next speak to Claude.
@@ -203,6 +247,9 @@ final class Board: ObservableObject {
         live.remove(id)
         classifying.remove(id)
         terminalTitles[id] = nil
+        tabs[id] = nil
+        unseenPlans.remove(id)
+        changeTicks[id] = nil
         // Back to the board, rather than opening (and starting) a neighbour.
         if selectedId == id { selectedId = nil }
         save()
@@ -316,8 +363,19 @@ final class Board: ObservableObject {
             if let mode = event.permissionMode { card.permissionMode = mode }
             if effect.editsFiles { card.lastEditAt = Date() }
             if effect.working { card.stage = card.stage(running: true, hasChanges: false) }
+            if let plan = effect.plan {
+                let merged = plan.merged(over: PlanSighting(text: card.plan, path: card.planPath))
+                card.plan = merged.text
+                card.planPath = merged.path
+            }
+        }
+        let showing = selectedId == cardId ? tab(cardId) : nil
+        if effect.plan != nil, showing != .plan { unseenPlans.insert(cardId) }
+        if showing == .changes, event.hookEventName == "PostToolUse" || event.hookEventName == "Stop" {
+            changeTicks[cardId, default: 0] += 1
         }
         if effect.classify {
+            // Looks up the pull request too: a turn is where Claude opens one.
             scheduleClassify(cardId, lastMessage: event.lastAssistantMessage, delay: 1.0)
         }
         updateBadge()
@@ -344,17 +402,10 @@ final class Board: ObservableObject {
         if !changed, let base = card.baseCommit {
             changed = await Worktrees.commits(at: card.cwd, since: base, env: environment) > 0
         }
-        // Nil when gh couldn't say, so a pull request already seen is kept.
-        var pullRequest: PullRequestState??
-        do {
-            pullRequest = .some(try await Worktrees.pullRequest(at: card.cwd, env: environment))
-        } catch {
-            NSLog("Reeve: looking up the pull request for \(id) failed: \(error.localizedDescription)")
-        }
+        await findPullRequest(id)
         // A prompt sent since means the session is working again.
         guard turns[id, default: 0] == turn, self.card(id)?.activity != .running else { return }
         update(id) { card in
-            if let pullRequest { card.pullRequest = pullRequest }
             card.stage = card.stage(running: false, hasChanges: changed)
         }
     }
@@ -390,6 +441,30 @@ final class Board: ObservableObject {
         } catch {
             classifyErrors[id] = error.localizedDescription
             NSLog("Reeve: classifying \(id) failed: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: Pull requests
+
+    /// Looks up the pull request from the branch the card's worktree is on,
+    /// which Claude may have switched from the one Reeve made. When gh can't
+    /// say, the card keeps the one it had.
+    private func refreshPullRequest(_ id: UUID) {
+        Task { await findPullRequest(id) }
+    }
+
+    /// A pull request found open or merged moves the card to Release.
+    private func findPullRequest(_ id: UUID) async {
+        guard let card = card(id), let worktree = card.worktreePath, let env = environment,
+              !findingPullRequests.contains(id), FileManager.default.fileExists(atPath: worktree) else { return }
+        findingPullRequests.insert(id)
+        defer { findingPullRequests.remove(id) }
+        // Never written back: closing the card deletes `card.branch`.
+        guard let branch = await Worktrees.currentBranch(at: worktree, env: env) ?? card.branch,
+              let found = await PullRequests.find(branch: branch, in: worktree, env: env) else { return }
+        update(id) { card in
+            card.pullRequest = found
+            if card.hasLivePullRequest, !card.stagePinned { card.stage = .release }
         }
     }
 

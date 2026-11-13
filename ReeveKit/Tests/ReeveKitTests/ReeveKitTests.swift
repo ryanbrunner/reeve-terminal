@@ -49,6 +49,26 @@ import Testing
         #expect(!read.effect.editsFiles)
     }
 
+    @Test func exitPlanModeCarriesThePlan() throws {
+        let e = try event(##"{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"ExitPlanMode","tool_input":{"plan":"# Login\n\n- Add a form","planFilePath":"/Users/r/.claude/plans/calm-otter.md"}}"##)
+        #expect(e.effect.activity == .needsInput)
+        #expect(e.effect.waitingOn == .some("Approve the plan?"))
+        #expect(e.effect.plan == PlanSighting(text: "# Login\n\n- Add a form", path: "/Users/r/.claude/plans/calm-otter.md"))
+    }
+
+    @Test func writingAPlanFileIsADraft() throws {
+        let e = try event(##"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"/Users/r/.claude/plans/calm-otter.md","content":"# Login"}}"##)
+        #expect(e.effect.activity == .running)
+        #expect(e.effect.plan == PlanSighting(text: nil, path: "/Users/r/.claude/plans/calm-otter.md"))
+    }
+
+    @Test func writingOtherFilesIsNotAPlan() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"/code/app/README.md"}}"#)
+        #expect(e.effect.plan == nil)
+        let docs = try event(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"/code/app/docs/plans/q3.md"}}"#)
+        #expect(docs.effect.plan == nil)
+    }
+
     @Test func stopAsksForReviewAndClassifies() throws {
         let e = try event(#"{"session_id":"s","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Done."}"#)
         #expect(e.effect.activity == .needsReview)
@@ -57,10 +77,10 @@ import Testing
 }
 
 @Suite struct StageRuleTests {
-    private func card(_ stage: Stage, mode: String?, pr: PullRequestState? = nil, pinned: Bool = false) -> Card {
+    private func card(_ stage: Stage, mode: String?, pr: PullRequest.State? = nil, pinned: Bool = false) -> Card {
         var card = Card(cwd: "/tmp", stage: stage)
         card.permissionMode = mode
-        card.pullRequest = pr
+        card.pullRequest = pr.map { PullRequest(number: 1, state: $0, url: "https://github.com/o/r/pull/1") }
         card.stagePinned = pinned
         return card
     }
@@ -85,6 +105,7 @@ import Testing
 
     @Test func aPullRequestIsRelease() {
         #expect(card(.testing, mode: "auto", pr: .open).stage(running: false, hasChanges: true) == .release)
+        #expect(card(.inProgress, mode: "auto", pr: .draft).stage(running: true, hasChanges: false) == .release)
         #expect(card(.inProgress, mode: "plan", pr: .merged).stage(running: true, hasChanges: false) == .release)
         #expect(card(.release, mode: "auto", pr: .closed).stage(running: false, hasChanges: true) == .testing)
     }
@@ -244,6 +265,179 @@ import Testing
         let card = try decoder.decode(Card.self, from: Data(json.utf8))
         #expect(card.worktreePath == nil)
         #expect(card.startMode == nil)
+        #expect(card.baseCommit == nil)
+        #expect(card.plan == nil)
         #expect(card.folderName == "app")
+    }
+}
+
+@Suite struct PullRequestTests {
+    private func parse(_ json: String) throws -> PullRequest? {
+        try PullRequest.parse(Data(json.utf8))
+    }
+
+    @Test func noPullRequest() throws {
+        #expect(try parse("[]") == nil)
+    }
+
+    @Test func prefersTheOpenOne() throws {
+        let pr = try parse(#"[{"number":12,"state":"CLOSED","isDraft":false,"url":"u12"},{"number":9,"state":"OPEN","isDraft":false,"url":"u9"}]"#)
+        #expect(pr == PullRequest(number: 9, state: .open, url: "u9"))
+    }
+
+    @Test func otherwiseTheNewest() throws {
+        let pr = try parse(#"[{"number":3,"state":"CLOSED","isDraft":false,"url":"u3"},{"number":7,"state":"MERGED","isDraft":false,"url":"u7"}]"#)
+        #expect(pr == PullRequest(number: 7, state: .merged, url: "u7"))
+    }
+
+    @Test func draftIsItsOwnState() throws {
+        let pr = try parse(#"[{"number":4,"state":"OPEN","isDraft":true,"url":"u4"}]"#)
+        #expect(pr?.state == .draft)
+    }
+
+    @Test func listsByHeadBranch() {
+        #expect(PullRequest.listArguments(branch: "reeve/1a2b3c4d").prefix(4) == ["pr", "list", "--head", "reeve/1a2b3c4d"])
+    }
+}
+
+@Suite struct PlanTests {
+    @Test func findsTheLatestPlanInATranscript() {
+        let jsonl = """
+        {"type":"user","message":{"content":"plan a login page"}}
+        {"type":"assistant","message":{"content":[{"type":"tool_use","name":"ExitPlanMode","input":{"plan":"first","planFilePath":"/h/.claude/plans/a.md"}}]}}
+        {"type":"assistant","isSidechain":true,"message":{"content":[{"type":"tool_use","name":"ExitPlanMode","input":{"plan":"subagent","planFilePath":"/h/.claude/plans/z.md"}}]}}
+        {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/h/.claude/plans/a.md"}}]}}
+        {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/code/app/plans/notes.txt"}}]}}
+        """
+        #expect(PlanSighting.latest(inTranscript: jsonl) == PlanSighting(text: "first", path: "/h/.claude/plans/a.md"))
+    }
+
+    @Test func aNewPlanFileReplacesTheOldPlan() {
+        let draft = PlanSighting(text: nil, path: "/h/.claude/plans/b.md")
+        #expect(draft.merged(over: PlanSighting(text: "first", path: "/h/.claude/plans/a.md")) == draft)
+    }
+
+    @Test func noPlanInATranscriptWithout() {
+        #expect(PlanSighting.latest(inTranscript: #"{"type":"user","message":{"content":"hi"}}"#) == nil)
+    }
+}
+
+@Suite struct DiffParserTests {
+    // Real `git diff <base>` output, with the flags `DiffParser.arguments` pins.
+    static let sample = """
+    diff --git a/blob.bin b/blob.bin
+    index bdc955b..8835708 100644
+    Binary files a/blob.bin and b/blob.bin differ
+    diff --git a/gone.txt b/gone.txt
+    deleted file mode 100644
+    index b023018..0000000
+    --- a/gone.txt
+    +++ /dev/null
+    @@ -1 +0,0 @@
+    -bye
+    diff --git a/keep.txt b/keep.txt
+    index 4cb29ea..51d3b44 100644
+    --- a/keep.txt
+    +++ b/keep.txt
+    @@ -1,3 +1,3 @@
+     one
+    -two
+    -three
+    +--- two
+    +three
+    \\ No newline at end of file
+    diff --git a/old.txt b/new.txt
+    similarity index 100%
+    rename from old.txt
+    rename to new.txt
+    diff --git a/tool.sh b/tool.sh
+    old mode 100644
+    new mode 100755
+    diff --git a/fresh file.txt b/fresh file.txt
+    new file mode 100644
+    index 0000000..5786b13
+    --- /dev/null
+    +++ b/fresh file.txt\t
+    @@ -0,0 +1,2 @@
+    +brand
+    +new
+
+    """
+
+    @Test func readsEveryKindOfChange() {
+        let files = DiffParser.parse(Self.sample)
+        #expect(files.map(\.path) == ["blob.bin", "gone.txt", "keep.txt", "new.txt", "tool.sh", "fresh file.txt"])
+        #expect(files.map(\.status) == [.modified, .deleted, .modified, .renamed, .modified, .added])
+        #expect(files[0].isBinary)
+        #expect(files[1].newPath == nil && files[1].deletions == 1)
+        #expect(files[3].oldPath == "old.txt" && files[3].hunks.isEmpty)
+        #expect(files[4].modeChange == "100644 → 100755")
+        #expect(files[5].oldPath == nil && files[5].additions == 2)
+    }
+
+    @Test func aRemovedLineThatLooksLikeAHeaderStaysInItsHunk() {
+        let keep = DiffParser.parse(Self.sample)[2]
+        #expect(keep.hunks.count == 1)
+        #expect(keep.hunks[0].lines.map(\.kind) == [.context, .removed, .removed, .added, .added, .note])
+        #expect(keep.hunks[0].lines[3].text == "--- two")
+        #expect(keep.hunks[0].lines[3].newNumber == 2)
+        #expect(keep.hunks[0].lines[2].oldNumber == 3)
+        #expect(keep.hunks[0].lines[5].text == "No newline at end of file")
+    }
+
+    @Test func quotedPaths() {
+        let text = """
+        diff --git "a/tab\\there" "b/tab\\there"
+        --- "a/tab\\there"
+        +++ "b/tab\\there"
+        @@ -1 +1 @@
+        -a
+        +b
+        """
+        #expect(DiffParser.parse(text).first?.path == "tab\there")
+    }
+}
+
+@Suite struct MarkdownTests {
+    @Test func readsAPlan() {
+        let md = """
+        # Login page
+
+        ## Context
+        Today there is no
+        login.
+
+        - Add a form
+          that posts
+        - [ ] Test it
+        1. First
+        10) Tenth
+
+        ```swift
+        let x = 1
+
+        print(x)
+        ```
+
+        | File | Change |
+        |---|:--:|
+        | a.swift | new |
+
+        > Note this
+        ---
+        """
+        #expect(MarkdownBlock.parse(md) == [
+            .heading(level: 1, text: "Login page"),
+            .heading(level: 2, text: "Context"),
+            .paragraph("Today there is no login."),
+            .listItem(marker: "•", indent: 0, text: "Add a form that posts"),
+            .listItem(marker: "•", indent: 0, text: "☐ Test it"),
+            .listItem(marker: "1.", indent: 0, text: "First"),
+            .listItem(marker: "10.", indent: 0, text: "Tenth"),
+            .code(language: "swift", text: "let x = 1\n\nprint(x)"),
+            .table([["File", "Change"], ["a.swift", "new"]]),
+            .quote("Note this"),
+            .rule,
+        ])
     }
 }

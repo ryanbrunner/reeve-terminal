@@ -95,6 +95,9 @@ struct CardMenu: View {
         Divider()
         Button(board.live.contains(card.id) ? "Restart Session" : "Resume Session") { board.restart(card.id) }
         Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: card.cwd)]) }
+        if let pr = card.pullRequest, let url = URL(string: pr.url) {
+            Button("Open Pull Request #\(pr.number)") { NSWorkspace.shared.open(url) }
+        }
         Divider()
         Button("Close Card") { CloseCard.confirm(card: card, board: board) }
     }
