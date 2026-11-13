@@ -51,6 +51,17 @@ feature parity. What Reeve adds is the board.
   with a dot on the tab when a new one arrives. Changes is everything the card
   has done in its worktree since it started: commits, uncommitted edits and
   new files, read again as Claude works. ⌥⌘1–3 switch between them.
+- **Review the changes like a pull request.** Hover a line in Changes and
+  click + to comment on it. **Comment now** sends it straight away; **Add to
+  review** keeps it as pending until you **Submit review**. Reeve writes the
+  comments to a file in its data folder (`reviews/<card>.json`) and types a
+  prompt into the session asking Claude to address each one and write its
+  reply there. A sleeping session is resumed with that prompt. The replies
+  show under your comments as threads you can answer or resolve. A comment
+  whose line has since changed moves under its file's header, marked
+  Outdated. Claude may read and write those files without asking, through a
+  permission rule in the `--settings` Reeve passes. Sending waits while
+  Claude is asking you something, and while it is in plan mode.
 - **Sessions survive restarts.** A card owns its session id (`--session-id`
   the first time, `--resume` after that). After a restart it sleeps until you
   open it.

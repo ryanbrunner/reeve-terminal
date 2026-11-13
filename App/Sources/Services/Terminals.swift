@@ -12,6 +12,8 @@ final class Terminals: NSObject, LocalProcessTerminalViewDelegate {
     private var views: [UUID: CardTerminalView] = [:]
     /// Cards whose process is running now.
     private(set) var live: Set<UUID> = []
+    /// Cards whose process has been asked to end and hasn't yet.
+    private var stopping: Set<UUID> = []
 
     var onStateChange: ((_ cardId: UUID, _ running: Bool, _ exitCode: Int32?) -> Void)?
     var onTitle: ((_ cardId: UUID, _ title: String) -> Void)?
@@ -30,11 +32,11 @@ final class Terminals: NSObject, LocalProcessTerminalViewDelegate {
 
     /// Starts `claude` for the card in a login shell in its folder: the same
     /// environment a terminal window would give it.
-    func start(_ card: Card, prompt: String? = nil, env: ShellEnvironment, hookPort: UInt16) {
+    func start(_ card: Card, prompt: String? = nil, env: ShellEnvironment, hookPort: UInt16, reviewsDir: String) {
         let view = view(for: card.id)
         guard !live.contains(card.id) else { return }
         let claude = env.claudePath ?? "claude"
-        let command = "exec " + Launch.commandLine(claude, Launch.claudeArguments(for: card, prompt: prompt))
+        let command = "exec " + Launch.commandLine(claude, Launch.claudeArguments(for: card, prompt: prompt, reviewsDir: reviewsDir))
         let environment = Launch.environment(base: env.baseEnvironment, hookPort: hookPort, cardId: card.id)
         if view.hasRun {
             view.feed(text: "\r\n\u{1b}[2m─── resuming session ───\u{1b}[0m\r\n")
@@ -51,9 +53,41 @@ final class Terminals: NSObject, LocalProcessTerminalViewDelegate {
         onStateChange?(card.id, true, nil)
     }
 
-    func stop(_ cardId: UUID) {
+    /// Types a prompt into the card's running `claude` and submits it, as a
+    /// person would. Pasted, so nothing in it is taken for a keystroke; the
+    /// return comes after, so it isn't taken for part of the paste.
+    func send(_ text: String, to cardId: UUID) {
         guard let view = views[cardId], live.contains(cardId) else { return }
+        let paste = view.getTerminal().bracketedPasteMode
+        if paste { view.send(data: EscapeSequences.bracketedPasteStart[0...]) }
+        view.send(txt: text)
+        if paste { view.send(data: EscapeSequences.bracketedPasteEnd[0...]) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak view] in
+            view?.send(txt: "\r")
+        }
+    }
+
+    /// Ends the card's `claude`. SwiftTerm stops watching a process it is
+    /// asked to end, so it never says the process exited; this waits for that
+    /// itself, and kills it if it hasn't gone after a few seconds.
+    func stop(_ cardId: UUID) {
+        guard let view = views[cardId], live.contains(cardId), !stopping.contains(cardId) else { return }
+        let pid = view.process.shellPid
+        stopping.insert(cardId)
         view.terminate()
+        Task { [weak self, weak view] in
+            var status: Int32 = 0
+            for tick in 0... {
+                if pid <= 0 || waitpid(pid, &status, WNOHANG) != 0 { break }
+                if tick == 50 { kill(pid, SIGKILL) }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            guard let self else { return }
+            self.stopping.remove(cardId)
+            // Closed meanwhile, or started again.
+            guard let view, self.views[cardId] === view, self.live.contains(cardId) else { return }
+            self.processTerminated(source: view, exitCode: nil)
+        }
     }
 
     func close(_ cardId: UUID) {
