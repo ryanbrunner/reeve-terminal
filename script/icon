@@ -1,0 +1,107 @@
+#!/usr/bin/env -S xcrun swift
+// Draws the app icon into App/Resources/Assets.xcassets/AppIcon.appiconset:
+// the Reeve mark on an ink plate, on Apple's macOS grid (an 824pt plate on a
+// 1024pt canvas). Run it again after changing the mark.
+//   script/icon
+import AppKit
+import SwiftUI
+
+let ink = Color(hex: 0x0E1116)
+let panel = Color(hex: 0x161B22)
+let edge = Color(hex: 0x262D38)
+let text = Color(hex: 0xE6EDF3)
+let sky500 = Color(hex: 0x00A6F4)
+
+/// `Glyph` from App/Sources/Theme/Theme.swift, drawn on its 34×40 grid.
+struct Glyph: View {
+    var height: CGFloat
+
+    var body: some View {
+        Canvas { context, size in
+            let s = size.height / 40
+            context.scaleBy(x: s, y: s)
+            context.fill(Path(roundedRect: CGRect(x: 0, y: 0, width: 11, height: 40), cornerRadius: 3), with: .color(text))
+            var bowl = Path()
+            bowl.move(to: CGPoint(x: 15, y: 0))
+            bowl.addLine(to: CGPoint(x: 23, y: 0))
+            bowl.addArc(center: CGPoint(x: 23, y: 11), radius: 11, startAngle: .degrees(-90), endAngle: .degrees(90), clockwise: false)
+            bowl.addLine(to: CGPoint(x: 15, y: 22))
+            bowl.closeSubpath()
+            context.fill(bowl, with: .color(text))
+            var diamond = Path()
+            diamond.move(to: CGPoint(x: 26, y: 24))
+            diamond.addLine(to: CGPoint(x: 34, y: 32))
+            diamond.addLine(to: CGPoint(x: 26, y: 40))
+            diamond.addLine(to: CGPoint(x: 18, y: 32))
+            diamond.closeSubpath()
+            context.fill(diamond, with: .color(sky500))
+        }
+        .frame(width: height * 34 / 40, height: height)
+    }
+}
+
+/// The plate lifts a little off ink with a panel-to-ink fall and a hairline,
+/// so it holds on a dark Dock; the diamond throws a little sky light, as a
+/// running card's glow does.
+struct Icon: View {
+    var body: some View {
+        let plate = RoundedRectangle(cornerRadius: 185, style: .continuous)
+        let side: CGFloat = 824, glyph: CGFloat = 400
+        // The diamond's centre, (26, 32) on the glyph's grid, on the plate.
+        let diamond = UnitPoint(x: 0.5 + glyph / 40 * (26 - 17) / side, y: 0.5 + glyph / 40 * (32 - 20) / side)
+        ZStack {
+            plate
+                .fill(LinearGradient(colors: [panel, ink], startPoint: .top, endPoint: .bottom))
+                .shadow(color: .black.opacity(0.35), radius: 14, y: 10)
+            plate.fill(RadialGradient(colors: [sky500.opacity(0.22), sky500.opacity(0)], center: diamond, startRadius: 0, endRadius: 260))
+            plate.strokeBorder(edge, lineWidth: 2)
+            Glyph(height: glyph)
+        }
+        .frame(width: side, height: side)
+        .frame(width: 1024, height: 1024)
+    }
+}
+
+extension Color {
+    init(hex: UInt32) {
+        self.init(.sRGB, red: Double((hex >> 16) & 0xFF) / 255, green: Double((hex >> 8) & 0xFF) / 255, blue: Double(hex & 0xFF) / 255)
+    }
+}
+
+let root = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent().deletingLastPathComponent()
+let set = root.appendingPathComponent("App/Resources/Assets.xcassets/AppIcon.appiconset")
+try FileManager.default.createDirectory(at: set, withIntermediateDirectories: true)
+
+// The full-size master, then each size scaled down from it with sips.
+let master = set.appendingPathComponent("icon_512x512@2x.png")
+let png: Data = MainActor.assumeIsolated {
+    let renderer = ImageRenderer(content: Icon())
+    renderer.scale = 1
+    let rep = NSBitmapImageRep(cgImage: renderer.cgImage!)
+    return rep.representation(using: .png, properties: [:])!
+}
+try png.write(to: master)
+
+var images: [[String: String]] = []
+for points in [16, 32, 128, 256, 512] {
+    for scale in [1, 2] {
+        let name = scale == 1 ? "icon_\(points)x\(points).png" : "icon_\(points)x\(points)@2x.png"
+        let pixels = points * scale
+        if pixels != 1024 {
+            let sips = Process()
+            sips.executableURL = URL(fileURLWithPath: "/usr/bin/sips")
+            sips.arguments = ["-z", "\(pixels)", "\(pixels)", master.path, "--out", set.appendingPathComponent(name).path]
+            sips.standardOutput = FileHandle.nullDevice
+            try sips.run()
+            sips.waitUntilExit()
+        }
+        images.append(["filename": name, "idiom": "mac", "scale": "\(scale)x", "size": "\(points)x\(points)"])
+    }
+}
+
+let contents: [String: Any] = ["images": images, "info": ["author": "xcode", "version": 1]]
+try JSONSerialization.data(withJSONObject: contents, options: [.prettyPrinted, .sortedKeys])
+    .write(to: set.appendingPathComponent("Contents.json"))
+try JSONSerialization.data(withJSONObject: ["info": ["author": "xcode", "version": 1]], options: [.prettyPrinted, .sortedKeys])
+    .write(to: set.deletingLastPathComponent().appendingPathComponent("Contents.json"))
+print("→ \(set.path)")
