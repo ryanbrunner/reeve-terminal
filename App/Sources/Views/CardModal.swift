@@ -87,7 +87,9 @@ private struct TerminalHeader: View {
                 .foregroundStyle(Theme.text)
                 .lineLimit(1)
             SectionLabel(text: card.stage.label)
-            if let waiting = card.waitingOn {
+            if let line = card.backgroundLine {
+                Text(line).font(.geist(12)).foregroundStyle(Theme.indigo200.opacity(0.85)).lineLimit(1)
+            } else if let waiting = card.waitingOn {
                 Text(waiting).font(.geist(12)).foregroundStyle(Theme.amber100.opacity(0.85)).lineLimit(1)
             } else if let summary = card.summary {
                 Text(summary).font(.mono(11)).foregroundStyle(Theme.muted).lineLimit(1)

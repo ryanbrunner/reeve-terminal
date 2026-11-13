@@ -24,7 +24,9 @@ public struct Classification: Decodable, Equatable, Sendable {
         title = try c.decode(String.self, forKey: .title).trimmingCharacters(in: .whitespacesAndNewlines)
         summary = try c.decode(String.self, forKey: .summary).trimmingCharacters(in: .whitespacesAndNewlines)
         let waiting = try c.decodeIfPresent(String.self, forKey: .waitingOn)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        waitingOn = (waiting?.isEmpty ?? true) ? nil : waiting
+        // Only a question is something to answer. Haiku sometimes describes
+        // what Claude itself is waiting for ("Both agents to finish") instead.
+        waitingOn = waiting?.hasSuffix("?") == true ? waiting : nil
     }
 }
 
@@ -36,7 +38,7 @@ public enum Classifier {
     {"type":"object","additionalProperties":false,"required":["title","summary","waiting_on"],"properties":{\
     "title":{"type":"string","description":"2 to 6 words naming the piece of work, like a ticket title"},\
     "summary":{"type":"string","description":"One short line, under 90 characters, on where the work stands now"},\
-    "waiting_on":{"type":["string","null"],"description":"If Claude's last message asks the person a question or for a decision, that question as a question addressed to them (e.g. 'Go ahead and create hello.txt?'), under 90 characters; otherwise null"}}}
+    "waiting_on":{"type":["string","null"],"description":"If Claude's last message asks the person a question or for a decision, that question as a question addressed to them (e.g. 'Go ahead and create hello.txt?'), under 90 characters; otherwise null. Also null when Claude is only waiting on agents, workflows or background tasks it launched itself"}}}
     """
 
     /// Arguments after the `claude` executable. The transcript digest goes on stdin.

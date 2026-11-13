@@ -44,10 +44,15 @@ final class Board: ObservableObject {
     /// Cards whose pull request is being looked up right now.
     private var findingPullRequests: Set<UUID> = []
     private var restarting: Set<UUID> = []
+    /// Cards waiting on a person because of a notification (a permission
+    /// prompt, often a subagent's) rather than a question Claude asked.
+    private var notifiedInput: Set<UUID> = []
     private var pendingRemovals: [WorktreeRemoval] = []
     /// Starts waiting on the shell environment or the hook port.
     private var waitingToStart: [(Card, String?)] = []
     private let storeURL: URL
+    /// Where each card's review goes to Claude and its replies come back.
+    private let reviewsDir: URL
 
     init() {
         let support = ProcessInfo.processInfo.environment["REEVE_DATA_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
@@ -55,6 +60,8 @@ final class Board: ObservableObject {
                 .appendingPathComponent("Reeve Terminal", isDirectory: true)
         try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         storeURL = support.appendingPathComponent("board.json")
+        reviewsDir = support.appendingPathComponent("reviews", isDirectory: true)
+        try? FileManager.default.createDirectory(at: reviewsDir, withIntermediateDirectories: true)
         load()
 
         terminals.onStateChange = { [weak self] id, running, exitCode in
@@ -282,6 +289,7 @@ final class Board: ObservableObject {
         tabs[id] = nil
         unseenPlans.remove(id)
         changeTicks[id] = nil
+        try? FileManager.default.removeItem(at: reviewURL(id))
         // Back to the board, rather than opening (and starting) a neighbour.
         if selectedId == id { selectedId = nil }
         save()
@@ -331,7 +339,7 @@ final class Board: ObservableObject {
             update(card.id) { $0.sessionId = UUID() }
             card = self.card(card.id) ?? card
         }
-        terminals.start(card, prompt: prompt, env: env, hookPort: port)
+        terminals.start(card, prompt: prompt, env: env, hookPort: port, reviewsDir: reviewsDir.path)
     }
 
     private func drainStarts() {
@@ -350,9 +358,10 @@ final class Board: ObservableObject {
         }
         live.remove(id)
         update(id) { card in
-            if card.activity == .running || card.activity == .needsInput {
+            if card.activity == .running || card.activity == .needsInput || card.activity == .waiting {
                 card.activity = (exitCode ?? 0) == 0 ? .idle : .error
             }
+            card.background = nil
             if let exitCode, exitCode != 0 { card.waitingOn = nil }
         }
         if restarting.remove(id) != nil, let card = card(id) {
@@ -382,7 +391,17 @@ final class Board: ObservableObject {
         guard let event = try? HookEvent.decode(body), card(cardId) != nil else { return }
         let effect = event.effect
         if effect.startsConversation { turns[cardId, default: 0] += 1 }
+        let askedByNotification = notifiedInput.contains(cardId)
+        if effect.activity != nil {
+            if event.hookEventName == "Notification" { notifiedInput.insert(cardId) } else { notifiedInput.remove(cardId) }
+        }
         update(cardId) { card in
+            // A subagent working again means the prompt that stopped it was answered.
+            if effect.bySubagent, let activity = HookEvent.activityAfterSubagentWork(card.activity, askedByNotification: askedByNotification, waitingOnBackground: card.background != nil) {
+                card.activity = activity
+                card.waitingOn = nil
+                notifiedInput.remove(cardId)
+            }
             // `/clear` starts a new session in the same terminal; follow it, so
             // a restart resumes the conversation that is actually on screen.
             if let session = UUID(uuidString: event.sessionId), session != card.sessionId {
@@ -391,6 +410,7 @@ final class Board: ObservableObject {
             if let path = event.transcriptPath { card.transcriptPath = path }
             if let activity = effect.activity { card.activity = activity }
             if let waiting = effect.waitingOn { card.waitingOn = waiting }
+            if let background = effect.background { card.background = background.isEmpty ? nil : background }
             if effect.startsConversation { card.hasConversation = true }
             if effect.unpinsStage { card.stagePinned = false }
             if let mode = event.permissionMode { card.permissionMode = mode }
@@ -406,6 +426,9 @@ final class Board: ObservableObject {
         if effect.plan != nil, showing != .plan { unseenPlans.insert(cardId) }
         if showing == .changes, event.hookEventName == "PostToolUse" || event.hookEventName == "Stop" {
             changeTicks[cardId, default: 0] += 1
+        }
+        if event.hookEventName == "Stop" || (event.hookEventName == "PostToolUse" && event.toolInput?.filePath == reviewURL(cardId).path) {
+            readReplies(cardId)
         }
         if effect.classify {
             // Looks up the pull request too: a turn is where Claude opens one.
@@ -436,8 +459,9 @@ final class Board: ObservableObject {
             changed = await Worktrees.commits(at: card.cwd, since: base, env: environment) > 0
         }
         await findPullRequest(id)
-        // A prompt sent since means the session is working again.
-        guard turns[id, default: 0] == turn, self.card(id)?.activity != .running else { return }
+        // A prompt sent since means the session is working again; a session
+        // waiting on its agents is still in progress.
+        guard turns[id, default: 0] == turn, let activity = self.card(id)?.activity, activity != .running, activity != .waiting else { return }
         update(id) { card in
             card.stage = card.stage(running: false, hasChanges: changed)
         }
@@ -460,7 +484,9 @@ final class Board: ObservableObject {
                 if !card.titledByPerson, !result.title.isEmpty { card.title = result.title }
                 card.summary = result.summary
                 // Only while nothing newer has happened: a prompt sent since
-                // means the session has moved on from what was read.
+                // means the session has moved on from what was read. A card
+                // waiting on its agents is never a question, whatever Claude
+                // said as it launched them.
                 if current, card.activity == .needsReview || card.activity == .needsInput {
                     if let waiting = result.waitingOn {
                         card.activity = .needsInput
@@ -474,6 +500,97 @@ final class Board: ObservableObject {
         } catch {
             classifyErrors[id] = error.localizedDescription
             NSLog("Reeve: classifying \(id) failed: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: Review
+
+    func reviewURL(_ id: UUID) -> URL {
+        reviewsDir.appendingPathComponent(id.uuidString + ".json")
+    }
+
+    /// Why a review can't go to the card's session right now, if it can't.
+    /// While Claude works it can: Claude Code queues the prompt.
+    func reviewBlocker(_ id: UUID) -> String? {
+        guard let card = card(id) else { return nil }
+        if card.activity == .needsInput { return "Claude is waiting on you in the terminal. Answer it first." }
+        if card.permissionMode == "plan" { return "Claude is in plan mode, where it can't change code. Leave plan mode in the terminal first." }
+        return nil
+    }
+
+    /// A new comment on a line. Sent now, or kept as part of a review.
+    func comment(on anchor: ReviewAnchor, _ body: String, in id: UUID, send: Bool) {
+        let thread = ReviewThread(anchor: anchor, messages: [ReviewMessage(author: .person, body: body, pending: true)])
+        updateReview(id) { $0.append(thread) }
+        if send { submitReview(id, only: thread.id) }
+    }
+
+    /// The person answers a thread. Sent now, or kept as part of a review.
+    func reply(to threadId: UUID, _ body: String, in id: UUID, send: Bool) {
+        updateReview(id) { threads in
+            guard let i = threads.firstIndex(where: { $0.id == threadId }) else { return }
+            threads[i].messages.append(ReviewMessage(author: .person, body: body, pending: true))
+            threads[i].resolved = false
+        }
+        if send { submitReview(id, only: threadId) }
+    }
+
+    /// Drops a thread's unsent drafts, and the thread with them if that was all it had.
+    func discardDrafts(_ threadId: UUID, in id: UUID) {
+        updateReview(id) { threads in
+            guard let i = threads.firstIndex(where: { $0.id == threadId }) else { return }
+            threads[i].messages.removeAll { $0.pending }
+            if threads[i].messages.isEmpty { threads.remove(at: i) }
+        }
+    }
+
+    func resolve(_ threadId: UUID, _ resolved: Bool, in id: UUID) {
+        updateReview(id) { threads in
+            guard let i = threads.firstIndex(where: { $0.id == threadId }) else { return }
+            threads[i].resolved = resolved
+        }
+    }
+
+    /// Sends the card's drafts to Claude (or one thread's): writes every
+    /// thread waiting on a reply to the review file and asks the session,
+    /// woken if it is asleep, to answer them there.
+    func submitReview(_ id: UUID, only threadId: UUID? = nil) {
+        guard reviewBlocker(id) == nil else { return }
+        // A reply already in the file would go with the rewrite.
+        readReplies(id)
+        updateReview(id) { threads in
+            for i in threads.indices where threadId == nil || threads[i].id == threadId {
+                for m in threads[i].messages.indices { threads[i].messages[m].pending = false }
+            }
+        }
+        guard let card = card(id), let threads = card.review, threads.contains(where: { $0.awaitingReply && !$0.resolved }) else { return }
+        let url = reviewURL(id)
+        do {
+            try ReviewFile.encode(threads).write(to: url, options: .atomic)
+        } catch {
+            NSLog("Reeve: writing the review for \(id) failed: \(error.localizedDescription)")
+            return
+        }
+        let prompt = ReviewFile.prompt(path: url.path)
+        if live.contains(id) {
+            terminals.send(prompt, to: id)
+        } else {
+            start(card, prompt: prompt)
+        }
+    }
+
+    /// Takes in whatever Claude has replied in the card's review file.
+    private func readReplies(_ id: UUID) {
+        guard card(id)?.review?.contains(where: \.awaitingReply) == true,
+              let data = try? Data(contentsOf: reviewURL(id)) else { return }
+        updateReview(id) { $0 = ReviewFile.merge(data, into: $0) }
+    }
+
+    private func updateReview(_ id: UUID, _ change: (inout [ReviewThread]) -> Void) {
+        update(id) { card in
+            var threads = card.review ?? []
+            change(&threads)
+            card.review = threads.isEmpty ? nil : threads
         }
     }
 
@@ -522,7 +639,8 @@ final class Board: ObservableObject {
         // Nothing is running after a restart; a card left mid-turn says so.
         cards = saved.cards.map { card in
             var card = card
-            if card.activity == .running { card.activity = .idle }
+            if card.activity == .running || card.activity == .waiting { card.activity = .idle }
+            card.background = nil
             return card
         }
         // Launch lands on the board; opening a card is what starts its session.

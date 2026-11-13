@@ -19,8 +19,14 @@ public struct HookEvent: Decodable, Sendable {
     public let notificationType: String?
     /// `Stop`.
     public let lastAssistantMessage: String?
+    /// `Stop`: the background work still in flight, which will wake Claude
+    /// when it finishes. Empty, or missing from older Claude Codes, when
+    /// there is none.
+    public let backgroundTasks: [BackgroundWork]?
     /// `UserPromptSubmit`.
     public let prompt: String?
+    /// Tool events: set when a subagent made the call, not the main thread.
+    public let agentId: String?
 
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
@@ -33,7 +39,18 @@ public struct HookEvent: Decodable, Sendable {
         case message
         case notificationType = "notification_type"
         case lastAssistantMessage = "last_assistant_message"
+        case backgroundTasks = "background_tasks"
         case prompt
+        case agentId = "agent_id"
+    }
+
+    /// The background work that keeps a session going after its turn ends:
+    /// agents, not shells or monitors, which are as often a dev server or a
+    /// watcher that never finishes.
+    public static let wakingTaskTypes: Set<String> = ["subagent", "workflow", "teammate", "cloud session", "MCP task"]
+
+    public var wakingTasks: [BackgroundWork] {
+        (backgroundTasks ?? []).filter { Self.wakingTaskTypes.contains($0.type) }
     }
 
     /// The parts of a tool's input that say what Claude is asking a person,
@@ -61,6 +78,28 @@ public struct HookEvent: Decodable, Sendable {
     }
 }
 
+/// A piece of background work Claude launched, as the `Stop` hook lists it.
+public struct BackgroundWork: Codable, Equatable, Sendable {
+    public var id: String
+    /// `subagent`, `workflow`, `shell`, `monitor`…
+    public var type: String
+    public var description: String?
+    /// Subagents: which kind, like `Explore`.
+    public var agentType: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, type, description
+        case agentType = "agent_type"
+    }
+
+    public init(id: String, type: String, description: String? = nil, agentType: String? = nil) {
+        self.id = id
+        self.type = type
+        self.description = description
+        self.agentType = agentType
+    }
+}
+
 /// What a hook event does to its card.
 public struct HookEffect: Equatable, Sendable {
     public var activity: Activity?
@@ -78,8 +117,12 @@ public struct HookEffect: Equatable, Sendable {
     public var classify = false
     /// Claude wrote a plan, or asked for one to be approved.
     public var plan: PlanSighting?
+    /// Set to replace the background work the card is waiting on.
+    public var background: [BackgroundWork]?
+    /// A subagent used a tool: it is getting on with its work.
+    public var bySubagent = false
 
-    public init(activity: Activity? = nil, waitingOn: String?? = nil, startsConversation: Bool = false, unpinsStage: Bool = false, working: Bool = false, editsFiles: Bool = false, classify: Bool = false, plan: PlanSighting? = nil) {
+    public init(activity: Activity? = nil, waitingOn: String?? = nil, startsConversation: Bool = false, unpinsStage: Bool = false, working: Bool = false, editsFiles: Bool = false, classify: Bool = false, plan: PlanSighting? = nil, background: [BackgroundWork]? = nil) {
         self.activity = activity
         self.waitingOn = waitingOn
         self.startsConversation = startsConversation
@@ -88,6 +131,7 @@ public struct HookEffect: Equatable, Sendable {
         self.editsFiles = editsFiles
         self.classify = classify
         self.plan = plan
+        self.background = background
     }
 }
 
@@ -97,12 +141,25 @@ private let askingTools: Set<String> = ["AskUserQuestion", "ExitPlanMode"]
 /// Tools that change files.
 private let editingTools: Set<String> = ["Edit", "MultiEdit", "Write", "NotebookEdit"]
 
+/// Notifications that mean Claude, or one of its agents, is blocked on a
+/// person. The rest (an agent finishing, the idle reminder, sign-ins) aren't.
+private let blockingNotifications: Set<String> = ["permission_prompt", "worker_permission_prompt", "elicitation_dialog", "elicitation_url_dialog", "agent_needs_input"]
+
 extension HookEvent {
+    /// The activity a card goes back to when a subagent carries on working
+    /// after a notification stopped for a person: they must have answered
+    /// it. Nil leaves the card as it is, as it does for a question Claude
+    /// itself asked, which a subagent's work says nothing about.
+    public static func activityAfterSubagentWork(_ activity: Activity, askedByNotification: Bool, waitingOnBackground: Bool) -> Activity? {
+        guard activity == .needsInput, askedByNotification else { return nil }
+        return waitingOnBackground ? .waiting : .running
+    }
+
     /// The card's new activity, and what else changes, for this event.
     public var effect: HookEffect {
         switch hookEventName {
         case "UserPromptSubmit":
-            return HookEffect(activity: .running, waitingOn: .some(nil), startsConversation: true, unpinsStage: true, working: true)
+            return HookEffect(activity: .running, waitingOn: .some(nil), startsConversation: true, unpinsStage: true, working: true, background: [])
         case "PreToolUse":
             if let toolName, askingTools.contains(toolName) {
                 let question = toolInput?.questions?.compactMap(\.question).first
@@ -112,25 +169,42 @@ extension HookEvent {
                 }
                 return effect
             }
-            return HookEffect(activity: .running, waitingOn: .some(nil), working: true)
+            // A subagent at work says nothing about the main thread, which
+            // may be running or waiting on it.
+            if agentId != nil {
+                var effect = HookEffect(working: true)
+                effect.bySubagent = true
+                return effect
+            }
+            return HookEffect(activity: .running, waitingOn: .some(nil), working: true, background: [])
         case "PostToolUse":
-            var effect = HookEffect(activity: .running, waitingOn: .some(nil), working: true, editsFiles: toolName.map(editingTools.contains) ?? false)
+            var effect = HookEffect(working: true, editsFiles: toolName.map(editingTools.contains) ?? false)
+            if agentId == nil {
+                effect.activity = .running
+                effect.waitingOn = .some(nil)
+                effect.background = []
+            } else {
+                effect.bySubagent = true
+            }
             // Plan mode drafts the plan in a file before asking for approval.
             if toolName == "Write" || toolName == "Edit", let path = toolInput?.filePath, PlanSighting.isPlanFile(path) {
                 effect.plan = PlanSighting(text: nil, path: path)
             }
             return effect
         case "Notification":
-            // The idle reminder comes a minute after a turn ends; the card has
-            // already said so. Anything else is Claude blocked on a person.
-            if notificationType == "idle_prompt" || (notificationType == nil && message?.contains("waiting for your input") == true) {
-                return HookEffect()
-            }
-            return HookEffect(activity: .needsInput, waitingOn: .some(message))
+            // Older Claude Codes send no type; their idle reminder is told by its words.
+            let blocking = notificationType.map(blockingNotifications.contains) ?? (message?.contains("waiting for your input") != true)
+            return blocking ? HookEffect(activity: .needsInput, waitingOn: .some(message)) : HookEffect()
         case "Stop":
-            return HookEffect(activity: .needsReview, classify: true)
+            // Background agents will wake Claude when they finish: the turn is
+            // over, but the work isn't.
+            let waking = wakingTasks
+            if !waking.isEmpty {
+                return HookEffect(activity: .waiting, waitingOn: .some(nil), classify: true, background: waking)
+            }
+            return HookEffect(activity: .needsReview, classify: true, background: [])
         case "SessionEnd":
-            return HookEffect(activity: .idle)
+            return HookEffect(activity: .idle, background: [])
         default:
             return HookEffect()
         }

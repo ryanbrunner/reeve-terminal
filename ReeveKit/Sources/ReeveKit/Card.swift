@@ -35,6 +35,8 @@ public enum Activity: String, Codable, Sendable {
     case needsReview = "needs_review"
     /// Claude is blocked on a person: a permission prompt, a question, a plan to approve.
     case needsInput = "needs_input"
+    /// Claude's turn is over, but background work it launched will wake it.
+    case waiting
     /// The session's process died.
     case error
 }
@@ -91,6 +93,9 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     /// The file Claude Code keeps the plan in, read in place of `plan` while
     /// it is there, since it may have been edited since.
     public var planPath: String?
+    /// The comments a person left on the card's changes, and Claude's replies.
+    /// Nil for cards saved before there were any.
+    public var review: [ReviewThread]?
     /// The model the card's `claude` runs, as `--model` takes it. Nil leaves
     /// it to the person's own settings.
     public var model: String?
@@ -106,6 +111,8 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     public var summary: String?
     /// What Claude is waiting on a person for, when it is.
     public var waitingOn: String?
+    /// The background agents Claude is waiting on, while it is.
+    public var background: [BackgroundWork]?
     /// A person put the card in its column. The classifier leaves the stage
     /// alone until the next prompt, so a drag is never undone behind your back.
     public var stagePinned: Bool
@@ -154,6 +161,16 @@ extension Card {
     /// merged: the work has gone out for release.
     public var hasLivePullRequest: Bool {
         pullRequest.map { $0.state != .closed } ?? false
+    }
+
+    /// What a waiting card is waiting on, in a line: "Waiting on 2 subagents".
+    public var backgroundLine: String? {
+        guard activity == .waiting else { return nil }
+        guard let tasks = background, !tasks.isEmpty else { return "Waiting on background work" }
+        let types = Set(tasks.map(\.type))
+        // "subagent" and "workflow" pluralise with an s; mixed or odd ones are tasks.
+        let noun = types.count == 1 && (types.first == "subagent" || types.first == "workflow" || types.first == "teammate") ? types.first! : "task"
+        return "Waiting on \(tasks.count) \(noun)\(tasks.count == 1 ? "" : "s")"
     }
 
     /// The column the session's state puts the card in. First match wins:

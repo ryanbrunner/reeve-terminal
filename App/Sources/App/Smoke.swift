@@ -12,6 +12,10 @@ import ReeveKit
 /// and `REEVE_SMOKE_START=plan` to start the card planning rather than building.
 /// Set `REEVE_SMOKE_TABS` to also stop once a plan arrives, and save a picture
 /// of each of the card's tabs before quitting.
+/// `REEVE_SMOKE_MODE=review` comments on the first added line once the first
+/// turn is sorted (`REEVE_SMOKE_COMMENT`), sends it, and stops once Claude
+/// has replied. `REEVE_SMOKE_SLEEP` ends the session first, so the
+/// comment has to wake it.
 /// `REEVE_SMOKE_MODE=preview` checks the Preview tab instead; see `runPreview`.
 @MainActor
 enum Smoke {
@@ -25,7 +29,8 @@ enum Smoke {
         }
         // new: make a card with the prompt. resume: open the board's first
         // card and type the prompt into it. interrupt: make a card, then press
-        // Esc a few seconds into its turn.
+        // Esc a few seconds into its turn. review: make a card, then comment
+        // on what it changed.
         let mode = env["REEVE_SMOKE_MODE"] ?? "new"
         let prompt = env["REEVE_SMOKE_PROMPT"] ?? "Say hello in one word."
         let limit = Double(env["REEVE_SMOKE_SECONDS"] ?? "") ?? 150
@@ -36,6 +41,7 @@ enum Smoke {
         var acceptedTrust = false
         var typed = false
         var interrupted: Date?
+        var reviewed = false
         var timeline: [String] = []
         var lastActivity: Activity?
         var lastTitle: String?
@@ -130,7 +136,32 @@ enum Smoke {
                     interrupted = Date()
                 }
                 if board.classifying.contains(card.id) { sawClassify = true }
-                let sorted = mode != "interrupt" && sawClassify && !board.classifying.contains(card.id)
+                var sorted = mode != "interrupt" && sawClassify && !board.classifying.contains(card.id)
+                if mode == "review", sorted, !reviewed {
+                    reviewed = true
+                    board.show(.changes, for: card.id)
+                    Task {
+                        guard let changes = try? await Worktrees.changes(in: card.worktreePath ?? card.cwd, base: card.baseCommit, env: board.environment),
+                              let file = changes.files.first,
+                              let line = file.hunks.first?.lines.first(where: { $0.kind == .added }),
+                              let anchor = ReviewAnchor(file: file, line: line) else {
+                            log("nothing to comment on")
+                            return
+                        }
+                        if env["REEVE_SMOKE_SLEEP"] != nil {
+                            log("ending the session")
+                            board.terminals.stop(card.id)
+                            while board.live.contains(card.id) { try? await Task.sleep(for: .milliseconds(200)) }
+                            log("session asleep")
+                        }
+                        log("commenting on \(anchor.path):\(anchor.line)")
+                        board.comment(on: anchor, env["REEVE_SMOKE_COMMENT"] ?? "Make this say hello world instead, and tell me what you changed.", in: card.id, send: true)
+                    }
+                }
+                if mode == "review" {
+                    let replied = card.review?.contains { $0.messages.last?.author == .claude } == true
+                    sorted = replied && card.activity != .running
+                }
                 let planned = tabs && (card.plan != nil || card.planPath != nil)
                 if sorted || planned || elapsed > limit {
                     timer.invalidate()

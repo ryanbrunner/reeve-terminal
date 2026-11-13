@@ -53,6 +53,17 @@ feature parity. What Reeve adds is the board.
   new files, read again as Claude works. Preview is the app the card is
   building, under review in [Gloss](https://github.com/ryanbrunner/gloss)
   (below). ⌥⌘1–4 switch between them.
+- **Review the changes like a pull request.** Hover a line in Changes and
+  click + to comment on it. **Comment now** sends it straight away; **Add to
+  review** keeps it as pending until you **Submit review**. Reeve writes the
+  comments to a file in its data folder (`reviews/<card>.json`) and types a
+  prompt into the session asking Claude to address each one and write its
+  reply there. A sleeping session is resumed with that prompt. The replies
+  show under your comments as threads you can answer or resolve. A comment
+  whose line has since changed moves under its file's header, marked
+  Outdated. Claude may read and write those files without asking, through a
+  permission rule in the `--settings` Reeve passes. Sending waits while
+  Claude is asking you something, and while it is in plan mode.
 - **Gloss runs in the Preview tab.** Each card's `claude` gets `GLOSS_HOST`,
   so a `gloss open <url>` in the card (or the Gloss plugin's `/gloss <url>`)
   shows the page in the card's Preview tab, with Gloss's feedback bar across
@@ -86,6 +97,9 @@ open build/Build/Products/Debug/Reeve.app
 To work in Xcode, run `xcodegen generate` and open `Reeve.xcodeproj`. Trust
 the SwiftTerm plugin when Xcode asks. Pure logic and its tests live in
 `ReeveKit` (`cd ReeveKit && swift test`).
+
+The app icon is the Reeve mark on an ink plate, drawn by `script/icon` into
+`App/Resources/Assets.xcassets`. Run it again after changing the mark.
 
 SwiftTerm is pinned to 1.11.2. Releases from 1.12 on need Xcode's Metal
 toolchain, and 1.99 doesn't compile with the current Swift.
