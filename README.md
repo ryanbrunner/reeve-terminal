@@ -30,6 +30,11 @@ feature parity. What Reeve adds is the board.
   deletes the worktree, uncommitted changes and all (it asks first if there
   are any). The branch is deleted too unless it has commits, which stay in
   the repo. A folder outside git is used as it is.
+- **A card shows its pull request.** Once a pull request is opened from a
+  card's branch, the card wears its number as a badge: green when open, grey
+  as a draft, violet once merged, red if closed. Reeve asks your own `gh`
+  at launch, when a turn ends and when you open the card. Without `gh` or a
+  GitHub remote there is simply no badge.
 - **Sessions survive restarts.** A card owns its session id (`--session-id`
   the first time, `--resume` after that). After a restart it sleeps until you
   open it.

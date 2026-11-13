@@ -57,12 +57,15 @@ struct CardFace: View {
         .contentShape(RoundedRectangle(cornerRadius: 6))
         .help(help)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(board.displayTitle(card)), \(label)")
+        .accessibilityLabel([board.displayTitle(card), label, card.pullRequest?.spoken].compactMap { $0 }.joined(separator: ", "))
     }
 
     private var footer: some View {
         HStack(spacing: 6) {
             Chip(text: card.folderName, color: Theme.folderColor(card.folderName), fill: Theme.folderColor(card.folderName).opacity(0.2))
+            if let pr = card.pullRequest {
+                Chip(text: "#\(pr.number)", color: pr.state.color, fill: pr.state.color.opacity(0.18))
+            }
             if board.classifying.contains(card.id) {
                 Chip(text: "sorting…", color: Theme.sky300, fill: Theme.sky500.opacity(0.15))
             } else if board.classifyErrors[card.id] != nil {
@@ -93,7 +96,33 @@ struct CardFace: View {
 
     private var help: String {
         var lines = [board.displayTitle(card), card.cwd]
+        if let pr = card.pullRequest { lines.append(pr.spoken) }
         if let error = board.classifyErrors[card.id] { lines.append("Couldn't sort: \(error)") }
         return lines.joined(separator: "\n")
+    }
+}
+
+extension PullRequest {
+    /// The badge said in words, for its tooltip and VoiceOver.
+    var spoken: String {
+        let state = switch state {
+        case .open: "open"
+        case .draft: "draft"
+        case .merged: "merged"
+        case .closed: "closed"
+        }
+        return "pull request #\(number), \(state)"
+    }
+}
+
+extension PullRequest.State {
+    /// GitHub's own colours for a pull request's state, in the board's hues.
+    var color: Color {
+        switch self {
+        case .open: Color(hex: 0x34D399)
+        case .draft: Theme.muted
+        case .merged: Color(hex: 0xA78BFA)
+        case .closed: Color(hex: 0xF87171)
+        }
     }
 }

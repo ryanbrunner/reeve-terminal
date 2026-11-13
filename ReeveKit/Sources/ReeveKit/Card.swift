@@ -81,6 +81,8 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     public var worktreePath: String?
     /// The branch checked out in the card's worktree.
     public var branch: String?
+    /// The pull request opened from the card's branch, once there is one.
+    public var pullRequest: PullRequest?
     /// The model the card's `claude` runs, as `--model` takes it. Nil leaves
     /// it to the person's own settings.
     public var model: String?
