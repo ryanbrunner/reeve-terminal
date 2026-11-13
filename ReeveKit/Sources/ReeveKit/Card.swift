@@ -91,6 +91,9 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     /// The file Claude Code keeps the plan in, read in place of `plan` while
     /// it is there, since it may have been edited since.
     public var planPath: String?
+    /// The comments a person left on the card's changes, and Claude's replies.
+    /// Nil for cards saved before there were any.
+    public var review: [ReviewThread]?
     /// The model the card's `claude` runs, as `--model` takes it. Nil leaves
     /// it to the person's own settings.
     public var model: String?
