@@ -18,7 +18,16 @@ struct CardFace: View {
                 .foregroundStyle(card.title.isEmpty ? Theme.text.opacity(0.7) : Theme.text)
                 .lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            if let waiting = card.waitingOn {
+            if let line = card.backgroundLine {
+                // Waiting on its own agents: nothing for you to do yet.
+                Text(line)
+                    .font(.geist(12))
+                    .foregroundStyle(Theme.indigo200.opacity(0.85))
+                    .lineLimit(1)
+                if let tasks = card.background, !tasks.isEmpty {
+                    backgroundChips(tasks)
+                }
+            } else if let waiting = card.waitingOn {
                 // What Claude is waiting on, so a waiting card says why without being opened.
                 Text(waiting)
                     .font(.geist(12))
@@ -84,12 +93,26 @@ struct CardFace: View {
         }
     }
 
+    /// One chip per agent the card waits on, three at most.
+    private func backgroundChips(_ tasks: [BackgroundWork]) -> some View {
+        HStack(spacing: 4) {
+            ForEach(tasks.prefix(3), id: \.id) { task in
+                Chip(text: task.agentType ?? task.description ?? task.type, color: Theme.indigo200, fill: Theme.indigo400.opacity(0.15))
+            }
+            if tasks.count > 3 {
+                Chip(text: "+\(tasks.count - 3)", color: Theme.indigo200, fill: Theme.indigo400.opacity(0.15))
+            }
+        }
+        .help(tasks.compactMap(\.description).joined(separator: "\n"))
+    }
+
     private var label: String {
         switch card.activity {
         case .idle: "idle"
         case .running: "Claude running"
         case .needsReview: "ready for review"
         case .needsInput: "needs your answer"
+        case .waiting: card.backgroundLine?.lowercased() ?? "waiting"
         case .error: "error"
         }
     }
