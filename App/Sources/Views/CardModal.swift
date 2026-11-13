@@ -30,6 +30,15 @@ struct CardModal: View {
             .background(Theme.ink)
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.edgeStrong))
+            // A card that is going to ship itself wears the rainbow open too.
+            // An overlay, so the terminal's frame is untouched.
+            .overlay {
+                if board.inVibes(card) {
+                    FlowingRainbow(period: 2.4)
+                        .mask(RoundedRectangle(cornerRadius: 10).strokeBorder(lineWidth: 2))
+                        .allowsHitTesting(false)
+                }
+            }
             .shadow(color: .black.opacity(0.5), radius: 24, y: 8)
             .padding(28)
         }
@@ -59,6 +68,14 @@ private struct TerminalHeader: View {
                 Text(summary).font(.mono(11)).foregroundStyle(Theme.muted).lineLimit(1)
             }
             Spacer(minLength: 8)
+            VibesSwitch(
+                on: board.vibes != nil || card.vibes == true,
+                label: "Vibes",
+                help: board.vibes != nil ? "The whole board is in VIBES MODE"
+                    : card.vibes == true ? "Put a person back in this card's loop"
+                    : "Let Claude approve, answer and ship this card without you"
+            ) { board.setVibes(card.id, card.vibes != true) }
+            .disabled(board.vibes != nil)
             Text(abbreviate(card.cwd))
                 .font(.mono(11))
                 .foregroundStyle(Theme.muted.opacity(0.8))

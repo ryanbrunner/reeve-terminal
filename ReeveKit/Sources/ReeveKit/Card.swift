@@ -103,6 +103,13 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     public var hasConversation: Bool
     /// Where Claude Code keeps the session's transcript, once a hook has said.
     public var transcriptPath: String?
+    /// In VIBES MODE on its own, whatever the board's switch says. Nil is off.
+    public var vibes: Bool?
+    /// How hard VIBES MODE has pushed the card, so it stops before going round
+    /// in circles.
+    public var vibesNudges: VibesNudges?
+    /// When VIBES MODE saw the card through to the end. Nothing pushes it after.
+    public var shippedAt: Date?
     public var createdAt: Date
     public var updatedAt: Date
 

@@ -16,6 +16,7 @@ struct NewCardSheet: View {
     /// means the person's own default.
     @AppStorage("newCardModel") private var model = ""
     @AppStorage("newCardEffort") private var effort = ""
+    @State private var vibes = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -49,6 +50,18 @@ struct NewCardSheet: View {
             HStack(spacing: 12) {
                 OptionMenu(label: "Model", choices: Launch.models, selection: $model)
                 OptionMenu(label: "Effort", choices: Launch.efforts, selection: $effort)
+            }
+
+            HStack(spacing: 12) {
+                VibesSwitch(on: vibes || board.vibes != nil, help: board.vibes != nil ? "The whole board is in VIBES MODE" : nil) { vibes.toggle() }
+                    .disabled(board.vibes != nil)
+                Text(board.vibes != nil
+                     ? "The board is in VIBES MODE, so this card is too."
+                     : vibes ? "Claude approves its own plan, answers its own questions and ships this card without you."
+                     : "Off: Claude waits for you, as usual.")
+                    .font(.geist(12))
+                    .foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -134,7 +147,8 @@ struct NewCardSheet: View {
             prompt: first.isEmpty ? nil : first,
             mode: mode,
             model: model.isEmpty ? nil : model,
-            effort: effort.isEmpty ? nil : effort
+            effort: effort.isEmpty ? nil : effort,
+            vibes: vibes
         )
         dismiss()
     }

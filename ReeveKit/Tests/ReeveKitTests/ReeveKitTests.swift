@@ -194,3 +194,89 @@ import Testing
         #expect(card.folderName == "app")
     }
 }
+
+@Suite struct VibesTests {
+    private func event(_ json: String) throws -> HookEvent {
+        try HookEvent.decode(Data(json.utf8))
+    }
+
+    @Test func knowsWhenThePlanDialogIsUp() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"PermissionRequest","tool_name":"ExitPlanMode","tool_input":{"plan":"x"}}"#)
+        #expect(Vibes.showsPlanDialog(e))
+        // No hook answer gets past the dialog, so none is given.
+        #expect(Vibes.reply(to: e) == nil)
+        let pre = try event(#"{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"ExitPlanMode"}"#)
+        #expect(!Vibes.showsPlanDialog(pre))
+    }
+
+    @Test func answersQuestionsByRefusingThem() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which database?"}]}}"#)
+        #expect(Vibes.reply(to: e) == VibesReply(question: "Which database?"))
+        let out = try JSONSerialization.jsonObject(with: VibesReply(question: nil).json) as! [String: Any]
+        let specific = out["hookSpecificOutput"] as! [String: Any]
+        #expect(specific["permissionDecision"] as? String == "deny")
+        #expect(specific["permissionDecisionReason"] as? String == Vibes.noOneHome)
+    }
+
+    @Test func leavesToolPermissionsToAPerson() throws {
+        let bash = try event(#"{"session_id":"s","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"rm -rf x"}}"#)
+        #expect(Vibes.reply(to: bash) == nil)
+        let plan = try event(#"{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"ExitPlanMode"}"#)
+        #expect(Vibes.reply(to: plan) == nil)
+    }
+
+    @Test func walksACardToRelease() {
+        let options = VibesOptions()
+        guard case .nudge(let test, false) = Vibes.next(stage: .inProgress, waitingOn: nil, nudges: nil, options: options) else {
+            Issue.record("expected a nudge to test"); return
+        }
+        #expect(test.contains("test"))
+        guard case .nudge(let ship, true) = Vibes.next(stage: .testing, waitingOn: nil, nudges: nil, options: options) else {
+            Issue.record("expected a nudge to ship"); return
+        }
+        #expect(ship.contains("merge it into main"))
+        #expect(!ship.contains("\n"))
+        let asked = VibesNudges(stage: .testing).adding(from: .testing, ships: true)
+        #expect(Vibes.next(stage: .release, waitingOn: nil, nudges: asked, options: options) == .shipped)
+    }
+
+    @Test func skippingTestingShipsStraightFromInProgress() {
+        let options = VibesOptions(skipPlanning: false, skipTesting: true, autoMerge: false)
+        guard case .nudge(let ship, true) = Vibes.next(stage: .inProgress, waitingOn: nil, nudges: nil, options: options) else {
+            Issue.record("expected a nudge to ship"); return
+        }
+        #expect(ship.contains("Leave it open"))
+        #expect(options.skips(.testing))
+        #expect(!options.skips(.planning))
+    }
+
+    @Test func answersAQuestionLeftInTheMessage() {
+        #expect(Vibes.next(stage: .planning, waitingOn: "Go ahead?", nudges: nil, options: VibesOptions()) == .answer("Go ahead?"))
+    }
+
+    @Test func givesUpGoingRoundInCircles() {
+        var nudges = VibesNudges(stage: .inProgress)
+        for _ in 0..<Vibes.maxNudges { nudges = nudges.adding(from: .inProgress, ships: false) }
+        #expect(Vibes.next(stage: .inProgress, waitingOn: nil, nudges: nudges, options: VibesOptions()) == .giveUp)
+        // A new column starts the count again.
+        #expect(nudges.adding(from: .testing, ships: true).count == 1)
+        if case .nudge = Vibes.next(stage: .testing, waitingOn: nil, nudges: nudges, options: VibesOptions()) {} else {
+            Issue.record("a new column should be pushed again")
+        }
+    }
+
+    @Test func ledgerKeepsFourLines() {
+        var ledger = VibesLedger()
+        for n in 1...6 { ledger.note("line \(n)") }
+        #expect(ledger.log == ["line 6", "line 5", "line 4", "line 3"])
+    }
+
+    @Test func cardsSavedBeforeVibesStillLoad() throws {
+        let json = #"{"id":"1A2B3C4D-0000-0000-0000-000000000000","sessionId":"1A2B3C4D-0000-0000-0000-000000000001","title":"","titledByPerson":false,"cwd":"/code/app","stage":"backlog","activity":"idle","stagePinned":false,"hasConversation":false,"createdAt":"2026-11-01T00:00:00Z","updatedAt":"2026-11-01T00:00:00Z"}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let card = try decoder.decode(Card.self, from: Data(json.utf8))
+        #expect(card.vibes == nil)
+        #expect(card.shippedAt == nil)
+    }
+}
