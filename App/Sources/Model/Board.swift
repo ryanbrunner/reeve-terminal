@@ -6,8 +6,10 @@ import SwiftUI
 /// The board: every card, which one is open, and what keeps them up to date.
 ///
 /// Cards learn what their session is doing from Claude Code's hooks, the
-/// moment it happens. Where the work is — its column — they learn by asking
-/// Claude once each turn ends.
+/// moment it happens. Their column follows from the same hooks — plan mode,
+/// working, a turn that ended with changed code — and from whether the
+/// branch has a pull request. A title and summary come from asking Claude
+/// once each turn ends.
 @MainActor
 final class Board: ObservableObject {
     @Published private(set) var cards: [Card] = []
@@ -21,6 +23,13 @@ final class Board: ObservableObject {
     @Published private(set) var classifyErrors: [UUID: String] = [:]
     /// What `claude` last set as each terminal's title.
     @Published private(set) var terminalTitles: [UUID: String] = [:]
+    /// Which tab each open card shows. Every card starts on its terminal.
+    @Published private(set) var tabs: [UUID: CardTab] = [:]
+    /// Cards with a plan nobody has looked at in the Plan tab yet.
+    @Published private(set) var unseenPlans: Set<UUID> = []
+    /// Raised when a card showing its changes may have new ones, so the tab
+    /// reads them again. Only for that card, so others' tool calls cost nothing.
+    @Published private(set) var changeTicks: [UUID: Int] = [:]
     @Published var showingNewCard = false
     @Published private(set) var environment: ShellEnvironment?
 
@@ -49,7 +58,12 @@ final class Board: ObservableObject {
     /// overtaken leaves the card's activity alone.
     private var turns: [UUID: Int] = [:]
     private var pendingClassify: [UUID: Task<Void, Never>] = [:]
+    /// Cards whose pull request is being looked up right now.
+    private var findingPullRequests: Set<UUID> = []
     private var restarting: Set<UUID> = []
+    /// Cards waiting on a person because of a notification (a permission
+    /// prompt, often a subagent's) rather than a question Claude asked.
+    private var notifiedInput: Set<UUID> = []
     private var pendingRemovals: [WorktreeRemoval] = []
     /// Starts waiting on the shell environment or the hook port.
     private var waitingToStart: [(Card, String?)] = []
@@ -67,6 +81,8 @@ final class Board: ObservableObject {
     /// seen go: a key sent before the dialog drew is sent again.
     private var approvingPlans: Set<UUID> = []
     private let storeURL: URL
+    /// Where each card's review goes to Claude and its replies come back.
+    private let reviewsDir: URL
 
     init() {
         let support = ProcessInfo.processInfo.environment["REEVE_DATA_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
@@ -74,6 +90,8 @@ final class Board: ObservableObject {
                 .appendingPathComponent("Reeve Terminal", isDirectory: true)
         try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         storeURL = support.appendingPathComponent("board.json")
+        reviewsDir = support.appendingPathComponent("reviews", isDirectory: true)
+        try? FileManager.default.createDirectory(at: reviewsDir, withIntermediateDirectories: true)
         load()
 
         terminals.onStateChange = { [weak self] id, running, exitCode in
@@ -101,6 +119,7 @@ final class Board: ObservableObject {
             let env = await ShellEnvironment.load()
             self.environment = env
             self.drainStarts()
+            for card in self.cards { self.refreshPullRequest(card.id) }
         }
     }
 
@@ -158,6 +177,7 @@ final class Board: ObservableObject {
                     card.repoPath = made.repo
                     card.worktreePath = made.path
                     card.branch = made.branch
+                    card.baseCommit = made.base
                 }
             } catch {
                 let alert = NSAlert()
@@ -176,6 +196,9 @@ final class Board: ObservableObject {
 
     func select(_ id: UUID) {
         selectedId = id
+        refreshPullRequest(id)
+        // Whatever Claude is asking is in the terminal.
+        if card(id)?.activity == .needsInput { tabs[id] = .terminal }
         if let card = card(id), !live.contains(id) {
             start(card)
         }
@@ -201,6 +224,37 @@ final class Board: ObservableObject {
     func selectIndex(_ index: Int) {
         let order = ordered
         if order.indices.contains(index) { select(order[index].id) }
+    }
+
+    func tab(_ id: UUID) -> CardTab {
+        tabs[id] ?? .terminal
+    }
+
+    func show(_ tab: CardTab, for id: UUID) {
+        tabs[id] = tab
+        if tab == .plan { unseenPlans.remove(id) }
+    }
+
+    /// The text of the card's plan: its file, which may have been edited since
+    /// Claude asked for approval, else what the approval carried. A card that
+    /// missed the hook finds its plan in the transcript.
+    func loadPlan(_ id: UUID) async -> String? {
+        guard var card = card(id) else { return nil }
+        if card.plan == nil, card.planPath == nil, let transcript = card.transcriptPath {
+            let found = await Task.detached { PlanSighting.latest(inTranscriptAt: transcript) }.value
+            if let found {
+                update(id) { card in
+                    card.plan = found.text
+                    card.planPath = found.path
+                }
+                card = self.card(id) ?? card
+            }
+        }
+        if let path = card.planPath {
+            let text = await Task.detached { try? String(contentsOfFile: path, encoding: .utf8) }.value
+            if let text, !text.isEmpty { return text }
+        }
+        return card.plan
     }
 
     /// A person put the card here. It stays until they next speak to Claude.
@@ -243,6 +297,10 @@ final class Board: ObservableObject {
         live.remove(id)
         classifying.remove(id)
         terminalTitles[id] = nil
+        tabs[id] = nil
+        unseenPlans.remove(id)
+        changeTicks[id] = nil
+        try? FileManager.default.removeItem(at: reviewURL(id))
         // Back to the board, rather than opening (and starting) a neighbour.
         if selectedId == id { selectedId = nil }
         save()
@@ -291,7 +349,7 @@ final class Board: ObservableObject {
             update(card.id) { $0.sessionId = UUID() }
             card = self.card(card.id) ?? card
         }
-        terminals.start(card, prompt: prompt, env: env, hookPort: port)
+        terminals.start(card, prompt: prompt, env: env, hookPort: port, reviewsDir: reviewsDir.path)
     }
 
     private func drainStarts() {
@@ -310,9 +368,10 @@ final class Board: ObservableObject {
         }
         live.remove(id)
         update(id) { card in
-            if card.activity == .running || card.activity == .needsInput {
+            if card.activity == .running || card.activity == .needsInput || card.activity == .waiting {
                 card.activity = (exitCode ?? 0) == 0 ? .idle : .error
             }
+            card.background = nil
             if let exitCode, exitCode != 0 { card.waitingOn = nil }
         }
         if restarting.remove(id) != nil, let card = card(id) {
@@ -358,7 +417,17 @@ final class Board: ObservableObject {
         if event.hookEventName == "PostToolUse", event.toolName == "ExitPlanMode" { approvingPlans.remove(cardId) }
         if event.hookEventName == "UserPromptSubmit", inVibes(before) { notePrompt(event.prompt, on: before) }
         if effect.startsConversation { turns[cardId, default: 0] += 1 }
+        let askedByNotification = notifiedInput.contains(cardId)
+        if effect.activity != nil {
+            if event.hookEventName == "Notification" { notifiedInput.insert(cardId) } else { notifiedInput.remove(cardId) }
+        }
         update(cardId) { card in
+            // A subagent working again means the prompt that stopped it was answered.
+            if effect.bySubagent, let activity = HookEvent.activityAfterSubagentWork(card.activity, askedByNotification: askedByNotification, waitingOnBackground: card.background != nil) {
+                card.activity = activity
+                card.waitingOn = nil
+                notifiedInput.remove(cardId)
+            }
             // `/clear` starts a new session in the same terminal; follow it, so
             // a restart resumes the conversation that is actually on screen.
             if let session = UUID(uuidString: event.sessionId), session != card.sessionId {
@@ -367,10 +436,28 @@ final class Board: ObservableObject {
             if let path = event.transcriptPath { card.transcriptPath = path }
             if let activity = effect.activity { card.activity = activity }
             if let waiting = effect.waitingOn { card.waitingOn = waiting }
+            if let background = effect.background { card.background = background.isEmpty ? nil : background }
             if effect.startsConversation { card.hasConversation = true }
             if effect.unpinsStage { card.stagePinned = false }
+            if let mode = event.permissionMode { card.permissionMode = mode }
+            if effect.editsFiles { card.lastEditAt = Date() }
+            if effect.working { card.stage = card.stage(running: true, hasChanges: false) }
+            if let plan = effect.plan {
+                let merged = plan.merged(over: PlanSighting(text: card.plan, path: card.planPath))
+                card.plan = merged.text
+                card.planPath = merged.path
+            }
+        }
+        let showing = selectedId == cardId ? tab(cardId) : nil
+        if effect.plan != nil, showing != .plan { unseenPlans.insert(cardId) }
+        if showing == .changes, event.hookEventName == "PostToolUse" || event.hookEventName == "Stop" {
+            changeTicks[cardId, default: 0] += 1
+        }
+        if event.hookEventName == "Stop" || (event.hookEventName == "PostToolUse" && event.toolInput?.filePath == reviewURL(cardId).path) {
+            readReplies(cardId)
         }
         if effect.classify {
+            // Looks up the pull request too: a turn is where Claude opens one.
             scheduleClassify(cardId, lastMessage: event.lastAssistantMessage, delay: 1.0)
         }
         updateBadge()
@@ -381,7 +468,28 @@ final class Board: ObservableObject {
         pendingClassify[id] = Task { [weak self] in
             if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
             guard !Task.isCancelled else { return }
+            await self?.settleStage(id)
+            guard !Task.isCancelled else { return }
             await self?.classify(id, lastMessage: lastMessage)
+        }
+    }
+
+    /// Puts a card whose turn is over in its column: testing if the code has
+    /// changed, release once its branch has a pull request.
+    private func settleStage(_ id: UUID) async {
+        guard let card = card(id) else { return }
+        let turn = turns[id, default: 0]
+        var changed = card.lastEditAt != nil
+        if !changed { changed = await Worktrees.uncommittedChanges(at: card.cwd, env: environment) > 0 }
+        if !changed, let base = card.baseCommit {
+            changed = await Worktrees.commits(at: card.cwd, since: base, env: environment) > 0
+        }
+        await findPullRequest(id)
+        // A prompt sent since means the session is working again; a session
+        // waiting on its agents is still in progress.
+        guard turns[id, default: 0] == turn, let activity = self.card(id)?.activity, activity != .running, activity != .waiting else { return }
+        update(id) { card in
+            card.stage = card.stage(running: false, hasChanges: changed)
         }
     }
 
@@ -398,16 +506,13 @@ final class Board: ObservableObject {
             let result = try await StageClassifier.classify(card: card, transcriptPath: transcript, lastMessage: lastMessage, env: env)
             classifyErrors[id] = nil
             let current = turns[id, default: 0] == turn
-            if !card.stagePinned, result.stage != card.stage, inVibes(card), vibes != nil {
-                vibes?.moves += 1
-                vibes?.note("“\(displayTitle(card))” → \(result.stage.label)")
-            }
             update(id) { card in
                 if !card.titledByPerson, !result.title.isEmpty { card.title = result.title }
                 card.summary = result.summary
-                if !card.stagePinned { card.stage = result.stage }
                 // Only while nothing newer has happened: a prompt sent since
-                // means the session has moved on from what was read.
+                // means the session has moved on from what was read. A card
+                // waiting on its agents is never a question, whatever Claude
+                // said as it launched them.
                 if current, card.activity == .needsReview || card.activity == .needsInput {
                     if let waiting = result.waitingOn {
                         card.activity = .needsInput
@@ -496,42 +601,53 @@ final class Board: ObservableObject {
         switch Vibes.next(stage: card.stage, waitingOn: card.activity == .needsInput ? card.waitingOn : nil, nudges: card.vibesNudges, options: vibesOptions) {
         case .answer:
             type(Vibes.noOneHome, into: id)
-            update(id) { $0.vibesNudges = ($0.vibesNudges ?? VibesNudges(stage: $0.stage)).adding(from: $0.stage, ships: false) }
+            update(id) { $0.vibesNudges = ($0.vibesNudges ?? VibesNudges(stage: $0.stage)).answering(in: $0.stage) }
             vibes?.questionsSelfAnswered += 1
             vibes?.note("Claude answered its own question on \(name)")
-        case .nudge(let prompt, let ships):
-            type(prompt, into: id)
-            update(id) { $0.vibesNudges = ($0.vibesNudges ?? VibesNudges(stage: $0.stage)).adding(from: $0.stage, ships: ships) }
-            vibes?.reviewsSkipped += 1
-            vibes?.note(ships
-                ? "Shipping \(name) · \(vibesOptions.autoMerge ? "merging it" : "yours to merge")"
-                : "Claude approved its own work on \(name) · nobody read it")
-        case .shipped:
-            update(id) { card in
-                card.shippedAt = Date()
-                card.vibesNudges = nil
-            }
-            Task { await landed(id, name: name) }
+        case .nudge(let prompt, let step):
+            push(id, prompt, step: step, name: name)
+        case .checkShipped:
+            Task { await checkShipped(id, name: name) }
         case .giveUp:
             vibes?.note("Gave up pushing \(name) · left for you")
         }
         save()
     }
 
-    /// Claude says it shipped; whether it is on main is git's to say. Only a
-    /// branch found there is counted and stamped MERGED.
-    private func landed(_ id: UUID, name: String) async {
+    /// Types the next step in, and remembers it was said.
+    private func push(_ id: UUID, _ prompt: String, step: VibesStep.Kind, name: String) {
+        type(prompt, into: id)
+        update(id) { $0.vibesNudges = ($0.vibesNudges ?? VibesNudges(stage: $0.stage)).adding(from: $0.stage, step: step) }
+        vibes?.reviewsSkipped += 1
+        vibes?.note(step == .ship
+            ? "Shipping \(name) · \(vibesOptions.autoMerge ? "merging it" : "yours to merge")"
+            : "Claude approved its own work on \(name) · nobody read it")
+        save()
+    }
+
+    /// Claude was told to ship; whether it did is git's and GitHub's to say,
+    /// not Claude's. Landed, the card is done: merged when its branch is on
+    /// main, or with merging left to a person, when its pull request is up.
+    /// Not landed, it is told again, until the pushes run out.
+    private func checkShipped(_ id: UUID, name: String) async {
         guard let card = card(id) else { return }
-        var merged = false
-        if let branch = card.branch, let repo = card.repoPath {
+        var merged = card.pullRequest?.state == .merged
+        if !merged, let branch = card.branch, let repo = card.repoPath {
             merged = await Worktrees.isMerged(branch: branch, repo: repo, env: environment)
         }
-        update(id) { $0.merged = merged }
+        guard let card = self.card(id), inVibes(card) else { return }
+        guard merged || (!vibesOptions.autoMerge && card.hasLivePullRequest) else {
+            push(id, Vibes.ship(vibesOptions), step: .ship, name: name)
+            return
+        }
+        update(id) { card in
+            card.shippedAt = Date()
+            card.merged = merged
+            card.vibesNudges = nil
+        }
         if merged {
             vibes?.merged += 1
             vibes?.note("Claude merged \(name) → main · 0 reviews")
-        } else if vibesOptions.autoMerge {
-            vibes?.note("Claude called \(name) shipped · not on main")
         } else {
             vibes?.note("Pull request open on \(name) · yours to merge")
         }
@@ -569,14 +685,10 @@ final class Board: ObservableObject {
         save()
     }
 
-    /// Types a line into the card's terminal and presses Enter, as a person
-    /// would: the Enter on its own, a moment later, so Claude Code reads the
-    /// line as typed rather than pasted.
+    /// Types a line into the card's terminal and submits it, as a person would.
     private func type(_ text: String, into id: UUID) {
         vibesPrompts[id] = text
-        let view = terminals.view(for: id)
-        view.send(txt: text)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { view.send(txt: "\r") }
+        terminals.send(text, to: id)
     }
 
     private func noteVibesReply(_ reply: VibesReply, on card: Card) {
@@ -607,6 +719,121 @@ final class Board: ObservableObject {
         "\(n) \(noun)\(n == 1 ? "" : "s")"
     }
 
+    // MARK: Review
+
+    func reviewURL(_ id: UUID) -> URL {
+        reviewsDir.appendingPathComponent(id.uuidString + ".json")
+    }
+
+    /// Why a review can't go to the card's session right now, if it can't.
+    /// While Claude works it can: Claude Code queues the prompt.
+    func reviewBlocker(_ id: UUID) -> String? {
+        guard let card = card(id) else { return nil }
+        if card.activity == .needsInput { return "Claude is waiting on you in the terminal. Answer it first." }
+        if card.permissionMode == "plan" { return "Claude is in plan mode, where it can't change code. Leave plan mode in the terminal first." }
+        return nil
+    }
+
+    /// A new comment on a line. Sent now, or kept as part of a review.
+    func comment(on anchor: ReviewAnchor, _ body: String, in id: UUID, send: Bool) {
+        let thread = ReviewThread(anchor: anchor, messages: [ReviewMessage(author: .person, body: body, pending: true)])
+        updateReview(id) { $0.append(thread) }
+        if send { submitReview(id, only: thread.id) }
+    }
+
+    /// The person answers a thread. Sent now, or kept as part of a review.
+    func reply(to threadId: UUID, _ body: String, in id: UUID, send: Bool) {
+        updateReview(id) { threads in
+            guard let i = threads.firstIndex(where: { $0.id == threadId }) else { return }
+            threads[i].messages.append(ReviewMessage(author: .person, body: body, pending: true))
+            threads[i].resolved = false
+        }
+        if send { submitReview(id, only: threadId) }
+    }
+
+    /// Drops a thread's unsent drafts, and the thread with them if that was all it had.
+    func discardDrafts(_ threadId: UUID, in id: UUID) {
+        updateReview(id) { threads in
+            guard let i = threads.firstIndex(where: { $0.id == threadId }) else { return }
+            threads[i].messages.removeAll { $0.pending }
+            if threads[i].messages.isEmpty { threads.remove(at: i) }
+        }
+    }
+
+    func resolve(_ threadId: UUID, _ resolved: Bool, in id: UUID) {
+        updateReview(id) { threads in
+            guard let i = threads.firstIndex(where: { $0.id == threadId }) else { return }
+            threads[i].resolved = resolved
+        }
+    }
+
+    /// Sends the card's drafts to Claude (or one thread's): writes every
+    /// thread waiting on a reply to the review file and asks the session,
+    /// woken if it is asleep, to answer them there.
+    func submitReview(_ id: UUID, only threadId: UUID? = nil) {
+        guard reviewBlocker(id) == nil else { return }
+        // A reply already in the file would go with the rewrite.
+        readReplies(id)
+        updateReview(id) { threads in
+            for i in threads.indices where threadId == nil || threads[i].id == threadId {
+                for m in threads[i].messages.indices { threads[i].messages[m].pending = false }
+            }
+        }
+        guard let card = card(id), let threads = card.review, threads.contains(where: { $0.awaitingReply && !$0.resolved }) else { return }
+        let url = reviewURL(id)
+        do {
+            try ReviewFile.encode(threads).write(to: url, options: .atomic)
+        } catch {
+            NSLog("Reeve: writing the review for \(id) failed: \(error.localizedDescription)")
+            return
+        }
+        let prompt = ReviewFile.prompt(path: url.path)
+        if live.contains(id) {
+            terminals.send(prompt, to: id)
+        } else {
+            start(card, prompt: prompt)
+        }
+    }
+
+    /// Takes in whatever Claude has replied in the card's review file.
+    private func readReplies(_ id: UUID) {
+        guard card(id)?.review?.contains(where: \.awaitingReply) == true,
+              let data = try? Data(contentsOf: reviewURL(id)) else { return }
+        updateReview(id) { $0 = ReviewFile.merge(data, into: $0) }
+    }
+
+    private func updateReview(_ id: UUID, _ change: (inout [ReviewThread]) -> Void) {
+        update(id) { card in
+            var threads = card.review ?? []
+            change(&threads)
+            card.review = threads.isEmpty ? nil : threads
+        }
+    }
+
+    // MARK: Pull requests
+
+    /// Looks up the pull request from the branch the card's worktree is on,
+    /// which Claude may have switched from the one Reeve made. When gh can't
+    /// say, the card keeps the one it had.
+    private func refreshPullRequest(_ id: UUID) {
+        Task { await findPullRequest(id) }
+    }
+
+    /// A pull request found open or merged moves the card to Release.
+    private func findPullRequest(_ id: UUID) async {
+        guard let card = card(id), let worktree = card.worktreePath, let env = environment,
+              !findingPullRequests.contains(id), FileManager.default.fileExists(atPath: worktree) else { return }
+        findingPullRequests.insert(id)
+        defer { findingPullRequests.remove(id) }
+        // Never written back: closing the card deletes `card.branch`.
+        guard let branch = await Worktrees.currentBranch(at: worktree, env: env) ?? card.branch,
+              let found = await PullRequests.find(branch: branch, in: worktree, env: env) else { return }
+        update(id) { card in
+            card.pullRequest = found
+            if card.hasLivePullRequest, !card.stagePinned { card.stage = .release }
+        }
+    }
+
     // MARK: Persistence
 
     private func update(_ id: UUID, _ change: (inout Card) -> Void) {
@@ -617,7 +844,14 @@ final class Board: ObservableObject {
         guard card != before else { return }
         card.updatedAt = Date()
         cards[index] = card
-        if card.stage != before.stage, vibes != nil { markHot(card.stage) }
+        if card.stage != before.stage, vibes != nil {
+            markHot(card.stage)
+            // A card that moved itself; a person's move pins it.
+            if !card.stagePinned {
+                vibes?.moves += 1
+                vibes?.note("“\(displayTitle(card))” → \(card.stage.label)")
+            }
+        }
         save()
     }
 
@@ -629,7 +863,8 @@ final class Board: ObservableObject {
         // Nothing is running after a restart; a card left mid-turn says so.
         cards = saved.cards.map { card in
             var card = card
-            if card.activity == .running { card.activity = .idle }
+            if card.activity == .running || card.activity == .waiting { card.activity = .idle }
+            card.background = nil
             return card
         }
         // Launch lands on the board; opening a card is what starts its session.

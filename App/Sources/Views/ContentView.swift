@@ -232,7 +232,7 @@ private struct Tallies: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            ForEach([(Activity.needsInput, "Needs your answer"), (.needsReview, "Ready for review"), (.error, "Error"), (.running, "Claude running")], id: \.0) { activity, label in
+            ForEach([(Activity.needsInput, "Needs your answer"), (.needsReview, "Ready for review"), (.error, "Error"), (.running, "Claude running"), (.waiting, "Waiting on agents")], id: \.0) { activity, label in
                 let count = board.cards.filter { $0.activity == activity }.count
                 if count > 0, let tone = GlowTone(activity) {
                     HStack(spacing: 6) {

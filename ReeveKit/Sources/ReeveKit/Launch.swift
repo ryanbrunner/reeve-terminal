@@ -11,10 +11,13 @@ public enum Launch {
     /// to whichever Reeve started it. The card rides in the URL rather than
     /// being looked up by session, because `/clear` starts a new session in
     /// the same terminal. Reeve's answer is the hook's output: empty, except
-    /// where VIBES MODE approves a plan or answers a question for nobody.
-    /// `-m 5` and `|| true` keep a Reeve that has gone away from holding Claude
-    /// up or showing it an error.
-    public static func hookSettings() -> String {
+    /// where VIBES MODE answers a question for nobody. `-m 5` and `|| true`
+    /// keep a Reeve that has gone away from holding Claude up or showing it an
+    /// error.
+    ///
+    /// Claude may read and write the review files in `reviewsDir` without
+    /// asking, since that is how it answers a person's review comments.
+    public static func hookSettings(reviewsDir: String? = nil) -> String {
         let hook: [String: Any] = [
             "type": "command",
             "command": "[ -n \"$REEVE_HOOK_PORT\" ] && curl -s -m 5 --data-binary @- \"http://127.0.0.1:$REEVE_HOOK_PORT/hook/$REEVE_CARD_ID\" 2>/dev/null || true",
@@ -25,7 +28,13 @@ public enum Launch {
             if ["PreToolUse", "PermissionRequest", "PostToolUse"].contains(event) { matcher["matcher"] = "*" }
             hooks[event] = [matcher]
         }
-        let data = try! JSONSerialization.data(withJSONObject: ["hooks": hooks], options: [.sortedKeys])
+        var settings: [String: Any] = ["hooks": hooks]
+        if let reviewsDir {
+            // `//` makes a rule's path absolute.
+            let files = "/" + (reviewsDir.hasSuffix("/") ? reviewsDir : reviewsDir + "/") + "*.json"
+            settings["permissions"] = ["allow": ["Read(\(files))", "Edit(\(files))"]]
+        }
+        let data = try! JSONSerialization.data(withJSONObject: settings, options: [.sortedKeys, .withoutEscapingSlashes])
         return String(decoding: data, as: UTF8.self)
     }
 
@@ -37,12 +46,13 @@ public enum Launch {
     /// `claude`'s arguments for a card: a new session under the card's id, in
     /// the mode the card was started in, or the card's session picked up again.
     /// The card's model and effort come along on a resume too, so a card woken
-    /// after a restart keeps them.
-    public static func claudeArguments(for card: Card, prompt: String? = nil) -> [String] {
+    /// after a restart keeps them. A prompt goes in either way: a resumed
+    /// session takes it as its next turn.
+    public static func claudeArguments(for card: Card, prompt: String? = nil, reviewsDir: String? = nil) -> [String] {
         var args = card.hasConversation
             ? ["--resume", card.sessionId.uuidString.lowercased()]
             : ["--session-id", card.sessionId.uuidString.lowercased()]
-        args += ["--settings", hookSettings()]
+        args += ["--settings", hookSettings(reviewsDir: reviewsDir)]
         if let model = card.model { args += ["--model", model] }
         if let effort = card.effort { args += ["--effort", effort] }
         // Only a fresh session: a resumed one is wherever the person left it,
@@ -50,7 +60,7 @@ public enum Launch {
         if let mode = card.startMode, !card.hasConversation {
             args += ["--permission-mode", mode.permissionMode]
         }
-        if let prompt, !prompt.isEmpty, !card.hasConversation {
+        if let prompt, !prompt.isEmpty {
             args.append(prompt)
         }
         return args

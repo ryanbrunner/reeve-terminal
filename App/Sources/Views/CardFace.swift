@@ -36,6 +36,15 @@ struct CardFace: View {
                 .frame(maxWidth: .infinity, minHeight: vibes ? 38.5 : nil, alignment: .topLeading)
             if vibes {
                 Spacer(minLength: 0)
+            } else if let line = card.backgroundLine {
+                // Waiting on its own agents: nothing for you to do yet.
+                Text(line)
+                    .font(.geist(12))
+                    .foregroundStyle(Theme.indigo200.opacity(0.85))
+                    .lineLimit(1)
+                if let tasks = card.background, !tasks.isEmpty {
+                    backgroundChips(tasks)
+                }
             } else if let waiting = card.waitingOn {
                 // What Claude is waiting on, so a waiting card says why without being opened.
                 Text(waiting)
@@ -90,7 +99,7 @@ struct CardFace: View {
         .contentShape(RoundedRectangle(cornerRadius: 6))
         .help(help)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(board.displayTitle(card)), \(label)")
+        .accessibilityLabel([board.displayTitle(card), label, card.pullRequest?.spoken].compactMap { $0 }.joined(separator: ", "))
     }
 
     @ViewBuilder
@@ -118,6 +127,9 @@ struct CardFace: View {
         HStack(spacing: 6) {
             if solo { SoloChip() }
             Chip(text: card.folderName, color: Theme.folderColor(card.folderName), fill: Theme.folderColor(card.folderName).opacity(0.2))
+            if let pr = card.pullRequest {
+                Chip(text: "#\(pr.number)", color: pr.state.color, fill: pr.state.color.opacity(0.18))
+            }
             if board.classifying.contains(card.id) {
                 Chip(text: "sorting…", color: Theme.sky300, fill: Theme.sky500.opacity(0.15))
             } else if board.classifyErrors[card.id] != nil {
@@ -136,6 +148,19 @@ struct CardFace: View {
         }
     }
 
+    /// One chip per agent the card waits on, three at most.
+    private func backgroundChips(_ tasks: [BackgroundWork]) -> some View {
+        HStack(spacing: 4) {
+            ForEach(tasks.prefix(3), id: \.id) { task in
+                Chip(text: task.agentType ?? task.description ?? task.type, color: Theme.indigo200, fill: Theme.indigo400.opacity(0.15))
+            }
+            if tasks.count > 3 {
+                Chip(text: "+\(tasks.count - 3)", color: Theme.indigo200, fill: Theme.indigo400.opacity(0.15))
+            }
+        }
+        .help(tasks.compactMap(\.description).joined(separator: "\n"))
+    }
+
     private var label: String {
         if shipped { return "shipped by VIBES MODE" }
         return switch card.activity {
@@ -143,12 +168,14 @@ struct CardFace: View {
         case .running: "Claude running"
         case .needsReview: "ready for review"
         case .needsInput: "needs your answer"
+        case .waiting: card.backgroundLine?.lowercased() ?? "waiting"
         case .error: "error"
         }
     }
 
     private var help: String {
         var lines = [board.displayTitle(card), card.cwd]
+        if let pr = card.pullRequest { lines.append(pr.spoken) }
         if let error = board.classifyErrors[card.id] { lines.append("Couldn't sort: \(error)") }
         return lines.joined(separator: "\n")
     }
@@ -211,5 +238,30 @@ private struct ShippedStamp: View {
             .padding(.trailing, 10)
             .onAppear { withAnimation(reduceMotion ? nil : .spring(duration: 0.4, bounce: 0.5)) { landed = true } }
             .allowsHitTesting(false)
+    }
+}
+
+extension PullRequest {
+    /// The badge said in words, for its tooltip and VoiceOver.
+    var spoken: String {
+        let state = switch state {
+        case .open: "open"
+        case .draft: "draft"
+        case .merged: "merged"
+        case .closed: "closed"
+        }
+        return "pull request #\(number), \(state)"
+    }
+}
+
+extension PullRequest.State {
+    /// GitHub's own colours for a pull request's state, in the board's hues.
+    var color: Color {
+        switch self {
+        case .open: Color(hex: 0x34D399)
+        case .draft: Theme.muted
+        case .merged: Color(hex: 0xA78BFA)
+        case .closed: Color(hex: 0xF87171)
+        }
     }
 }
