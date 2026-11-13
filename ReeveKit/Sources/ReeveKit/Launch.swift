@@ -3,27 +3,29 @@ import Foundation
 /// How a card's terminal starts Claude Code.
 public enum Launch {
     /// The events whose hooks report back to Reeve.
-    public static let hookedEvents = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "Stop", "SessionEnd"]
+    public static let hookedEvents = ["UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Notification", "Stop", "SessionEnd"]
 
     /// Settings layered over the person's own with `--settings`: one hook per
     /// event, posting its payload to Reeve. The port and card come from the
     /// environment, so the settings never change and a resumed session posts
     /// to whichever Reeve started it. The card rides in the URL rather than
     /// being looked up by session, because `/clear` starts a new session in
-    /// the same terminal. `-m 1` and `|| true` keep a Reeve that has gone away
-    /// from holding Claude up or showing it an error.
+    /// the same terminal. Reeve's answer is the hook's output: empty, except
+    /// where VIBES MODE answers a question for nobody. `-m 5` and `|| true`
+    /// keep a Reeve that has gone away from holding Claude up or showing it an
+    /// error.
     ///
     /// Claude may read and write the review files in `reviewsDir` without
     /// asking, since that is how it answers a person's review comments.
     public static func hookSettings(reviewsDir: String? = nil) -> String {
         let hook: [String: Any] = [
             "type": "command",
-            "command": "[ -n \"$REEVE_HOOK_PORT\" ] && curl -s -m 1 --data-binary @- \"http://127.0.0.1:$REEVE_HOOK_PORT/hook/$REEVE_CARD_ID\" >/dev/null 2>&1 || true",
+            "command": "[ -n \"$REEVE_HOOK_PORT\" ] && curl -s -m 5 --data-binary @- \"http://127.0.0.1:$REEVE_HOOK_PORT/hook/$REEVE_CARD_ID\" 2>/dev/null || true",
         ]
         var hooks: [String: Any] = [:]
         for event in hookedEvents {
             var matcher: [String: Any] = ["hooks": [hook]]
-            if event == "PreToolUse" || event == "PostToolUse" { matcher["matcher"] = "*" }
+            if ["PreToolUse", "PermissionRequest", "PostToolUse"].contains(event) { matcher["matcher"] = "*" }
             hooks[event] = [matcher]
         }
         var settings: [String: Any] = ["hooks": hooks]

@@ -85,6 +85,49 @@ feature parity. What Reeve adds is the board.
   across restarts. "Default" passes neither, which leaves your own settings
   in charge. The sheet remembers your last choice.
 
+## VIBES MODE
+
+VIBES MODE takes you out of the loop. Flip the switch in the header (⇧⌘V)
+for the whole board, or put one card in it: from its context menu, the
+switch in its open header, or the new card sheet. It is off until you turn
+it on.
+
+For a card in VIBES MODE, Reeve does what you would otherwise have to:
+
+- **Questions answer themselves.** `AskUserQuestion` goes back to Claude
+  through its hook, refused, with an instruction to make the call itself and
+  say what it chose. A question Claude leaves in its last message gets the
+  same answer, typed in.
+- **Plans are approved unread.** Interactive Claude Code puts a plan to a
+  person whatever a hook says, so Reeve presses Enter on the dialog's first
+  option, a yes. With a model that has auto mode, that is auto mode.
+- **Turns are pushed on.** When a turn ends and the card has been sorted,
+  Reeve types the next step into its terminal: build it while nothing has
+  changed, test it once there are changes, then commit, push, open a pull
+  request and (with Merge to Main on) merge it.
+- **Shipped means landed.** After the ship step, Reeve asks git and GitHub,
+  not Claude: the card is done when its commits are on the repo's
+  checked-out branch or its pull request merged (or, with Merge to Main off,
+  when its pull request is up). Otherwise it is told to ship again. A card
+  pushed from the same column three times running is left for you.
+
+Flipping the board's switch arms it for two seconds before anything is
+typed, so flipping it back in that time undoes it. Claude Code's own tool
+permissions stay yours: a permission prompt still waits for a person. Reeve never types into the card you have open, since you
+may have something half-typed there; it pushes it once you go back to the
+board or on to another card. It only drives live sessions. After a relaunch a card sleeps until you
+open it, as any card does, and VIBES MODE picks it up from its next turn.
+
+The Vibes menu sets what it skips and whether it merges: Planning skipped,
+Testing run and every pull request merged, out of the box. A skipped column
+is taped off on the board, and a new card skips planning by starting
+straight in auto mode. Every number on the scoreboard is counted from when
+the switch was flipped and kept with the board.
+
+Under Reduce Motion the colours stay and the movement stops, except that a
+card still moves to its new column, quickly. The lights also hold still while
+a card is open, so the terminal stays quick.
+
 ## Build
 
 Needs Xcode (26 or newer) and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
@@ -114,12 +157,14 @@ toolchain, and 1.99 doesn't compile with the current Swift.
 | ⇧⌘] / ⇧⌘[ | Next / previous card |
 | ⌘B | Back to the board (the session keeps running) |
 | ⌥⌘1 / ⌥⌘2 / ⌥⌘3 / ⌥⌘4 | The open card's Terminal / Plan / Changes / Preview |
+| ⇧⌘V | VIBES MODE for the whole board |
 
 Esc goes to Claude Code, where it interrupts a turn, so it doesn't close an
 open card. Use ⌘B, the × in the card's header or a click outside it.
 
 Right-click a card, or use the ⋯ in an open card's header, to move it, rename
-it, re-sort it now, restart its session or reveal its folder.
+it, re-sort it now, put it in VIBES MODE, restart its session or reveal its
+folder.
 
 ## Data
 
@@ -137,6 +182,11 @@ REEVE_DATA_DIR=/tmp/reeve-smoke/data REEVE_SMOKE_DIR=/tmp/reeve-smoke/work \
 REEVE_SMOKE_OUT=/tmp/reeve-smoke/out REEVE_SMOKE_PROMPT="Plan adding hello.txt; ask before doing it." \
   build/Build/Products/Debug/Reeve.app/Contents/MacOS/Reeve
 ```
+
+Add `REEVE_SMOKE_VIBES=1` to put the card in VIBES MODE and leave it alone
+until it ships (`REEVE_SMOKE_VIBES=board` flips the whole board's switch
+instead). `REEVE_SMOKE_START=plan` starts it planning, and
+`REEVE_SMOKE_MODEL`/`REEVE_SMOKE_EFFORT` pick its model and effort.
 
 `REEVE_SMOKE_MODE=preview` checks the Preview tab instead, without Claude
 taking a turn. It makes a card with no prompt, then does what the card's

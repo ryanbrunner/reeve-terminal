@@ -16,6 +16,10 @@ import ReeveKit
 /// turn is sorted (`REEVE_SMOKE_COMMENT`), sends it, and stops once Claude
 /// has replied. `REEVE_SMOKE_SLEEP` ends the session first, so the
 /// comment has to wake it.
+/// `REEVE_SMOKE_VIBES=1` puts the card in VIBES MODE and goes back to the board
+/// once it has started, so nobody is watching; it runs until the card ships.
+/// `REEVE_SMOKE_VIBES=board` flips the whole board's switch as well.
+/// `REEVE_SMOKE_MODEL` and `REEVE_SMOKE_EFFORT` pick the card's model and effort.
 /// `REEVE_SMOKE_MODE=preview` checks the Preview tab instead; see `runPreview`.
 @MainActor
 enum Smoke {
@@ -45,6 +49,10 @@ enum Smoke {
         var timeline: [String] = []
         var lastActivity: Activity?
         var lastTitle: String?
+        var cardId: UUID?
+        var lastLog: String?
+        var lastStage: Stage?
+        let vibes = env["REEVE_SMOKE_VIBES"] != nil
 
         func log(_ line: String) {
             let entry = String(format: "%6.1fs ", Date().timeIntervalSince(started)) + line
@@ -56,7 +64,11 @@ enum Smoke {
         if mode == "resume", let card = board.cards.first {
             board.select(card.id)
         } else {
-            board.create(cwd: dir, title: "", prompt: prompt, mode: env["REEVE_SMOKE_START"] == "plan" ? .plan : .build)
+            if vibes, env["REEVE_SMOKE_START"] == "plan" { board.vibesOptions.skipPlanning = false }
+            board.create(
+                cwd: dir, title: "", prompt: prompt, mode: env["REEVE_SMOKE_START"] == "plan" ? .plan : .build,
+                model: env["REEVE_SMOKE_MODEL"], effort: env["REEVE_SMOKE_EFFORT"], vibes: vibes && env["REEVE_SMOKE_VIBES"] != "board"
+            )
         }
 
         func showTabs(_ id: UUID, then done: @escaping () -> Void) {
@@ -100,7 +112,11 @@ enum Smoke {
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { timer in
             MainActor.assumeIsolated {
                 let elapsed = Date().timeIntervalSince(started)
-                guard let card = board.selected else { return }
+                if board.vibesArming, !FileManager.default.fileExists(atPath: "\(out)/arming.png") {
+                    snapshot(to: "\(out)/arming.png")
+                }
+                if cardId == nil { cardId = board.selectedId }
+                guard let card = cardId.flatMap(board.card) else { return }
                 let view = board.terminals.view(for: card.id)
                 if Int(elapsed) % 3 == 0 {
                     shot += 1
@@ -135,8 +151,23 @@ enum Smoke {
                     }
                     interrupted = Date()
                 }
+                if card.stage != lastStage {
+                    lastStage = card.stage
+                    log("stage \(card.stage.rawValue)")
+                }
+                if let line = card.vibesNudges.map({ "nudges \($0.stage.rawValue) ×\($0.count) answers \($0.answers) ship \($0.askedToShip)" }), line != lastLog {
+                    lastLog = line
+                    log(line)
+                }
+                // Nobody watching: back to the board once the session is going.
+                if vibes, board.selectedId == card.id, card.hasConversation {
+                    log("back to the board")
+                    board.dismissOpenCard()
+                    // The board's switch, flipped where it can be seen.
+                    if env["REEVE_SMOKE_VIBES"] == "board", board.vibes == nil { board.toggleVibes() }
+                }
                 if board.classifying.contains(card.id) { sawClassify = true }
-                var sorted = mode != "interrupt" && sawClassify && !board.classifying.contains(card.id)
+                var sorted = vibes ? card.shippedAt != nil : mode != "interrupt" && sawClassify && !board.classifying.contains(card.id)
                 if mode == "review", sorted, !reviewed {
                     reviewed = true
                     board.show(.changes, for: card.id)

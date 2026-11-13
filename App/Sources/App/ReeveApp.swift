@@ -98,6 +98,14 @@ struct BoardCommands: Commands {
                 Button(board.live.contains(card.id) ? "Restart Session" : "Resume Session") { board.restart(card.id) }
             }
         }
+        CommandMenu("Vibes") {
+            Toggle("Vibes Mode", isOn: Binding(get: { board.vibes != nil }, set: { _ in board.toggleVibes() }))
+                .keyboardShortcut("v", modifiers: [.command, .shift])
+            Divider()
+            Toggle("Skip Planning", isOn: $board.vibesOptions.skipPlanning)
+            Toggle("Skip Testing", isOn: $board.vibesOptions.skipTesting)
+            Toggle("Merge to Main", isOn: $board.vibesOptions.autoMerge)
+        }
         CommandGroup(after: .toolbar) {
             Button("Back to Board") { board.dismissOpenCard() }
                 .keyboardShortcut("b")
