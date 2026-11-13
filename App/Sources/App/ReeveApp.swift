@@ -80,6 +80,11 @@ struct BoardCommands: Commands {
             }
             Divider()
             if let card = board.selected {
+                ForEach(Array(CardTab.allCases.enumerated()), id: \.element) { index, tab in
+                    Button("Show \(tab.label)") { board.show(tab, for: card.id) }
+                        .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: [.command, .option])
+                }
+                Divider()
                 Menu("Move to") {
                     ForEach(Stage.allCases) { stage in
                         Button(stage.label) { board.move(card.id, to: stage) }

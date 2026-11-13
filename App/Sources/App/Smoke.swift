@@ -10,6 +10,8 @@ import ReeveKit
 /// `REEVE_DATA_DIR` somewhere else too, so it never touches the real board.
 /// Set `REEVE_SMOKE_CLOSE` to close the card at the end, removing its worktree,
 /// and `REEVE_SMOKE_START=plan` to start the card planning rather than building.
+/// Set `REEVE_SMOKE_TABS` to also stop once a plan arrives, and save a picture
+/// of each of the card's tabs before quitting.
 @MainActor
 enum Smoke {
     static func runIfAsked(board: Board) {
@@ -22,6 +24,7 @@ enum Smoke {
         let mode = env["REEVE_SMOKE_MODE"] ?? "new"
         let prompt = env["REEVE_SMOKE_PROMPT"] ?? "Say hello in one word."
         let limit = Double(env["REEVE_SMOKE_SECONDS"] ?? "") ?? 150
+        let tabs = env["REEVE_SMOKE_TABS"] != nil
         let started = Date()
         var shot = 0
         var sawClassify = false
@@ -44,6 +47,45 @@ enum Smoke {
         } else {
             board.create(cwd: dir, title: "", prompt: prompt, mode: env["REEVE_SMOKE_START"] == "plan" ? .plan : .build)
         }
+
+        func showTabs(_ id: UUID, then done: @escaping () -> Void) {
+            let order = CardTab.allCases.filter { $0 != .terminal } + [.terminal]
+            for (index, tab) in order.enumerated() {
+                // The keys a person would press, so the menu's shortcut is
+                // what's tested, past a terminal that has the keyboard.
+                DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 3) {
+                    let number = CardTab.allCases.firstIndex(of: tab)! + 1
+                    guard let window = NSApp.windows.first(where: { $0.isVisible }),
+                          let key = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command, .option], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                     windowNumber: window.windowNumber, context: nil, characters: String(number),
+                                                     charactersIgnoringModifiers: String(number), isARepeat: false, keyCode: [18, 19, 20][number - 1])
+                    else { return }
+                    NSApp.sendEvent(key)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 3 + 2.5) {
+                    let view = board.terminals.view(for: id)
+                    log("tab \(tab.rawValue) showing \(board.tab(id).rawValue) terminal focused \(view.window?.firstResponder === view)")
+                    snapshot(to: "\(out)/tab-\(tab.rawValue).png")
+                    if index == order.count - 1 { done() }
+                }
+            }
+        }
+
+        func finish(_ id: UUID) {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            try? encoder.encode(board.cards).write(to: URL(fileURLWithPath: "\(out)/cards.json"))
+            let errors = board.classifyErrors.values.joined(separator: "\n")
+            try? errors.write(toFile: "\(out)/errors.txt", atomically: true, encoding: .utf8)
+            try? timeline.joined(separator: "\n").write(toFile: "\(out)/timeline.txt", atomically: true, encoding: .utf8)
+            board.terminals.stopAll()
+            // REEVE_SMOKE_CLOSE: close the card too, and give its worktree time to go.
+            let closing = env["REEVE_SMOKE_CLOSE"] != nil
+            if closing { log("closing card"); board.close(id) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + (closing ? 5 : 1)) { exit(0) }
+        }
+
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { timer in
             MainActor.assumeIsolated {
                 let elapsed = Date().timeIntervalSince(started)
@@ -84,22 +126,12 @@ enum Smoke {
                 }
                 if board.classifying.contains(card.id) { sawClassify = true }
                 let sorted = mode != "interrupt" && sawClassify && !board.classifying.contains(card.id)
-                if sorted || elapsed > limit {
+                let planned = tabs && (card.plan != nil || card.planPath != nil)
+                if sorted || planned || elapsed > limit {
                     timer.invalidate()
-                    log("done: activity \(card.activity.rawValue) stage \(card.stage.rawValue) title \(card.title)")
+                    log("done: activity \(card.activity.rawValue) stage \(card.stage.rawValue) title \(card.title) plan \(card.planPath ?? "-")")
                     snapshot(to: "\(out)/final.png")
-                    let encoder = JSONEncoder()
-                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-                    encoder.dateEncodingStrategy = .iso8601
-                    try? encoder.encode(board.cards).write(to: URL(fileURLWithPath: "\(out)/cards.json"))
-                    let errors = board.classifyErrors.values.joined(separator: "\n")
-                    try? errors.write(toFile: "\(out)/errors.txt", atomically: true, encoding: .utf8)
-                    try? timeline.joined(separator: "\n").write(toFile: "\(out)/timeline.txt", atomically: true, encoding: .utf8)
-                    board.terminals.stopAll()
-                    // REEVE_SMOKE_CLOSE: close the card too, and give its worktree time to go.
-                    let closing = env["REEVE_SMOKE_CLOSE"] != nil
-                    if closing { log("closing card"); board.close(card.id) }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + (closing ? 5 : 1)) { exit(0) }
+                    if tabs { showTabs(card.id) { finish(card.id) } } else { finish(card.id) }
                 }
             }
         }

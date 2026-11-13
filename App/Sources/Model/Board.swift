@@ -21,6 +21,13 @@ final class Board: ObservableObject {
     @Published private(set) var classifyErrors: [UUID: String] = [:]
     /// What `claude` last set as each terminal's title.
     @Published private(set) var terminalTitles: [UUID: String] = [:]
+    /// Which tab each open card shows. Every card starts on its terminal.
+    @Published private(set) var tabs: [UUID: CardTab] = [:]
+    /// Cards with a plan nobody has looked at in the Plan tab yet.
+    @Published private(set) var unseenPlans: Set<UUID> = []
+    /// Raised when a card showing its changes may have new ones, so the tab
+    /// reads them again. Only for that card, so others' tool calls cost nothing.
+    @Published private(set) var changeTicks: [UUID: Int] = [:]
     @Published var showingNewCard = false
     @Published private(set) var environment: ShellEnvironment?
 
@@ -126,6 +133,7 @@ final class Board: ObservableObject {
                     card.repoPath = made.repo
                     card.worktreePath = made.path
                     card.branch = made.branch
+                    card.baseCommit = made.base
                 }
             } catch {
                 let alert = NSAlert()
@@ -145,6 +153,8 @@ final class Board: ObservableObject {
     func select(_ id: UUID) {
         selectedId = id
         refreshPullRequest(id)
+        // Whatever Claude is asking is in the terminal.
+        if card(id)?.activity == .needsInput { tabs[id] = .terminal }
         if let card = card(id), !live.contains(id) {
             start(card)
         }
@@ -166,6 +176,37 @@ final class Board: ObservableObject {
     func selectIndex(_ index: Int) {
         let order = ordered
         if order.indices.contains(index) { select(order[index].id) }
+    }
+
+    func tab(_ id: UUID) -> CardTab {
+        tabs[id] ?? .terminal
+    }
+
+    func show(_ tab: CardTab, for id: UUID) {
+        tabs[id] = tab
+        if tab == .plan { unseenPlans.remove(id) }
+    }
+
+    /// The text of the card's plan: its file, which may have been edited since
+    /// Claude asked for approval, else what the approval carried. A card that
+    /// missed the hook finds its plan in the transcript.
+    func loadPlan(_ id: UUID) async -> String? {
+        guard var card = card(id) else { return nil }
+        if card.plan == nil, card.planPath == nil, let transcript = card.transcriptPath {
+            let found = await Task.detached { PlanSighting.latest(inTranscriptAt: transcript) }.value
+            if let found {
+                update(id) { card in
+                    card.plan = found.text
+                    card.planPath = found.path
+                }
+                card = self.card(id) ?? card
+            }
+        }
+        if let path = card.planPath {
+            let text = await Task.detached { try? String(contentsOfFile: path, encoding: .utf8) }.value
+            if let text, !text.isEmpty { return text }
+        }
+        return card.plan
     }
 
     /// A person put the card here. It stays until they next speak to Claude.
@@ -204,6 +245,9 @@ final class Board: ObservableObject {
         live.remove(id)
         classifying.remove(id)
         terminalTitles[id] = nil
+        tabs[id] = nil
+        unseenPlans.remove(id)
+        changeTicks[id] = nil
         // Back to the board, rather than opening (and starting) a neighbour.
         if selectedId == id { selectedId = nil }
         save()
@@ -314,6 +358,16 @@ final class Board: ObservableObject {
             if let waiting = effect.waitingOn { card.waitingOn = waiting }
             if effect.startsConversation { card.hasConversation = true }
             if effect.unpinsStage { card.stagePinned = false }
+            if let plan = effect.plan {
+                let merged = plan.merged(over: PlanSighting(text: card.plan, path: card.planPath))
+                card.plan = merged.text
+                card.planPath = merged.path
+            }
+        }
+        let showing = selectedId == cardId ? tab(cardId) : nil
+        if effect.plan != nil, showing != .plan { unseenPlans.insert(cardId) }
+        if showing == .changes, event.hookEventName == "PostToolUse" || event.hookEventName == "Stop" {
+            changeTicks[cardId, default: 0] += 1
         }
         if effect.classify {
             scheduleClassify(cardId, lastMessage: event.lastAssistantMessage, delay: 1.0)
