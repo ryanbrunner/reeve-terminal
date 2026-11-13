@@ -10,7 +10,7 @@ import Testing
     @Test func promptStartsARun() throws {
         let e = try event(#"{"session_id":"s","hook_event_name":"UserPromptSubmit","prompt":"hi","transcript_path":"/t.jsonl"}"#)
         #expect(e.transcriptPath == "/t.jsonl")
-        #expect(e.effect == HookEffect(activity: .running, waitingOn: .some(nil), startsConversation: true, unpinsStage: true))
+        #expect(e.effect == HookEffect(activity: .running, waitingOn: .some(nil), startsConversation: true, unpinsStage: true, working: true))
     }
 
     @Test func askingAQuestionNeedsInput() throws {
@@ -33,6 +33,20 @@ import Testing
     @Test func idleReminderChangesNothing() throws {
         let e = try event(#"{"session_id":"s","hook_event_name":"Notification","message":"Claude is waiting for your input","notification_type":"idle_prompt"}"#)
         #expect(e.effect == HookEffect())
+    }
+
+    @Test func readsThePermissionMode() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"Stop","permission_mode":"plan"}"#)
+        #expect(e.permissionMode == "plan")
+        #expect(!e.effect.working)
+    }
+
+    @Test func editingToolsChangeFiles() throws {
+        let edit = try event(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"/a"}}"#)
+        #expect(edit.effect.editsFiles)
+        #expect(edit.effect.working)
+        let read = try event(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Read","tool_input":{"file_path":"/a"}}"#)
+        #expect(!read.effect.editsFiles)
     }
 
     @Test func exitPlanModeCarriesThePlan() throws {
@@ -62,6 +76,46 @@ import Testing
     }
 }
 
+@Suite struct StageRuleTests {
+    private func card(_ stage: Stage, mode: String?, pr: PullRequest.State? = nil, pinned: Bool = false) -> Card {
+        var card = Card(cwd: "/tmp", stage: stage)
+        card.permissionMode = mode
+        card.pullRequest = pr.map { PullRequest(number: 1, state: $0, url: "https://github.com/o/r/pull/1") }
+        card.stagePinned = pinned
+        return card
+    }
+
+    @Test func planModeIsPlanning() {
+        #expect(card(.inProgress, mode: "plan").stage(running: true, hasChanges: true) == .planning)
+        #expect(card(.backlog, mode: "plan").stage(running: false, hasChanges: false) == .planning)
+    }
+
+    @Test func workingOutsidePlanModeIsInProgress() {
+        for mode in ["auto", "default", "acceptEdits", "bypassPermissions"] {
+            #expect(card(.planning, mode: mode).stage(running: true, hasChanges: false) == .inProgress)
+        }
+        #expect(card(.testing, mode: "auto").stage(running: true, hasChanges: true) == .inProgress)
+    }
+
+    @Test func changedCodeAtTheEndOfATurnIsTesting() {
+        #expect(card(.inProgress, mode: "auto").stage(running: false, hasChanges: true) == .testing)
+        #expect(card(.inProgress, mode: "auto").stage(running: false, hasChanges: false) == .inProgress)
+        #expect(card(.planning, mode: "auto").stage(running: false, hasChanges: false) == .inProgress)
+    }
+
+    @Test func aPullRequestIsRelease() {
+        #expect(card(.testing, mode: "auto", pr: .open).stage(running: false, hasChanges: true) == .release)
+        #expect(card(.inProgress, mode: "auto", pr: .draft).stage(running: true, hasChanges: false) == .release)
+        #expect(card(.inProgress, mode: "plan", pr: .merged).stage(running: true, hasChanges: false) == .release)
+        #expect(card(.release, mode: "auto", pr: .closed).stage(running: false, hasChanges: true) == .testing)
+    }
+
+    @Test func nothingKnownOrPinnedStaysPut() {
+        #expect(card(.backlog, mode: nil).stage(running: true, hasChanges: true) == .backlog)
+        #expect(card(.release, mode: "plan", pinned: true).stage(running: true, hasChanges: false) == .release)
+    }
+}
+
 @Suite struct TranscriptDigestTests {
     @Test func keepsTextAndToolNamesOnly() {
         let jsonl = """
@@ -87,15 +141,15 @@ import Testing
 
 @Suite struct ClassifierTests {
     @Test func readsStructuredOutput() throws {
-        let out = #"{"type":"result","is_error":false,"result":"","structured_output":{"stage":"planning","title":"Login page","summary":"Plan written","waiting_on":"Should I proceed?"}}"#
+        let out = #"{"type":"result","is_error":false,"result":"","structured_output":{"title":"Login page","summary":"Plan written","waiting_on":"Should I proceed?"}}"#
         let c = try Classifier.parse(Data(out.utf8))
-        #expect(c == Classification(stage: .planning, title: "Login page", summary: "Plan written", waitingOn: "Should I proceed?"))
+        #expect(c == Classification(title: "Login page", summary: "Plan written", waitingOn: "Should I proceed?"))
     }
 
     @Test func fallsBackToTheResultText() throws {
-        let out = #"{"type":"result","is_error":false,"result":"{\"stage\":\"in_progress\",\"title\":\"X\",\"summary\":\"Y\",\"waiting_on\":\"\"}"}"#
+        let out = #"{"type":"result","is_error":false,"result":"{\"title\":\"X\",\"summary\":\"Y\",\"waiting_on\":\"\"}"}"#
         let c = try Classifier.parse(Data(out.utf8))
-        #expect(c.stage == .inProgress)
+        #expect(c.title == "X")
         #expect(c.waitingOn == nil)
     }
 

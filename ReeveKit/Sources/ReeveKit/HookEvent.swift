@@ -9,7 +9,9 @@ public struct HookEvent: Decodable, Sendable {
     public let hookEventName: String
     public let transcriptPath: String?
     public let cwd: String?
-    /// `PreToolUse`.
+    /// The session's permission mode: `plan`, `auto`, `default`…
+    public let permissionMode: String?
+    /// `PreToolUse` and `PostToolUse`.
     public let toolName: String?
     public let toolInput: ToolInput?
     /// `Notification`.
@@ -25,6 +27,7 @@ public struct HookEvent: Decodable, Sendable {
         case hookEventName = "hook_event_name"
         case transcriptPath = "transcript_path"
         case cwd
+        case permissionMode = "permission_mode"
         case toolName = "tool_name"
         case toolInput = "tool_input"
         case message
@@ -67,16 +70,22 @@ public struct HookEffect: Equatable, Sendable {
     public var startsConversation = false
     /// A person spoke, so a pinned stage is theirs to have again.
     public var unpinsStage = false
+    /// Claude is mid-turn, so the card is wherever its mode says work happens.
+    public var working = false
+    /// Claude changed a file.
+    public var editsFiles = false
     /// Claude's turn is over: time to work out where the card is.
     public var classify = false
     /// Claude wrote a plan, or asked for one to be approved.
     public var plan: PlanSighting?
 
-    public init(activity: Activity? = nil, waitingOn: String?? = nil, startsConversation: Bool = false, unpinsStage: Bool = false, classify: Bool = false, plan: PlanSighting? = nil) {
+    public init(activity: Activity? = nil, waitingOn: String?? = nil, startsConversation: Bool = false, unpinsStage: Bool = false, working: Bool = false, editsFiles: Bool = false, classify: Bool = false, plan: PlanSighting? = nil) {
         self.activity = activity
         self.waitingOn = waitingOn
         self.startsConversation = startsConversation
         self.unpinsStage = unpinsStage
+        self.working = working
+        self.editsFiles = editsFiles
         self.classify = classify
         self.plan = plan
     }
@@ -85,24 +94,27 @@ public struct HookEffect: Equatable, Sendable {
 /// Tools that stop the turn to ask a person something.
 private let askingTools: Set<String> = ["AskUserQuestion", "ExitPlanMode"]
 
+/// Tools that change files.
+private let editingTools: Set<String> = ["Edit", "MultiEdit", "Write", "NotebookEdit"]
+
 extension HookEvent {
     /// The card's new activity, and what else changes, for this event.
     public var effect: HookEffect {
         switch hookEventName {
         case "UserPromptSubmit":
-            return HookEffect(activity: .running, waitingOn: .some(nil), startsConversation: true, unpinsStage: true)
+            return HookEffect(activity: .running, waitingOn: .some(nil), startsConversation: true, unpinsStage: true, working: true)
         case "PreToolUse":
             if let toolName, askingTools.contains(toolName) {
                 let question = toolInput?.questions?.compactMap(\.question).first
-                var effect = HookEffect(activity: .needsInput, waitingOn: .some(question ?? (toolName == "ExitPlanMode" ? "Approve the plan?" : nil)))
+                var effect = HookEffect(activity: .needsInput, waitingOn: .some(question ?? (toolName == "ExitPlanMode" ? "Approve the plan?" : nil)), working: true)
                 if toolName == "ExitPlanMode" {
                     effect.plan = PlanSighting(text: toolInput?.plan, path: toolInput?.planFilePath)
                 }
                 return effect
             }
-            return HookEffect(activity: .running, waitingOn: .some(nil))
+            return HookEffect(activity: .running, waitingOn: .some(nil), working: true)
         case "PostToolUse":
-            var effect = HookEffect(activity: .running, waitingOn: .some(nil))
+            var effect = HookEffect(activity: .running, waitingOn: .some(nil), working: true, editsFiles: toolName.map(editingTools.contains) ?? false)
             // Plan mode drafts the plan in a file before asking for approval.
             if toolName == "Write" || toolName == "Edit", let path = toolInput?.filePath, PlanSighting.isPlanFile(path) {
                 effect.plan = PlanSighting(text: nil, path: path)

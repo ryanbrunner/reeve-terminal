@@ -60,6 +60,12 @@ enum Worktrees {
         return status.split(separator: "\n").count
     }
 
+    /// How many commits the worktree at `path` has made since `base`.
+    static func commits(at path: String, since base: String, env: ShellEnvironment?) async -> Int {
+        guard let count = try? await git(["rev-list", "--count", "\(base)..HEAD"], in: path, env: env) else { return 0 }
+        return Int(count.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+
     /// The branch checked out at `path` now, which Claude may have switched
     /// from the one Reeve made. Nil when HEAD is detached.
     static func currentBranch(at path: String, env: ShellEnvironment?) async -> String? {

@@ -16,13 +16,24 @@ feature parity. What Reeve adds is the board.
   the card sky blue (running). A permission prompt, `AskUserQuestion` or
   `ExitPlanMode` turns it amber (waiting on you). The end of a turn turns it
   green (ready for review).
-- **The column comes from Claude.** When a turn ends, Reeve digests the
-  session's transcript and asks `claude -p --model haiku` for structured
-  output: which column the work is in, a title, a one-line summary, and any
-  question Claude left you. This uses your existing Claude login, with no
-  tools, no session saved and no settings loaded.
+- **The column follows the session.** The hooks carry Claude Code's
+  permission mode, so a card moves as the session does:
+  - plan mode → **Planning**
+  - working in any other mode (auto, default, accept edits) → **In Progress**
+  - a turn that ends with changed code (an edit, uncommitted changes, or
+    commits since the worktree was made) → **Testing**
+  - an open, draft or merged pull request for the card's branch (see the
+    badge below) → **Release**
+
+  A pull request wins over everything else. Switching modes with ⇧⇥ fires no
+  hook, so the card moves on the next prompt or tool call.
+- **The title and summary come from Claude.** When a turn ends, Reeve digests
+  the session's transcript and asks `claude -p --model haiku` for structured
+  output: a title, a one-line summary, and any question Claude left you. This
+  uses your existing Claude login, with no tools, no session saved and no
+  settings loaded.
 - **You can still drag.** A card you drag is pinned in its new column until
-  your next prompt, so the classifier never undoes your move behind your back.
+  your next prompt, so the board never undoes your move behind your back.
 - **Each card gets its own worktree.** A card started in a git repo works in
   a fresh worktree at `.claude/worktrees/reeve-<id>`, on a new branch
   `reeve/<id>` from the folder's HEAD, so cards on one repo never collide.
