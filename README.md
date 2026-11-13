@@ -83,6 +83,9 @@ To work in Xcode, run `xcodegen generate` and open `Reeve.xcodeproj`. Trust
 the SwiftTerm plugin when Xcode asks. Pure logic and its tests live in
 `ReeveKit` (`cd ReeveKit && swift test`).
 
+The app icon is the Reeve mark on an ink plate, drawn by `script/icon` into
+`App/Resources/Assets.xcassets`. Run it again after changing the mark.
+
 SwiftTerm is pinned to 1.11.2. Releases from 1.12 on need Xcode's Metal
 toolchain, and 1.99 doesn't compile with the current Swift.
 
