@@ -194,3 +194,32 @@ import Testing
         #expect(card.folderName == "app")
     }
 }
+
+@Suite struct PullRequestTests {
+    private func parse(_ json: String) throws -> PullRequest? {
+        try PullRequest.parse(Data(json.utf8))
+    }
+
+    @Test func noPullRequest() throws {
+        #expect(try parse("[]") == nil)
+    }
+
+    @Test func prefersTheOpenOne() throws {
+        let pr = try parse(#"[{"number":12,"state":"CLOSED","isDraft":false,"url":"u12"},{"number":9,"state":"OPEN","isDraft":false,"url":"u9"}]"#)
+        #expect(pr == PullRequest(number: 9, state: .open, url: "u9"))
+    }
+
+    @Test func otherwiseTheNewest() throws {
+        let pr = try parse(#"[{"number":3,"state":"CLOSED","isDraft":false,"url":"u3"},{"number":7,"state":"MERGED","isDraft":false,"url":"u7"}]"#)
+        #expect(pr == PullRequest(number: 7, state: .merged, url: "u7"))
+    }
+
+    @Test func draftIsItsOwnState() throws {
+        let pr = try parse(#"[{"number":4,"state":"OPEN","isDraft":true,"url":"u4"}]"#)
+        #expect(pr?.state == .draft)
+    }
+
+    @Test func listsByHeadBranch() {
+        #expect(PullRequest.listArguments(branch: "reeve/1a2b3c4d").prefix(4) == ["pr", "list", "--head", "reeve/1a2b3c4d"])
+    }
+}

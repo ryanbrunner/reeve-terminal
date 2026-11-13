@@ -78,3 +78,22 @@ enum Worktrees {
         return String(decoding: result.stdout, as: UTF8.self)
     }
 }
+
+/// Finds the pull request opened from a card's branch, with the person's own
+/// `gh` and its login.
+enum PullRequests {
+    /// The branch's pull request, `.some(nil)` when it has none, or nil when
+    /// gh couldn't say: not installed, not logged in, or not a GitHub repo.
+    static func find(branch: String, in directory: String, env: ShellEnvironment?) async -> PullRequest?? {
+        let environment = (env?.baseEnvironment ?? ProcessInfo.processInfo.environment).filter { !$0.key.hasPrefix("GIT_") }
+        guard let result = try? await Subprocess.run(
+            "/usr/bin/env", ["gh"] + PullRequest.listArguments(branch: branch),
+            environment: environment, currentDirectory: directory, timeout: 15
+        ), result.status == 0 else { return nil }
+        do {
+            return .some(try PullRequest.parse(result.stdout))
+        } catch {
+            return nil
+        }
+    }
+}

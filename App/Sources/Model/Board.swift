@@ -31,6 +31,8 @@ final class Board: ObservableObject {
     /// overtaken leaves the card's activity alone.
     private var turns: [UUID: Int] = [:]
     private var pendingClassify: [UUID: Task<Void, Never>] = [:]
+    /// Cards whose pull request is being looked up right now.
+    private var findingPullRequests: Set<UUID> = []
     private var restarting: Set<UUID> = []
     private var pendingRemovals: [WorktreeRemoval] = []
     /// Starts waiting on the shell environment or the hook port.
@@ -69,6 +71,7 @@ final class Board: ObservableObject {
             let env = await ShellEnvironment.load()
             self.environment = env
             self.drainStarts()
+            for card in self.cards { self.refreshPullRequest(card.id) }
         }
     }
 
@@ -141,6 +144,7 @@ final class Board: ObservableObject {
 
     func select(_ id: UUID) {
         selectedId = id
+        refreshPullRequest(id)
         if let card = card(id), !live.contains(id) {
             start(card)
         }
@@ -313,6 +317,8 @@ final class Board: ObservableObject {
         }
         if effect.classify {
             scheduleClassify(cardId, lastMessage: event.lastAssistantMessage, delay: 1.0)
+            // A turn is where Claude opens a pull request.
+            refreshPullRequest(cardId)
         }
         updateBadge()
     }
@@ -358,6 +364,23 @@ final class Board: ObservableObject {
         } catch {
             classifyErrors[id] = error.localizedDescription
             NSLog("Reeve: classifying \(id) failed: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: Pull requests
+
+    /// Looks up the pull request from the card's branch. When gh can't say,
+    /// the card keeps the one it had.
+    private func refreshPullRequest(_ id: UUID) {
+        guard let card = card(id), let branch = card.branch, let env = environment,
+              !findingPullRequests.contains(id) else { return }
+        let directory = card.worktreePath ?? card.repoPath ?? card.cwd
+        guard FileManager.default.fileExists(atPath: directory) else { return }
+        findingPullRequests.insert(id)
+        Task {
+            defer { findingPullRequests.remove(id) }
+            guard let found = await PullRequests.find(branch: branch, in: directory, env: env) else { return }
+            update(id) { $0.pullRequest = found }
         }
     }
 
