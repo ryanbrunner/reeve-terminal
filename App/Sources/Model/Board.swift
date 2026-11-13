@@ -369,17 +369,18 @@ final class Board: ObservableObject {
 
     // MARK: Pull requests
 
-    /// Looks up the pull request from the card's branch. When gh can't say,
-    /// the card keeps the one it had.
+    /// Looks up the pull request from the branch the card's worktree is on,
+    /// which Claude may have switched from the one Reeve made. When gh can't
+    /// say, the card keeps the one it had.
     private func refreshPullRequest(_ id: UUID) {
-        guard let card = card(id), let branch = card.branch, let env = environment,
-              !findingPullRequests.contains(id) else { return }
-        let directory = card.worktreePath ?? card.repoPath ?? card.cwd
-        guard FileManager.default.fileExists(atPath: directory) else { return }
+        guard let card = card(id), let worktree = card.worktreePath, let env = environment,
+              !findingPullRequests.contains(id), FileManager.default.fileExists(atPath: worktree) else { return }
         findingPullRequests.insert(id)
         Task {
             defer { findingPullRequests.remove(id) }
-            guard let found = await PullRequests.find(branch: branch, in: directory, env: env) else { return }
+            // Never written back: closing the card deletes `card.branch`.
+            guard let branch = await Worktrees.currentBranch(at: worktree, env: env) ?? card.branch,
+                  let found = await PullRequests.find(branch: branch, in: worktree, env: env) else { return }
             update(id) { $0.pullRequest = found }
         }
     }

@@ -57,6 +57,14 @@ enum Worktrees {
         return status.split(separator: "\n").count
     }
 
+    /// The branch checked out at `path` now, which Claude may have switched
+    /// from the one Reeve made. Nil when HEAD is detached.
+    static func currentBranch(at path: String, env: ShellEnvironment?) async -> String? {
+        let branch = (try? await git(["symbolic-ref", "--short", "-q", "HEAD"], in: path, env: env))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return branch?.isEmpty == false ? branch : nil
+    }
+
     /// Keeps the worktrees out of `git status` in the repo, without touching
     /// its `.gitignore`.
     private static func exclude(commonDir: String) {
