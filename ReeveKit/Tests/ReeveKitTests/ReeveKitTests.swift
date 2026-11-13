@@ -10,7 +10,7 @@ import Testing
     @Test func promptStartsARun() throws {
         let e = try event(#"{"session_id":"s","hook_event_name":"UserPromptSubmit","prompt":"hi","transcript_path":"/t.jsonl"}"#)
         #expect(e.transcriptPath == "/t.jsonl")
-        #expect(e.effect == HookEffect(activity: .running, waitingOn: .some(nil), startsConversation: true, unpinsStage: true, working: true))
+        #expect(e.effect == HookEffect(activity: .running, waitingOn: .some(nil), startsConversation: true, unpinsStage: true, working: true, background: []))
     }
 
     @Test func askingAQuestionNeedsInput() throws {
@@ -73,6 +73,85 @@ import Testing
         let e = try event(#"{"session_id":"s","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Done."}"#)
         #expect(e.effect.activity == .needsReview)
         #expect(e.effect.classify)
+        #expect(e.effect.background == [])
+    }
+
+    @Test func stopWithBackgroundAgentsIsWaiting() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"Stop","last_assistant_message":"I'll report back.","background_tasks":[{"id":"a1","type":"subagent","status":"running","description":"Explore hooks","agent_type":"Explore"},{"id":"b1","type":"shell","status":"running","description":"npm run dev","command":"npm run dev"}]}"#)
+        #expect(e.effect.activity == .waiting)
+        #expect(e.effect.classify)
+        #expect(e.effect.waitingOn == .some(nil))
+        #expect(e.effect.background == [BackgroundWork(id: "a1", type: "subagent", description: "Explore hooks", agentType: "Explore")])
+    }
+
+    @Test func stopWithOnlyShellsAndMonitorsIsReview() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"Stop","background_tasks":[{"id":"b1","type":"shell","status":"running","description":"npm run dev"},{"id":"m1","type":"monitor","status":"running","description":"watch logs"}]}"#)
+        #expect(e.effect.activity == .needsReview)
+    }
+
+    @Test func subagentToolsLeaveTheActivityAlone() throws {
+        let pre = try event(#"{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Bash","agent_id":"a1","agent_type":"Explore"}"#)
+        #expect(pre.effect.activity == nil)
+        #expect(pre.effect.waitingOn == nil)
+        #expect(pre.effect.background == nil)
+        let post = try event(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Edit","agent_id":"a1","tool_input":{"file_path":"/a"}}"#)
+        #expect(post.effect.activity == nil)
+        #expect(post.effect.editsFiles)
+    }
+
+    @Test func subagentWorkClearsAnAnsweredPrompt() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Bash","agent_id":"a1"}"#)
+        #expect(e.effect.bySubagent)
+        #expect(HookEvent.activityAfterSubagentWork(.needsInput, askedByNotification: true, waitingOnBackground: true) == .waiting)
+        #expect(HookEvent.activityAfterSubagentWork(.needsInput, askedByNotification: true, waitingOnBackground: false) == .running)
+        // Claude's own question stands until Claude moves on.
+        #expect(HookEvent.activityAfterSubagentWork(.needsInput, askedByNotification: false, waitingOnBackground: true) == nil)
+        #expect(HookEvent.activityAfterSubagentWork(.waiting, askedByNotification: true, waitingOnBackground: true) == nil)
+    }
+
+    @Test func aSubagentAskingStillNeedsInput() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","agent_id":"a1","tool_input":{"questions":[{"question":"Which one?"}]}}"#)
+        #expect(e.effect.activity == .needsInput)
+    }
+
+    @Test func onlyBlockingNotificationsNeedInput() throws {
+        for type in ["agent_needs_input", "elicitation_dialog", "worker_permission_prompt"] {
+            let e = try event(#"{"session_id":"s","hook_event_name":"Notification","message":"m","notification_type":"\#(type)"}"#)
+            #expect(e.effect.activity == .needsInput, "\(type)")
+        }
+        for type in ["agent_completed", "auth_success", "quota_auto_resume_fired"] {
+            let e = try event(#"{"session_id":"s","hook_event_name":"Notification","message":"Explore finished","notification_type":"\#(type)"}"#)
+            #expect(e.effect == HookEffect(), "\(type)")
+        }
+    }
+
+    @Test func untypedNotificationsAreToldByTheirWords() throws {
+        let idle = try event(#"{"session_id":"s","hook_event_name":"Notification","message":"Claude is waiting for your input"}"#)
+        #expect(idle.effect == HookEffect())
+        let permission = try event(#"{"session_id":"s","hook_event_name":"Notification","message":"Claude needs your permission to use Bash"}"#)
+        #expect(permission.effect.activity == .needsInput)
+    }
+
+    @Test func aWaitingCardSaysWhatItWaitsOn() {
+        var card = Card(cwd: "/tmp", activity: .waiting)
+        card.background = [BackgroundWork(id: "a", type: "subagent"), BackgroundWork(id: "b", type: "subagent")]
+        #expect(card.backgroundLine == "Waiting on 2 subagents")
+        card.background = [BackgroundWork(id: "w", type: "workflow")]
+        #expect(card.backgroundLine == "Waiting on 1 workflow")
+        card.background = [BackgroundWork(id: "a", type: "subagent"), BackgroundWork(id: "w", type: "workflow")]
+        #expect(card.backgroundLine == "Waiting on 2 tasks")
+        card.activity = .running
+        #expect(card.backgroundLine == nil)
+    }
+
+    @Test func aCardSavedBeforeBackgroundDecodes() throws {
+        var card = Card(cwd: "/tmp")
+        card.background = [BackgroundWork(id: "a1", type: "subagent")]
+        let encoder = JSONEncoder()
+        var json = try JSONSerialization.jsonObject(with: encoder.encode(card)) as! [String: Any]
+        json["background"] = nil
+        let decoded = try JSONDecoder().decode(Card.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(decoded.background == nil)
     }
 }
 
@@ -151,6 +230,11 @@ import Testing
         let c = try Classifier.parse(Data(out.utf8))
         #expect(c.title == "X")
         #expect(c.waitingOn == nil)
+    }
+
+    @Test func waitingOnThatIsNoQuestionIsDropped() throws {
+        let out = #"{"type":"result","is_error":false,"result":"","structured_output":{"title":"X","summary":"Y","waiting_on":"Both background agents to finish"}}"#
+        #expect(try Classifier.parse(Data(out.utf8)).waitingOn == nil)
     }
 
     @Test func reportsErrors() {

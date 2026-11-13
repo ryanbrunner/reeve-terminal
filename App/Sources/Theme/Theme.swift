@@ -26,6 +26,8 @@ enum Theme {
     static let slate500 = Color(hex: 0x62748E)
     static let slate300 = Color(hex: 0xCAD5E2)
     static let amber100 = Color(hex: 0xFEF3C6)
+    static let indigo200 = Color(hex: 0xC6D2FF)
+    static let indigo400 = Color(hex: 0x818CF8)
 
     /// Registers the bundled Geist fonts (SIL OFL) for this process.
     static func registerFonts() {
@@ -83,7 +85,7 @@ struct SectionLabel: View {
 /// A card's sub-state, as light: colour rising from every border into a dark
 /// centre. One tone per activity, as the web board's `.card-glow-*` classes.
 enum GlowTone {
-    case running, review, input, error
+    case running, review, input, waiting, error
 
     init?(_ activity: Activity) {
         switch activity {
@@ -91,16 +93,18 @@ enum GlowTone {
         case .running: self = .running
         case .needsReview: self = .review
         case .needsInput: self = .input
+        case .waiting: self = .waiting
         case .error: self = .error
         }
     }
 
-    /// The border, at 60%.
+    /// The border, at 60%; waiting's is quieter, since nothing is asked of you.
     var border: Color {
         switch self {
         case .running: Color(hex: 0x38BDF8, opacity: 0.6)
         case .review: Color(hex: 0x10B981, opacity: 0.6)
         case .input: Color(hex: 0xFBBF24, opacity: 0.6)
+        case .waiting: Theme.indigo400.opacity(0.5)
         case .error: Color(hex: 0xF87171, opacity: 0.6)
         }
     }
@@ -111,6 +115,7 @@ enum GlowTone {
         case .running: Color(hex: 0x00A6F4)
         case .review: Color(hex: 0x00BC7D)
         case .input: Color(hex: 0xFE9A00)
+        case .waiting: Color(hex: 0x615FFF)
         case .error: Color(hex: 0xFB2C36)
         }
     }
@@ -121,11 +126,16 @@ enum GlowTone {
         case .running: Color(hex: 0x38BDF8)
         case .review: Color(hex: 0x34D399)
         case .input: Color(hex: 0xFBBF24)
+        case .waiting: Theme.indigo400
         case .error: Color(hex: 0xF87171)
         }
     }
 
-    var fill: Color { glow.opacity(0.12) }
+    /// How brightly the glow burns. A card waiting on its agents holds a
+    /// dimmer light than one that wants something from you.
+    var intensity: Double { self == .waiting ? 0.7 : 1 }
+
+    var fill: Color { glow.opacity(0.12 * intensity) }
 }
 
 /// The glow as a background: the dark core, the flat tint, a radial of the
@@ -146,11 +156,11 @@ struct GlowBackground: View {
                     shape.fill(EllipticalGradient(colors: [Theme.cardCore, Theme.cardCore.opacity(0)], center: .center, startRadiusFraction: 0, endRadiusFraction: 0.8))
                         .frame(width: geo.size.width, height: geo.size.height)
                 }
-                shape.strokeBorder(tone.glow.opacity(0.35), lineWidth: 8).blur(radius: 7).clipShape(shape)
-                shape.strokeBorder(tone.glow.opacity(0.4), lineWidth: 2).blur(radius: 2).clipShape(shape)
+                shape.strokeBorder(tone.glow.opacity(0.35 * tone.intensity), lineWidth: 8).blur(radius: 7).clipShape(shape)
+                shape.strokeBorder(tone.glow.opacity(0.4 * tone.intensity), lineWidth: 2).blur(radius: 2).clipShape(shape)
                 shape.strokeBorder(tone.border, lineWidth: 1)
             }
-            .shadow(color: tone.glow.opacity(bloom ? 0.25 : 0.4), radius: bloom ? 24 : 6)
+            .shadow(color: tone.glow.opacity((bloom ? 0.25 : 0.4) * tone.intensity), radius: bloom ? 24 : 6)
         } else {
             ZStack {
                 shape.fill(Theme.panel)
@@ -199,6 +209,18 @@ private struct MarkShape: Shape {
             p.addLine(to: CGPoint(x: 12, y: 15))
             p.move(to: CGPoint(x: 12, y: 18.5))
             p.addLine(to: CGPoint(x: 12, y: 18.51))
+        case .waiting:
+            // An hourglass: two caps, and the glass pinched between them.
+            p.move(to: CGPoint(x: 6.5, y: 4.5))
+            p.addLine(to: CGPoint(x: 17.5, y: 4.5))
+            p.move(to: CGPoint(x: 6.5, y: 19.5))
+            p.addLine(to: CGPoint(x: 17.5, y: 19.5))
+            p.move(to: CGPoint(x: 8, y: 4.5))
+            p.addCurve(to: CGPoint(x: 12, y: 12), control1: CGPoint(x: 8, y: 8.5), control2: CGPoint(x: 12, y: 10))
+            p.addCurve(to: CGPoint(x: 8, y: 19.5), control1: CGPoint(x: 12, y: 14), control2: CGPoint(x: 8, y: 15.5))
+            p.move(to: CGPoint(x: 16, y: 4.5))
+            p.addCurve(to: CGPoint(x: 12, y: 12), control1: CGPoint(x: 16, y: 8.5), control2: CGPoint(x: 12, y: 10))
+            p.addCurve(to: CGPoint(x: 16, y: 19.5), control1: CGPoint(x: 12, y: 14), control2: CGPoint(x: 16, y: 15.5))
         case .error:
             p.move(to: CGPoint(x: 6.5, y: 6.5))
             p.addLine(to: CGPoint(x: 17.5, y: 17.5))

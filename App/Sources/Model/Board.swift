@@ -43,6 +43,9 @@ final class Board: ObservableObject {
     /// Cards whose pull request is being looked up right now.
     private var findingPullRequests: Set<UUID> = []
     private var restarting: Set<UUID> = []
+    /// Cards waiting on a person because of a notification (a permission
+    /// prompt, often a subagent's) rather than a question Claude asked.
+    private var notifiedInput: Set<UUID> = []
     private var pendingRemovals: [WorktreeRemoval] = []
     /// Starts waiting on the shell environment or the hook port.
     private var waitingToStart: [(Card, String?)] = []
@@ -317,9 +320,10 @@ final class Board: ObservableObject {
         }
         live.remove(id)
         update(id) { card in
-            if card.activity == .running || card.activity == .needsInput {
+            if card.activity == .running || card.activity == .needsInput || card.activity == .waiting {
                 card.activity = (exitCode ?? 0) == 0 ? .idle : .error
             }
+            card.background = nil
             if let exitCode, exitCode != 0 { card.waitingOn = nil }
         }
         if restarting.remove(id) != nil, let card = card(id) {
@@ -349,7 +353,17 @@ final class Board: ObservableObject {
         guard let event = try? HookEvent.decode(body), card(cardId) != nil else { return }
         let effect = event.effect
         if effect.startsConversation { turns[cardId, default: 0] += 1 }
+        let askedByNotification = notifiedInput.contains(cardId)
+        if effect.activity != nil {
+            if event.hookEventName == "Notification" { notifiedInput.insert(cardId) } else { notifiedInput.remove(cardId) }
+        }
         update(cardId) { card in
+            // A subagent working again means the prompt that stopped it was answered.
+            if effect.bySubagent, let activity = HookEvent.activityAfterSubagentWork(card.activity, askedByNotification: askedByNotification, waitingOnBackground: card.background != nil) {
+                card.activity = activity
+                card.waitingOn = nil
+                notifiedInput.remove(cardId)
+            }
             // `/clear` starts a new session in the same terminal; follow it, so
             // a restart resumes the conversation that is actually on screen.
             if let session = UUID(uuidString: event.sessionId), session != card.sessionId {
@@ -358,6 +372,7 @@ final class Board: ObservableObject {
             if let path = event.transcriptPath { card.transcriptPath = path }
             if let activity = effect.activity { card.activity = activity }
             if let waiting = effect.waitingOn { card.waitingOn = waiting }
+            if let background = effect.background { card.background = background.isEmpty ? nil : background }
             if effect.startsConversation { card.hasConversation = true }
             if effect.unpinsStage { card.stagePinned = false }
             if let mode = event.permissionMode { card.permissionMode = mode }
@@ -403,8 +418,9 @@ final class Board: ObservableObject {
             changed = await Worktrees.commits(at: card.cwd, since: base, env: environment) > 0
         }
         await findPullRequest(id)
-        // A prompt sent since means the session is working again.
-        guard turns[id, default: 0] == turn, self.card(id)?.activity != .running else { return }
+        // A prompt sent since means the session is working again; a session
+        // waiting on its agents is still in progress.
+        guard turns[id, default: 0] == turn, let activity = self.card(id)?.activity, activity != .running, activity != .waiting else { return }
         update(id) { card in
             card.stage = card.stage(running: false, hasChanges: changed)
         }
@@ -427,7 +443,9 @@ final class Board: ObservableObject {
                 if !card.titledByPerson, !result.title.isEmpty { card.title = result.title }
                 card.summary = result.summary
                 // Only while nothing newer has happened: a prompt sent since
-                // means the session has moved on from what was read.
+                // means the session has moved on from what was read. A card
+                // waiting on its agents is never a question, whatever Claude
+                // said as it launched them.
                 if current, card.activity == .needsReview || card.activity == .needsInput {
                     if let waiting = result.waitingOn {
                         card.activity = .needsInput
@@ -489,7 +507,8 @@ final class Board: ObservableObject {
         // Nothing is running after a restart; a card left mid-turn says so.
         cards = saved.cards.map { card in
             var card = card
-            if card.activity == .running { card.activity = .idle }
+            if card.activity == .running || card.activity == .waiting { card.activity = .idle }
+            card.background = nil
             return card
         }
         // Launch lands on the board; opening a card is what starts its session.
