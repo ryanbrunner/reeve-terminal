@@ -9,6 +9,8 @@ enum Worktrees {
         let repo: String
         let path: String
         let branch: String
+        /// The commit the branch starts from.
+        let baseCommit: String?
         /// Where the card works in it: the same subfolder the person chose.
         let cwd: String
     }
@@ -30,7 +32,8 @@ enum Worktrees {
         let branch = Worktree.branch(for: cardId)
         exclude(commonDir: commonDir)
         _ = try await git(["worktree", "add", "-b", branch, path, "HEAD"], in: folder, env: env)
-        return Made(repo: repo, path: path, branch: branch, cwd: Worktree.workingDirectory(worktree: path, prefix: prefix))
+        let base = try? await git(["rev-parse", "HEAD"], in: path, env: env).trimmingCharacters(in: .whitespacesAndNewlines)
+        return Made(repo: repo, path: path, branch: branch, baseCommit: base, cwd: Worktree.workingDirectory(worktree: path, prefix: prefix))
     }
 
     /// Removes a card's worktree, uncommitted changes and all. Its branch goes
@@ -55,6 +58,27 @@ enum Worktrees {
     static func uncommittedChanges(at path: String, env: ShellEnvironment?) async -> Int {
         guard let status = try? await git(["status", "--porcelain"], in: path, env: env) else { return 0 }
         return status.split(separator: "\n").count
+    }
+
+    /// How many commits the worktree at `path` has made since `base`.
+    static func commits(at path: String, since base: String, env: ShellEnvironment?) async -> Int {
+        guard let count = try? await git(["rev-list", "--count", "\(base)..HEAD"], in: path, env: env) else { return 0 }
+        return Int(count.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+
+    /// The pull request for the branch checked out at `path`, from `gh`. Nil
+    /// when the branch has none; throws when `gh` couldn't say (not installed,
+    /// not logged in, offline, not a GitHub repo), so what's known isn't lost.
+    static func pullRequest(at path: String, env: ShellEnvironment?) async throws -> PullRequestState? {
+        let environment = (env?.baseEnvironment ?? ProcessInfo.processInfo.environment).filter { !$0.key.hasPrefix("GIT_") }
+        let result = try await Subprocess.run("/usr/bin/env", ["gh", "pr", "view", "--json", "state", "--jq", ".state"], environment: environment, currentDirectory: path, timeout: 20)
+        let out = String(decoding: result.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard result.status == 0 else {
+            let err = String(decoding: result.stderr, as: UTF8.self)
+            if err.contains("no pull requests found") { return nil }
+            throw Failure(message: err.isEmpty ? "gh pr view exited \(result.status)" : err)
+        }
+        return PullRequestState(rawValue: out)
     }
 
     /// Keeps the worktrees out of `git status` in the repo, without touching

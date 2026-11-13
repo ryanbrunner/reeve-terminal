@@ -6,8 +6,10 @@ import SwiftUI
 /// The board: every card, which one is open, and what keeps them up to date.
 ///
 /// Cards learn what their session is doing from Claude Code's hooks, the
-/// moment it happens. Where the work is — its column — they learn by asking
-/// Claude once each turn ends.
+/// moment it happens. Their column follows from the same hooks — plan mode,
+/// working, a turn that ended with changed code — and from whether the
+/// branch has a pull request. A title and summary come from asking Claude
+/// once each turn ends.
 @MainActor
 final class Board: ObservableObject {
     @Published private(set) var cards: [Card] = []
@@ -123,6 +125,7 @@ final class Board: ObservableObject {
                     card.repoPath = made.repo
                     card.worktreePath = made.path
                     card.branch = made.branch
+                    card.baseCommit = made.baseCommit
                 }
             } catch {
                 let alert = NSAlert()
@@ -310,6 +313,9 @@ final class Board: ObservableObject {
             if let waiting = effect.waitingOn { card.waitingOn = waiting }
             if effect.startsConversation { card.hasConversation = true }
             if effect.unpinsStage { card.stagePinned = false }
+            if let mode = event.permissionMode { card.permissionMode = mode }
+            if effect.editsFiles { card.lastEditAt = Date() }
+            if effect.working { card.stage = card.stage(running: true, hasChanges: false) }
         }
         if effect.classify {
             scheduleClassify(cardId, lastMessage: event.lastAssistantMessage, delay: 1.0)
@@ -322,7 +328,34 @@ final class Board: ObservableObject {
         pendingClassify[id] = Task { [weak self] in
             if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
             guard !Task.isCancelled else { return }
+            await self?.settleStage(id)
+            guard !Task.isCancelled else { return }
             await self?.classify(id, lastMessage: lastMessage)
+        }
+    }
+
+    /// Puts a card whose turn is over in its column: testing if the code has
+    /// changed, release once its branch has a pull request.
+    private func settleStage(_ id: UUID) async {
+        guard let card = card(id) else { return }
+        let turn = turns[id, default: 0]
+        var changed = card.lastEditAt != nil
+        if !changed { changed = await Worktrees.uncommittedChanges(at: card.cwd, env: environment) > 0 }
+        if !changed, let base = card.baseCommit {
+            changed = await Worktrees.commits(at: card.cwd, since: base, env: environment) > 0
+        }
+        // Nil when gh couldn't say, so a pull request already seen is kept.
+        var pullRequest: PullRequestState??
+        do {
+            pullRequest = .some(try await Worktrees.pullRequest(at: card.cwd, env: environment))
+        } catch {
+            NSLog("Reeve: looking up the pull request for \(id) failed: \(error.localizedDescription)")
+        }
+        // A prompt sent since means the session is working again.
+        guard turns[id, default: 0] == turn, self.card(id)?.activity != .running else { return }
+        update(id) { card in
+            if let pullRequest { card.pullRequest = pullRequest }
+            card.stage = card.stage(running: false, hasChanges: changed)
         }
     }
 
@@ -342,7 +375,6 @@ final class Board: ObservableObject {
             update(id) { card in
                 if !card.titledByPerson, !result.title.isEmpty { card.title = result.title }
                 card.summary = result.summary
-                if !card.stagePinned { card.stage = result.stage }
                 // Only while nothing newer has happened: a prompt sent since
                 // means the session has moved on from what was read.
                 if current, card.activity == .needsReview || card.activity == .needsInput {

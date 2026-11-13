@@ -1,8 +1,8 @@
 import Foundation
 
 /// The board's five columns, left to right. A card's column is where its work
-/// is; the card works that out itself from the session, and a person can drag
-/// it somewhere else.
+/// is; the card works that out itself from the session's state (see
+/// `Card.stage(running:hasChanges:)`), and a person can drag it somewhere else.
 public enum Stage: String, Codable, CaseIterable, Identifiable, Sendable {
     case backlog
     case planning
@@ -81,6 +81,9 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     public var worktreePath: String?
     /// The branch checked out in the card's worktree.
     public var branch: String?
+    /// The commit the card's worktree started from, so commits made since
+    /// count as changed code.
+    public var baseCommit: String?
     /// The model the card's `claude` runs, as `--model` takes it. Nil leaves
     /// it to the person's own settings.
     public var model: String?
@@ -99,6 +102,13 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     /// A person put the card in its column. The classifier leaves the stage
     /// alone until the next prompt, so a drag is never undone behind your back.
     public var stagePinned: Bool
+    /// The permission mode the session was last seen in (`plan`, `auto`,
+    /// `default`…), from its hooks. Nil until a hook has said.
+    public var permissionMode: String?
+    /// When Claude last changed a file with one of its editing tools.
+    public var lastEditAt: Date?
+    /// The pull request for the card's branch, as `gh` last saw it.
+    public var pullRequest: PullRequestState?
     /// The session has at least one prompt in it, so it can be resumed.
     public var hasConversation: Bool
     /// Where Claude Code keeps the session's transcript, once a hook has said.
@@ -131,5 +141,34 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     /// The repo's or folder's own name, which the card wears as its repo chip.
     public var folderName: String {
         URL(fileURLWithPath: repoPath ?? cwd).lastPathComponent
+    }
+}
+
+/// Where a pull request stands, as `gh pr view` reports it.
+public enum PullRequestState: String, Codable, Sendable {
+    case open = "OPEN"
+    case merged = "MERGED"
+    case closed = "CLOSED"
+}
+
+extension Card {
+    /// The column the session's state puts the card in. First match wins:
+    ///
+    /// - a pull request is open or merged: release
+    /// - Claude is in plan mode: planning
+    /// - Claude is working in any other mode: in progress
+    /// - Claude's turn is over and the code has changed: testing (ready to try)
+    ///
+    /// Otherwise the card stays put, apart from leaving backlog or planning
+    /// once the session is out of plan mode. A card a person put somewhere
+    /// stays there.
+    public func stage(running: Bool, hasChanges: Bool) -> Stage {
+        if stagePinned { return stage }
+        if pullRequest == .open || pullRequest == .merged { return .release }
+        guard let permissionMode else { return stage }
+        if permissionMode == "plan" { return .planning }
+        if running { return .inProgress }
+        if hasChanges { return .testing }
+        return stage == .backlog || stage == .planning ? .inProgress : stage
     }
 }
