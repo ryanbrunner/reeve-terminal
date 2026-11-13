@@ -233,6 +233,67 @@ import Testing
         #expect(env["PATH"] == "/bin")
         #expect(env["REEVE_HOOK_PORT"] == "4000")
     }
+
+    @Test func environmentPointsGlossAtThePreview() {
+        let id = UUID(uuidString: "1A2B3C4D-0000-0000-0000-000000000000")!
+        let env = Launch.environment(base: [:], hookPort: 4000, cardId: id)
+        #expect(env["GLOSS_HOST"] == "http://127.0.0.1:4000/gloss/1A2B3C4D-0000-0000-0000-000000000000")
+    }
+}
+
+@Suite struct GlossTests {
+    private func parse(_ json: String) -> Gloss.Message? {
+        Gloss.parse(Data(json.utf8))
+    }
+
+    @Test func hello() {
+        #expect(parse(#"{"type":"hello","script":"x()","binding":"__glossRpc","deliver":"__glossDeliver"}"#)
+            == .hello(script: "x()", binding: "__glossRpc", deliver: "__glossDeliver"))
+    }
+
+    @Test func helloRefusesNamesThatArentPlain() {
+        #expect(parse(#"{"type":"hello","script":"x()","binding":"a;alert(1)","deliver":"d"}"#) == nil)
+    }
+
+    @Test func deliverKeepsTheDelivery() throws {
+        guard case let .deliver(json) = parse(#"{"type":"deliver","delivery":{"id":3,"state":{"round":1}}}"#) else {
+            Issue.record("not a delivery")
+            return
+        }
+        let object = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+        #expect(object?["id"] as? Int == 3)
+    }
+
+    @Test func requests() {
+        #expect(parse(#"{"type":"request","id":1,"method":"navigate","url":"http://localhost:3000/"}"#)
+            == .request(id: 1, .navigate(URL(string: "http://localhost:3000/")!)))
+        #expect(parse(#"{"type":"request","id":2,"method":"reload"}"#) == .request(id: 2, .reload))
+        #expect(parse(#"{"type":"request","id":3,"method":"view"}"#) == .request(id: 3, .view))
+        #expect(parse(#"{"type":"request","id":4,"method":"snapshot","clip":{"x":1,"y":2.5,"width":3,"height":4},"path":"/s/p.png"}"#)
+            == .request(id: 4, .snapshot(clip: CGRect(x: 1, y: 2.5, width: 3, height: 4), path: "/s/p.png")))
+        #expect(parse(#"{"type":"request","id":5,"method":"dance"}"#) == nil)
+    }
+
+    @Test func readyAndNoise() {
+        #expect(parse(#"{"type":"ready","id":"abc","port":1}"#) == .ready)
+        #expect(parse("Debugger attached.") == nil)
+    }
+
+    @Test func linesToGloss() throws {
+        let rpc = Gloss.rpc(payload: #"{"id":1}"#, url: "http://localhost/", topFrame: true)
+        #expect(rpc.last == 0x0A)
+        let object = try JSONSerialization.jsonObject(with: rpc) as? [String: Any]
+        #expect(object?["type"] as? String == "rpc")
+        #expect(object?["topFrame"] as? Bool == true)
+        let failed = try JSONSerialization.jsonObject(with: Gloss.reply(id: 2, error: "no page")) as? [String: Any]
+        #expect(failed?["error"] as? String == "no page")
+        #expect(failed?["result"] == nil)
+    }
+
+    @Test func sessionArguments() {
+        #expect(Gloss.sessionArguments(cwd: "/w", url: "http://localhost/", live: true)
+            == ["__session", "--host", "--cwd", "/w", "--url", "http://localhost/", "--live"])
+    }
 }
 
 @Suite struct WorktreeTests {

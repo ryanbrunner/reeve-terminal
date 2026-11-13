@@ -1,10 +1,10 @@
 import ReeveKit
 import SwiftUI
 
-/// What an open card shows: the session itself, the plan it made, or what
-/// it has changed.
+/// What an open card shows: the session itself, the plan it made, what it
+/// has changed, or the app it is building, under review in Gloss.
 enum CardTab: String, CaseIterable, Identifiable {
-    case terminal, plan, changes
+    case terminal, plan, changes, preview
 
     var id: String { rawValue }
 
@@ -13,12 +13,13 @@ enum CardTab: String, CaseIterable, Identifiable {
         case .terminal: "Terminal"
         case .plan: "Plan"
         case .changes: "Changes"
+        case .preview: "Preview"
         }
     }
 }
 
 /// The open card, over the board: the real Claude Code, where the work
-/// happens, with its plan and its changes a tab away.
+/// happens, with its plan, its changes and its preview a tab away.
 ///
 /// Esc belongs to Claude Code (it interrupts a turn), so nothing here takes it.
 /// The close button, ⌘B or a click outside goes back to the board.
@@ -55,6 +56,8 @@ struct CardModal: View {
                         PlanView(card: card).id(card.id)
                     case .changes:
                         ChangesView(card: card).id(card.id)
+                    case .preview:
+                        PreviewView(card: card, preview: board.previews.preview(for: card.id)).id(card.id)
                     }
                 }
             }
@@ -215,7 +218,7 @@ struct EmptyState: View {
 /// switching cards only swaps which one is mounted here.
 ///
 /// The terminal takes the keyboard only while its tab is showing; under the
-/// Plan or Changes tab, keys typed would otherwise go to `claude` unseen.
+/// Plan, Changes or Preview tab, keys typed would otherwise go to `claude` unseen.
 struct TerminalHost: NSViewRepresentable {
     @EnvironmentObject var board: Board
     let cardId: UUID

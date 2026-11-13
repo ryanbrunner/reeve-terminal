@@ -23,6 +23,13 @@ targets:
       - path: App/Sources
       - path: App/Resources
         buildPhase: resources
+    # The Preview tab shows dev servers, often plain http on a name other than
+    # localhost, which App Transport Security would refuse.
+    info:
+      path: App/Info.plist
+      properties:
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoadsInWebContent: true
     dependencies:
       - package: ReeveKit
         product: ReeveKit

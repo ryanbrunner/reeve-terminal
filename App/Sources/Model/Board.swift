@@ -34,6 +34,7 @@ final class Board: ObservableObject {
     @Published private(set) var environment: ShellEnvironment?
 
     let terminals = Terminals()
+    let previews = Previews()
     private var hooks: HookServer?
     private var hookPort: UInt16?
     /// Raised by every prompt, so a classification that a newer turn has
@@ -70,6 +71,10 @@ final class Board: ObservableObject {
                 self?.drainStarts()
             }
             server.onEvent = { [weak self] id, body in self?.receive(id, body) }
+            server.onGloss = { [weak self] id, body, respond in
+                guard let self else { return respond("Reeve is closing") }
+                self.hostGloss(id, body, respond: respond)
+            }
             server.start()
             hooks = server
         } catch {
@@ -211,6 +216,32 @@ final class Board: ObservableObject {
         return card.plan
     }
 
+    /// The card's `GLOSS_HOST`, once the hook server is up.
+    func glossHost(for id: UUID) -> String? {
+        hookPort.map { Gloss.hostURL(port: $0, cardId: id) }
+    }
+
+    /// Shows `url` in the card's Preview tab, under review in Gloss.
+    func openPreview(_ id: UUID, url: URL) {
+        guard let card = card(id), let env = environment else { return }
+        let preview = previews.preview(for: id)
+        if preview.isRunning { preview.navigate(url) } else { preview.open(url, cwd: card.cwd, env: env) }
+    }
+
+    /// A `gloss open` in the card, asking to show its page here rather than in
+    /// a window of Gloss's own. Gloss opens its window instead if this says no.
+    private func hostGloss(_ id: UUID, _ body: Data, respond: @escaping (String?) -> Void) {
+        guard card(id) != nil else { return respond("no such card") }
+        guard let request = try? JSONDecoder().decode(Gloss.OpenRequest.self, from: body),
+              let url = URL(string: request.url) else { return respond("Reeve could not read the request") }
+        guard request.name.isEmpty else { return respond("a card's preview holds one session, without --name") }
+        guard let env = environment else { return respond("Reeve is still starting") }
+        previews.preview(for: id).open(url, cwd: request.cwd, live: request.live, env: env) { [weak self] error in
+            if error == nil { self?.tabs[id] = .preview }
+            respond(error)
+        }
+    }
+
     /// A person put the card here. It stays until they next speak to Claude.
     func move(_ id: UUID, to stage: Stage) {
         update(id) { card in
@@ -233,6 +264,7 @@ final class Board: ObservableObject {
     func close(_ id: UUID) {
         let closing = card(id)
         terminals.close(id)
+        previews.close(id)
         // Only ever a worktree Reeve made: a card without one works in the
         // person's own folder.
         if let closing, let path = closing.worktreePath, let repo = closing.repoPath {
@@ -280,6 +312,7 @@ final class Board: ObservableObject {
 
     func shutdown() {
         terminals.stopAll()
+        previews.stopAll()
         hooks?.stop()
         save()
     }

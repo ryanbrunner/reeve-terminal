@@ -66,7 +66,8 @@ public enum Launch {
 
     /// The environment a card's shell starts with: Reeve's own, minus what
     /// would make `claude` think it is running inside another Claude Code
-    /// session, plus what the hooks need.
+    /// session, plus what the hooks need, and `GLOSS_HOST`, so a `gloss open`
+    /// in the card shows the page in its Preview tab rather than a window.
     public static func environment(base: [String: String], hookPort: UInt16, cardId: UUID) -> [String: String] {
         var env = base.filter { key, _ in
             !(key == "CLAUDECODE" || key.hasPrefix("CLAUDE_CODE_") || key == "CLAUDE_PID" || key == "CLAUDE_EFFORT")
@@ -77,6 +78,7 @@ public enum Launch {
         env["LANG"] = env["LANG"] ?? "en_US.UTF-8"
         env["REEVE_HOOK_PORT"] = String(hookPort)
         env["REEVE_CARD_ID"] = cardId.uuidString
+        env["GLOSS_HOST"] = Gloss.hostURL(port: hookPort, cardId: cardId)
         return env
     }
 }
