@@ -13,6 +13,10 @@ import ReeveKit
 /// VIBES MODE and Claude is asking something VIBES MODE answers; then it is the
 /// JSON that answers it. Decided here, on the server's own queue, from
 /// `vibesCards`: a hook waits on this reply, and the main thread may be busy.
+///
+/// A card's `gloss open` posts to `/gloss/<card>` (its `GLOSS_HOST`) to have
+/// the page shown in the card's Preview tab. That one waits for `onGloss` to
+/// answer, once the session is up, since `gloss open` reports it right after.
 final class HookServer {
     private let listener: NWListener
     private let queue = DispatchQueue(label: "reeve.hooks")
@@ -21,6 +25,8 @@ final class HookServer {
     var onEvent: ((_ cardId: UUID, _ body: Data, _ reply: VibesReply?) -> Void)?
     /// The cards VIBES MODE answers for. The board keeps it up to date.
     let vibesCards = LockedSet()
+    /// Answers with an error to say why not, or nil once the session is up.
+    var onGloss: ((_ cardId: UUID, _ body: Data, _ respond: @escaping (_ error: String?) -> Void) -> Void)?
 
     init() throws {
         let params = NWParameters.tcp
@@ -75,6 +81,10 @@ final class HookServer {
                 self.read(connection, buffer: buffer, continued: continued)
                 return
             }
+            if request.method == "POST", request.path.hasPrefix("/gloss/") {
+                self.answerGloss(connection, request)
+                return
+            }
             let id = request.method == "POST" && request.path.hasPrefix("/hook/")
                 ? UUID(uuidString: String(request.path.dropFirst("/hook/".count))) : nil
             let body = request.body
@@ -94,6 +104,32 @@ final class HookServer {
             connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
             if let id {
                 DispatchQueue.main.async { self.onEvent?(id, body, reply) }
+            }
+        }
+    }
+
+    private func answerGloss(_ connection: NWConnection, _ request: HTTPRequest) {
+        let queue = queue
+        let respond: (String?) -> Void = { error in
+            let body = Data((error ?? "").utf8)
+            let status = error == nil ? "200 OK" : "409 Conflict"
+            var response = Data("HTTP/1.1 \(status)\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8)
+            response.append(body)
+            queue.async { connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() }) }
+        }
+        guard let id = UUID(uuidString: String(request.path.dropFirst("/gloss/".count))) else {
+            respond("no such card")
+            return
+        }
+        let body = request.body
+        DispatchQueue.main.async {
+            guard let onGloss = self.onGloss else { return respond("Reeve has no preview to show it in") }
+            // Answered once, however the preview gets there.
+            var answered = false
+            onGloss(id, body) { error in
+                guard !answered else { return }
+                answered = true
+                respond(error)
             }
         }
     }
