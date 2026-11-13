@@ -1,7 +1,7 @@
 import Foundation
 import ReeveKit
 
-/// Where `claude` is, and the PATH a person's own terminal would have.
+/// Where `claude` and `gloss` are, and the PATH a person's own terminal would have.
 ///
 /// An app opened from the Finder gets launchd's bare environment, not the one
 /// a person's shell builds, so both are read once from a login, interactive
@@ -9,26 +9,34 @@ import ReeveKit
 struct ShellEnvironment: Sendable {
     let shell: String
     let claudePath: String?
+    /// Gloss, for the Preview tab. Nil when it isn't installed.
+    let glossPath: String?
     let path: String?
 
     static func load() async -> ShellEnvironment {
         let shell = ProcessInfo.processInfo.environment["SHELL"].flatMap { $0.isEmpty ? nil : $0 } ?? "/bin/zsh"
         let marker = "__REEVE_ENV__"
-        let script = "printf '\\n\(marker)\\n'; command -v claude; printf '%s\\n' \"$PATH\""
+        let script = "printf '\\n\(marker)\\n'; command -v claude; command -v gloss; printf '%s\\n' \"$PATH\""
         let output = await run(shell, ["-l", "-i", "-c", script], timeout: 15)
         var claude: String?
+        var gloss: String?
         var path: String?
         if let output, let range = output.range(of: marker + "\n") {
             let lines = output[range.upperBound...].split(separator: "\n").map(String.init)
             claude = lines.first(where: { $0.hasPrefix("/") && $0.hasSuffix("/claude") })
+            gloss = lines.first(where: { $0.hasPrefix("/") && $0.hasSuffix("/gloss") })
             path = lines.last(where: { $0.contains(":") })
+        }
+        // A gloss of your own choosing, such as a checkout's bin/gloss.js.
+        if let chosen = ProcessInfo.processInfo.environment["REEVE_GLOSS"], !chosen.isEmpty {
+            gloss = chosen
         }
         if claude == nil {
             let home = FileManager.default.homeDirectoryForCurrentUser.path
             claude = ["\(home)/.local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude", "\(home)/.claude/local/claude"]
                 .first { FileManager.default.isExecutableFile(atPath: $0) }
         }
-        return ShellEnvironment(shell: shell, claudePath: claude, path: path)
+        return ShellEnvironment(shell: shell, claudePath: claude, glossPath: gloss, path: path)
     }
 
     /// Reeve's environment with the person's PATH, for the processes it starts.
@@ -59,7 +67,7 @@ enum StageClassifier {
             claude,
             Classifier.arguments(prompt: Classifier.prompt(for: card)),
             environment: Launch.environment(base: env.baseEnvironment, hookPort: 0, cardId: card.id)
-                .filter { $0.key != "REEVE_HOOK_PORT" && $0.key != "REEVE_CARD_ID" },
+                .filter { $0.key != "REEVE_HOOK_PORT" && $0.key != "REEVE_CARD_ID" && $0.key != "GLOSS_HOST" },
             // Out of the project, so no CLAUDE.md or project settings come with it.
             currentDirectory: FileManager.default.temporaryDirectory.path,
             stdin: Data(digest.utf8),

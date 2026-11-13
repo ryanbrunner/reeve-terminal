@@ -46,11 +46,13 @@ feature parity. What Reeve adds is the board.
   as a draft, violet once merged, red if closed. Reeve asks your own `gh`
   at launch, when a turn ends and when you open the card. Without `gh` or a
   GitHub remote there is simply no badge.
-- **Each open card has three tabs.** Terminal is the session. Plan shows
+- **Each open card has four tabs.** Terminal is the session. Plan shows
   the plan Claude wrote in plan mode, read from its file so later edits show,
   with a dot on the tab when a new one arrives. Changes is everything the card
   has done in its worktree since it started: commits, uncommitted edits and
-  new files, read again as Claude works. ⌥⌘1–3 switch between them.
+  new files, read again as Claude works. Preview is the app the card is
+  building, under review in [Gloss](https://github.com/ryanbrunner/gloss)
+  (below). ⌥⌘1–4 switch between them.
 - **Review the changes like a pull request.** Hover a line in Changes and
   click + to comment on it. **Comment now** sends it straight away; **Add to
   review** keeps it as pending until you **Submit review**. Reeve writes the
@@ -62,6 +64,19 @@ feature parity. What Reeve adds is the board.
   Outdated. Claude may read and write those files without asking, through a
   permission rule in the `--settings` Reeve passes. Sending waits while
   Claude is asking you something, and while it is in plan mode.
+- **Gloss runs in the Preview tab.** Each card's `claude` gets `GLOSS_HOST`,
+  so a `gloss open <url>` in the card (or the Gloss plugin's `/gloss <url>`)
+  shows the page in the card's Preview tab, with Gloss's feedback bar across
+  the top, instead of opening a Chromium window. You can also type the URL
+  in the tab yourself. Reeve runs `gloss __session --host` in the card's
+  folder: Gloss keeps the round and the API that `gloss wait`, `working`
+  and `ready` use, and Reeve is the browser, carrying the bar in a WebKit
+  content world of its own that the page's scripts can't reach. Comments,
+  pins (with their pictures), Submit and Approve all work as in Gloss's
+  window. "End review" or `gloss close` ends the session and leaves the page.
+  It needs a Gloss with `--host`; without `gloss` on your PATH the tab is a
+  plain preview. `REEVE_GLOSS` points Reeve at another `gloss`, such as a
+  checkout's `bin/gloss.js`.
 - **Sessions survive restarts.** A card owns its session id (`--session-id`
   the first time, `--resume` after that). After a restart it sleeps until you
   open it.
@@ -98,7 +113,7 @@ toolchain, and 1.99 doesn't compile with the current Swift.
 | ⌘1…⌘9 | Open card 1–9, in board order |
 | ⇧⌘] / ⇧⌘[ | Next / previous card |
 | ⌘B | Back to the board (the session keeps running) |
-| ⌥⌘1 / ⌥⌘2 / ⌥⌘3 | The open card's Terminal / Plan / Changes |
+| ⌥⌘1 / ⌥⌘2 / ⌥⌘3 / ⌥⌘4 | The open card's Terminal / Plan / Changes / Preview |
 
 Esc goes to Claude Code, where it interrupts a turn, so it doesn't close an
 open card. Use ⌘B, the × in the card's header or a click outside it.
@@ -120,5 +135,19 @@ cards as JSON, then quits:
 ```sh
 REEVE_DATA_DIR=/tmp/reeve-smoke/data REEVE_SMOKE_DIR=/tmp/reeve-smoke/work \
 REEVE_SMOKE_OUT=/tmp/reeve-smoke/out REEVE_SMOKE_PROMPT="Plan adding hello.txt; ask before doing it." \
+  build/Build/Products/Debug/Reeve.app/Contents/MacOS/Reeve
+```
+
+`REEVE_SMOKE_MODE=preview` checks the Preview tab instead, without Claude
+taking a turn. It makes a card with no prompt, then does what the card's
+Claude and a reviewer would: `gloss open`, a round from the bar (one comment
+pinned), `gloss wait`, `working`, `ready` and `close`. It saves the verdict,
+the timeline and a picture of each step. Run any dev server for it to show,
+such as Gloss's own (`npm run dev -- --port 4400` in a Gloss checkout):
+
+```sh
+REEVE_DATA_DIR=/tmp/reeve-smoke/data REEVE_SMOKE_DIR=/tmp/reeve-smoke/work \
+REEVE_SMOKE_OUT=/tmp/reeve-smoke/out REEVE_SMOKE_MODE=preview \
+REEVE_SMOKE_URL=http://127.0.0.1:4400/ GLOSS_HOME=/tmp/reeve-smoke/gloss \
   build/Build/Products/Debug/Reeve.app/Contents/MacOS/Reeve
 ```

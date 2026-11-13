@@ -16,12 +16,17 @@ import ReeveKit
 /// turn is sorted (`REEVE_SMOKE_COMMENT`), sends it, and stops once Claude
 /// has replied. `REEVE_SMOKE_SLEEP` ends the session first, so the
 /// comment has to wake it.
+/// `REEVE_SMOKE_MODE=preview` checks the Preview tab instead; see `runPreview`.
 @MainActor
 enum Smoke {
     static func runIfAsked(board: Board) {
         let env = ProcessInfo.processInfo.environment
         guard let out = env["REEVE_SMOKE_OUT"], let dir = env["REEVE_SMOKE_DIR"] else { return }
         try? FileManager.default.createDirectory(atPath: out, withIntermediateDirectories: true)
+        if env["REEVE_SMOKE_MODE"] == "preview" {
+            Task { await runPreview(board: board, out: out, dir: dir, url: env["REEVE_SMOKE_URL"] ?? "http://127.0.0.1:4400/") }
+            return
+        }
         // new: make a card with the prompt. resume: open the board's first
         // card and type the prompt into it. interrupt: make a card, then press
         // Esc a few seconds into its turn. review: make a card, then comment
@@ -64,7 +69,7 @@ enum Smoke {
                     guard let window = NSApp.windows.first(where: { $0.isVisible }),
                           let key = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command, .option], timestamp: ProcessInfo.processInfo.systemUptime,
                                                      windowNumber: window.windowNumber, context: nil, characters: String(number),
-                                                     charactersIgnoringModifiers: String(number), isARepeat: false, keyCode: [18, 19, 20][number - 1])
+                                                     charactersIgnoringModifiers: String(number), isARepeat: false, keyCode: [18, 19, 20, 21][number - 1])
                     else { return }
                     NSApp.sendEvent(key)
                 }
@@ -166,6 +171,111 @@ enum Smoke {
                 }
             }
         }
+    }
+
+    /// A card's Preview, hosted for Gloss, driven as the card's Claude would
+    /// drive it: makes a card in the folder with no prompt, then runs
+    /// `gloss open <REEVE_SMOKE_URL>` there with the card's GLOSS_HOST, sends a
+    /// round from the bar's world (a comment, and one pinned to the first
+    /// element matching `REEVE_SMOKE_PIN`, `h2` unless set), and runs `gloss wait`, `working`, `ready` and `close`,
+    /// saving the verdict, a log of each command and pictures as it goes.
+    /// `REEVE_GLOSS` picks the gloss to run, and `GLOSS_HOME` where its
+    /// sessions go.
+    private static func runPreview(board: Board, out: String, dir: String, url: String) async {
+        var lines: [String] = []
+        func log(_ line: String) {
+            lines.append(line)
+            FileHandle.standardError.write(Data(("reeve smoke: " + line + "\n").utf8))
+            try? lines.joined(separator: "\n").write(toFile: "\(out)/timeline.txt", atomically: true, encoding: .utf8)
+        }
+        func wait(_ what: String, seconds: Double = 20, until: () -> Bool) async -> Bool {
+            let deadline = Date().addingTimeInterval(seconds)
+            while !until() {
+                if Date() > deadline { log("gave up waiting for \(what)"); return false }
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            return true
+        }
+        func done(_ code: Int32) {
+            log(code == 0 ? "ok" : "failed")
+            board.shutdown()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { exit(code) }
+        }
+
+        board.create(cwd: dir, title: "Preview smoke", prompt: nil, mode: .build)
+        guard await wait("the card", until: { board.selected != nil && board.environment != nil && board.glossHost(for: board.selected!.id) != nil }),
+              let card = board.selected, let env = board.environment, let host = board.glossHost(for: card.id) else { return done(1) }
+        guard let gloss = env.glossPath else { log("no gloss"); return done(1) }
+        log("card \(card.id) in \(card.cwd), gloss \(gloss)")
+
+        var glossEnv = env.baseEnvironment
+        glossEnv["GLOSS_HOST"] = host
+        func run(_ args: String...) async -> Int32 {
+            let result = try? await Subprocess.run(gloss, args, environment: glossEnv, currentDirectory: card.cwd, timeout: 60)
+            let output = (result.map { String(decoding: $0.stdout + $0.stderr, as: UTF8.self) } ?? "timed out").trimmingCharacters(in: .whitespacesAndNewlines)
+            log("gloss \(args.joined(separator: " ")) → \(result?.status ?? -1)\n\(output)")
+            if args.first == "wait", let result { try? result.stdout.write(to: URL(fileURLWithPath: "\(out)/verdict.json")) }
+            return result?.status ?? -1
+        }
+        let preview = board.previews.preview(for: card.id)
+        func picture(_ name: String) async {
+            try? await Task.sleep(for: .milliseconds(1_500))
+            snapshot(to: "\(out)/\(name).png")
+            let image: NSImage? = await withCheckedContinuation { done in preview.webView.takeSnapshot(with: nil) { image, _ in done.resume(returning: image) } }
+            if let tiff = image?.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+                try? png.write(to: URL(fileURLWithPath: "\(out)/\(name)-page.png"))
+            }
+            log("picture \(name): session \(preview.session) page \(preview.url?.absoluteString ?? "-")")
+        }
+
+        guard await run("open", url) == 0, preview.session == .live, board.tab(card.id) == .preview else { return done(1) }
+        await picture("1-opened")
+
+        // The completion-handler form: the async one never comes back on some macOS versions.
+        func inBar(_ js: String, _ arguments: [String: Any]) async -> Any? {
+            await withCheckedContinuation { done in
+                preview.webView.callAsyncJavaScript(js, arguments: arguments, in: nil, in: preview.world) { result in
+                    if case let .failure(error) = result { log("script failed: \(error)") }
+                    done.resume(returning: try? result.get())
+                }
+            }
+        }
+
+        // A client-side route change, as an app's router makes: the comments' page should follow it.
+        _ = try? await preview.webView.evaluateJavaScript("history.pushState(null, '', '/routed'); true")
+        // What the bar does when a person adds comments and submits, through the bar's own channel.
+        let selector = ProcessInfo.processInfo.environment["REEVE_SMOKE_PIN"] ?? "h2"
+        let box = await inBar(
+            "const r = document.querySelector(selector).getBoundingClientRect(); return {x: r.x + scrollX, y: r.y + scrollY, width: r.width, height: r.height}",
+            ["selector": selector])
+        log("pinning \(selector) at \(box ?? "nothing")")
+        let pin: [String: Any] = ["url": preview.url?.absoluteString ?? url, "selector": selector, "tag": "h2", "text": "smoke",
+                                  "box": box ?? [:], "viewport": ["width": 800, "height": 600]]
+        for (id, call) in [(901, ["method": "add", "body": "Make the header bigger"] as [String: Any]),
+                           (902, ["method": "add", "body": "This heading", "pin": pin]),
+                           (903, ["method": "submit"])] {
+            let payload = String(decoding: try! JSONSerialization.data(withJSONObject: ["id": id, "call": call]), as: UTF8.self)
+            _ = await inBar("__glossRpc(payload); return true", ["payload": payload])
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        await picture("2-submitted")
+        guard await run("wait") == 0 else { return done(1) }
+        // Gloss takes the pinned element's picture away with the session; keep it to look at.
+        if let data = FileManager.default.contents(atPath: "\(out)/verdict.json"),
+           let verdict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let comments = verdict["comments"] as? [[String: Any]],
+           let shot = comments.compactMap({ ($0["target"] as? [String: Any])?["screenshot"] as? String }).first {
+            try? FileManager.default.copyItem(atPath: shot, toPath: "\(out)/pin.png")
+            log("pin picture \(FileManager.default.fileExists(atPath: "\(out)/pin.png") ? "kept" : "missing")")
+        }
+        _ = await run("working", "Making the header bigger")
+        await picture("3-working")
+        _ = await run("ready", "Made the header bigger")
+        await picture("4-ready")
+        _ = await run("close")
+        guard await wait("the session to end", until: { preview.session == .ended }) else { return done(1) }
+        await picture("5-closed")
+        done(0)
     }
 
     private static func snapshot(to path: String) {
