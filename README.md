@@ -184,12 +184,13 @@ wins (a card's terminal always gets this one).
 reeve board [--stage S] [--repo PATH]       every card, column by column
 reeve card show|plan|diff|worktree|pr [<card>]
 reeve card add [<title…>] [--prompt TEXT] [--mode plan|build] [--cwd DIR] [--model M] [--effort E]
-reeve card edit <card> --title TITLE | --no-title
+reeve card edit <card> [--title TITLE | --no-title] [--vibes | --no-vibes]
 reeve card move <card> <stage>
 reeve card run <card> [--restart]
 reeve card reply <card> <text…> [--file PATH|-] [--force]
 reeve card wait [<card>] [--timeout SECONDS]
 reeve card close <card> [--force]
+reeve vibes [on | off]                      the board's VIBES MODE switch
 reeve open [<card>] · status · models · doctor
 ```
 
@@ -211,7 +212,8 @@ reeve open [<card>] · status · models · doctor
 | 1 | error |
 | 2 | bad command line |
 
-`card wait` has its own:
+`card wait` has its own codes. It keeps waiting while a card waits on its
+background work:
 
 | Code | Meaning |
 |---|---|

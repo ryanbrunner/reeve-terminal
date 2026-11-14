@@ -20,13 +20,14 @@ Reading
 
 Driving
   reeve card add [<title…>] [--prompt TEXT] [--mode plan|build] [--cwd DIR] …
-  reeve card edit <card> --title TITLE | --no-title
+  reeve card edit <card> [--title TITLE | --no-title] [--vibes | --no-vibes]
   reeve card move <card> <stage>
   reeve card run <card> [--restart]
   reeve card reply <card> <text…> [--file PATH|-]
   reeve card wait [<card>] [--timeout SECONDS]
   reeve card close <card> [--force]
   reeve open [<card>]
+  reeve vibes [on | off]                      the board's VIBES MODE switch
 
 <card> is a card's id or its first characters (as in its branch, reeve/<id>),
 or its title. Left out, it is the card whose terminal or worktree you're in.

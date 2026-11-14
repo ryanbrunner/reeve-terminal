@@ -31,7 +31,14 @@ enum APIRouter {
         func part(_ i: Int) -> String? { parts.indices.contains(i) ? parts[i] : nil }
         switch (request.method, part(0), part(1), part(2)) {
         case ("GET", "board"?, nil, nil):
-            return .json(BoardResponse(cards: board.ordered.map(board.apiCard), selectedId: board.selectedId))
+            return .json(BoardResponse(cards: board.ordered.map(board.apiCard), selectedId: board.selectedId, vibes: board.vibes))
+
+        case ("GET", "vibes"?, nil, nil):
+            return .json(vibesState(board))
+
+        case ("POST", "vibes"?, nil, nil):
+            if try decode(VibesBody.self, request).on != (board.vibes != nil) { board.toggleVibes() }
+            return .json(vibesState(board))
 
         case ("POST", "open"?, nil, nil):
             activate()
@@ -51,7 +58,7 @@ enum APIRouter {
             do {
                 card = try await board.createCard(cwd: body.cwd, title: body.title, prompt: body.prompt, mode: body.mode,
                                                   model: body.model?.nilIfEmpty, effort: body.effort?.nilIfEmpty,
-                                                  open: body.open, inFolder: body.inFolder)
+                                                  vibes: body.vibes, open: body.open, inFolder: body.inFolder)
             } catch {
                 throw Failure(status: 409, error: APIError("couldn't make a worktree for the card",
                                                            detail: error.localizedDescription + " (pass --in-folder to work in the folder itself)"))
@@ -65,6 +72,7 @@ enum APIRouter {
             let card = try card(id, board)
             let body = try decode(EditCardBody.self, request)
             if let title = body.title { board.rename(card.id, to: title) }
+            if let vibes = body.vibes { board.setVibes(card.id, vibes) }
             return .json(board.apiCard(board.card(card.id) ?? card))
 
         case let ("DELETE", "cards"?, id?, nil):
@@ -134,6 +142,10 @@ enum APIRouter {
         default:
             throw Failure(status: 404, error: APIError("not found", detail: "\(request.method) \(request.path)"))
         }
+    }
+
+    private static func vibesState(_ board: Board) -> VibesResponse {
+        VibesResponse(on: board.vibes != nil, arming: board.vibesArming, ledger: board.vibes, options: board.vibesOptions)
     }
 
     private static func card(_ id: String, _ board: Board) throws -> Card {

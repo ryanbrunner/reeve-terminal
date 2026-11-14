@@ -66,10 +66,37 @@ public struct BoardResponse: Codable, Equatable, Sendable {
     public var cards: [APICard]
     /// The card open over the board, if any.
     public var selectedId: UUID?
+    /// What VIBES MODE has done since it went on; nil while it is off.
+    public var vibes: VibesLedger?
 
-    public init(cards: [APICard], selectedId: UUID?) {
+    public init(cards: [APICard], selectedId: UUID?, vibes: VibesLedger? = nil) {
         self.cards = cards
         self.selectedId = selectedId
+        self.vibes = vibes
+    }
+}
+
+/// `GET`/`POST /api/vibes`: the board's VIBES MODE switch.
+public struct VibesResponse: Codable, Equatable, Sendable {
+    public var on: Bool
+    /// Just switched on: the two seconds before it acts, in which it can be undone.
+    public var arming: Bool
+    public var ledger: VibesLedger?
+    public var options: VibesOptions
+
+    public init(on: Bool, arming: Bool, ledger: VibesLedger?, options: VibesOptions) {
+        self.on = on
+        self.arming = arming
+        self.ledger = ledger
+        self.options = options
+    }
+}
+
+public struct VibesBody: Codable, Equatable, Sendable {
+    public var on: Bool
+
+    public init(on: Bool) {
+        self.on = on
     }
 }
 
@@ -86,9 +113,11 @@ public struct CreateCardBody: Codable, Equatable, Sendable {
     public var inFolder: Bool
     /// Open the card over the board, as the new card sheet does.
     public var open: Bool
+    /// In VIBES MODE on its own, whatever the board's switch says.
+    public var vibes: Bool
 
     public init(cwd: String, title: String = "", prompt: String? = nil, mode: StartMode = .plan,
-                model: String? = nil, effort: String? = nil, inFolder: Bool = false, open: Bool = false) {
+                model: String? = nil, effort: String? = nil, inFolder: Bool = false, open: Bool = false, vibes: Bool = false) {
         self.cwd = cwd
         self.title = title
         self.prompt = prompt
@@ -97,6 +126,7 @@ public struct CreateCardBody: Codable, Equatable, Sendable {
         self.effort = effort
         self.inFolder = inFolder
         self.open = open
+        self.vibes = vibes
     }
 
     /// Only `cwd` is needed; the rest default as the initializer's do.
@@ -110,15 +140,20 @@ public struct CreateCardBody: Codable, Equatable, Sendable {
         effort = try c.decodeIfPresent(String.self, forKey: .effort)
         inFolder = try c.decodeIfPresent(Bool.self, forKey: .inFolder) ?? false
         open = try c.decodeIfPresent(Bool.self, forKey: .open) ?? false
+        vibes = try c.decodeIfPresent(Bool.self, forKey: .vibes) ?? false
     }
 }
 
-/// `PATCH /api/cards/:id`. An empty title hands naming back to Claude.
+/// `PATCH /api/cards/:id`: what is given changes. An empty title hands
+/// naming back to Claude.
 public struct EditCardBody: Codable, Equatable, Sendable {
     public var title: String?
+    /// The card in VIBES MODE on its own, or back out of it.
+    public var vibes: Bool?
 
-    public init(title: String?) {
+    public init(title: String? = nil, vibes: Bool? = nil) {
         self.title = title
+        self.vibes = vibes
     }
 }
 

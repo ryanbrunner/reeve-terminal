@@ -13,7 +13,7 @@ struct Verb {
 }
 
 /// `reeve <name>`.
-let topVerbs: [Verb] = [boardVerb, statusVerb, openVerb, modelsVerb, doctorVerb]
+let topVerbs: [Verb] = [boardVerb, statusVerb, openVerb, vibesVerb, modelsVerb, doctorVerb]
 
 /// `reeve card <name>`.
 let cardVerbs: [Verb] = [
@@ -61,6 +61,9 @@ let boardVerb = Verb(
         return .ok
     }
     var sections: [String] = []
+    if let ledger = board.vibes {
+        sections.append("VIBES MODE since \(when(ledger.since))")
+    }
     for stage in stages {
         let cards = board.cards.filter { $0.card.stage == stage }
         var section = "\(stage.label) (\(cards.count))"
@@ -102,6 +105,8 @@ let showVerb = Verb(
     let model = [card.model, card.effort].compactMap { $0 }.joined(separator: " · ")
     if !model.isEmpty { facts.append(["Model", model]) }
     if let mode = card.permissionMode ?? card.startMode?.permissionMode { facts.append(["Mode", mode]) }
+    if card.vibes == true { facts.append(["Vibes", card.shippedAt == nil ? "on, for this card" : "shipped \(when(card.shippedAt!))"]) }
+    if let line = card.backgroundLine { facts.append(["Background", line]) }
     facts.append(["Created", when(card.createdAt)])
     facts.append(["Updated", when(card.updatedAt)])
     var text = api.displayTitle + "\n" + Table.format(facts, indent: "  ")
@@ -335,10 +340,11 @@ let addVerb = Verb(
       --effort EFFORT            see `reeve models`
       --in-folder                work in the folder itself if git can't make a worktree
       --open                     open the card in the app
+      --vibes                    VIBES MODE drives this card, whatever the board's switch says
       --json | --quiet           the card as JSON | just its id
     """,
     valued: ["cwd", "prompt", "prompt-file", "mode", "model", "effort"],
-    flags: ["in-folder", "open", "json", "quiet"]
+    flags: ["in-folder", "open", "vibes", "json", "quiet"]
 ) { args in
     let title = args.positionals.joined(separator: " ")
     var prompt = args.value("prompt")
@@ -359,7 +365,8 @@ let addVerb = Verb(
     let cwd = URL(fileURLWithPath: (args.value("cwd").map { ($0 as NSString).expandingTildeInPath }) ?? here,
                   relativeTo: URL(fileURLWithPath: here, isDirectory: true)).standardizedFileURL.path
     let body = CreateCardBody(cwd: cwd, title: title, prompt: prompt, mode: mode, model: args.value("model"),
-                              effort: args.value("effort"), inFolder: args.has("in-folder"), open: args.has("open"))
+                              effort: args.value("effort"), inFolder: args.has("in-folder"), open: args.has("open"),
+                              vibes: args.has("vibes"))
     let client = try Client.connect()
     let card: APICard = try await client.call("POST", "/api/cards", body: body)
     if args.has("json") {
@@ -376,27 +383,40 @@ let addVerb = Verb(
 let editVerb = Verb(
     name: "edit",
     usage: """
-    reeve card edit <card> (--title TITLE | --no-title) [--json]
+    reeve card edit <card> [--title TITLE | --no-title] [--vibes | --no-vibes] [--json]
 
-    Renames the card. --no-title hands naming back to Claude.
+    Renames the card, or puts it in VIBES MODE on its own or takes it out.
+      --no-title   hand naming back to Claude
     """,
-    valued: ["title"], flags: ["no-title", "json"]
+    valued: ["title"], flags: ["no-title", "vibes", "no-vibes", "json"]
 ) { args in
     guard args.positionals.count == 1 else { throw UsageError("which card?") }
-    let title: String
+    var body = EditCardBody()
     switch (args.value("title"), args.has("no-title")) {
-    case let (given?, false): title = given
-    case (nil, true): title = ""
-    case (nil, false): throw UsageError("nothing to change: --title or --no-title")
+    case let (given?, false): body.title = given
+    case (nil, true): body.title = ""
+    case (nil, false): break
     default: throw UsageError("--title or --no-title, not both")
     }
+    switch (args.has("vibes"), args.has("no-vibes")) {
+    case (true, true): throw UsageError("--vibes or --no-vibes, not both")
+    case (true, false): body.vibes = true
+    case (false, true): body.vibes = false
+    case (false, false): break
+    }
+    guard body.title != nil || body.vibes != nil else { throw UsageError("nothing to change: --title, --no-title, --vibes or --no-vibes") }
     let client = try Client.connect()
     let api = try await client.card(args.positionals[0])
-    let edited: APICard = try await client.call("PATCH", path(api.card.id), body: EditCardBody(title: title))
+    let edited: APICard = try await client.call("PATCH", path(api.card.id), body: body)
     if args.has("json") {
         try printJSON(edited)
-    } else {
+        return .ok
+    }
+    if let title = body.title {
         out(title.isEmpty ? "\(edited.short) will be named by Claude" : "Renamed \(edited.short): \(edited.card.title)")
+    }
+    if let vibes = body.vibes {
+        out(vibes ? "VIBES MODE drives \(edited.short)" : "\(edited.short) is out of VIBES MODE")
     }
     return .ok
 }
@@ -599,5 +619,58 @@ let openVerb = Verb(
     } else {
         try await client.send("POST", "/api/open", body: [String: String]())
     }
+    return .ok
+}
+
+let vibesVerb = Verb(
+    name: "vibes",
+    usage: """
+    reeve vibes [on | off] [--json]
+
+    The board's VIBES MODE switch. On, Claude plans, answers and ships every
+    card with nobody watching: it approves plans unread, answers Claude's
+    questions for you, and moves cards along. It waits two seconds before
+    acting, in which `reeve vibes off` undoes it. With neither, says whether
+    it is on and what it has done.
+    """,
+    flags: ["json"]
+) { args in
+    guard args.positionals.count <= 1 else { throw UsageError("on or off") }
+    let client = try Client.connect()
+    let state: VibesResponse
+    switch args.positionals.first {
+    case nil:
+        state = try await client.get("/api/vibes")
+    case "on"?:
+        let before: VibesResponse = try await client.get("/api/vibes")
+        if !before.on {
+            let o = before.options
+            note("VIBES MODE: plans approved unread\(o.skipPlanning ? " (Planning skipped)" : ""), questions answered for you, "
+                 + "\(o.skipTesting ? "Testing skipped, " : "")\(o.autoMerge ? "pull requests merged" : "cards stop at Release"). "
+                 + "`reeve vibes off` to stop.")
+        }
+        state = try await client.call("POST", "/api/vibes", body: VibesBody(on: true))
+    case "off"?:
+        state = try await client.call("POST", "/api/vibes", body: VibesBody(on: false))
+    case let other?:
+        throw UsageError("on or off, not “\(other)”")
+    }
+    if args.has("json") {
+        try printJSON(state)
+        return .ok
+    }
+    guard state.on, let ledger = state.ledger else {
+        out("VIBES MODE is off")
+        return .ok
+    }
+    var text = "VIBES MODE is on since \(when(ledger.since))" + (state.arming ? " (arming)" : "")
+    text += "\n" + Table.format([
+        ["moves", String(ledger.moves)], ["merged", String(ledger.merged)],
+        ["plans and reviews skipped", String(ledger.reviewsSkipped)],
+        ["questions answered", String(ledger.questionsSelfAnswered)],
+        ["prompts from you", String(ledger.humanApprovals)],
+    ], indent: "  ")
+    if !ledger.log.isEmpty { text += "\n\n" + ledger.log.map { "  " + $0 }.joined(separator: "\n") }
+    out(text)
     return .ok
 }
