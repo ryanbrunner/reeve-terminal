@@ -92,10 +92,75 @@ open card. Use ⌘B, the × in the card's header or a click outside it.
 Right-click a card, or use the ⋯ in an open card's header, to move it, rename
 it, re-sort it now, restart its session or reveal its folder.
 
+## Command line
+
+`reeve` drives the board from a shell, with the same commands as reeve-board's
+`reeve` where this app does the same thing. It is built into
+`Reeve.app/Contents/Helpers`, and every card's terminal has it first on its
+PATH, so Claude in a card can use it too. To use it from your own shell:
+
+```sh
+script/install-cli      # links it into ~/.local/bin (or pass a folder)
+```
+
+reeve-board's CLI is also called `reeve`; whichever comes first on your PATH
+wins (a card's terminal always gets this one).
+
+```
+reeve board [--stage S] [--repo PATH]       every card, column by column
+reeve card show|plan|diff|worktree|pr [<card>]
+reeve card add [<title…>] [--prompt TEXT] [--mode plan|build] [--cwd DIR] [--model M] [--effort E]
+reeve card edit <card> --title TITLE | --no-title
+reeve card move <card> <stage>
+reeve card run <card> [--restart]
+reeve card reply <card> <text…> [--file PATH|-] [--force]
+reeve card wait [<card>] [--timeout SECONDS]
+reeve card close <card> [--force]
+reeve open [<card>] · status · models · doctor
+```
+
+- **Naming a card.** A card is named by its id, or its first characters as
+  in its branch (`reeve/<id>`), or its title. Left out, it is the card whose
+  terminal or worktree you're in.
+- **`--json`.** Prints the API's answer and nothing else.
+- **`reply`.** Types into the card's terminal when its session is running,
+  or starts the session with the message. It refuses while Claude Code shows
+  a dialog, unless you pass `--force`.
+- **`close`.** Deletes the worktree, as ⌘W does. It refuses a live session or
+  uncommitted work unless you pass `--force`.
+
+**Exit codes:**
+
+| Code | Meaning |
+|---|---|
+| 0 | ok |
+| 1 | error |
+| 2 | bad command line |
+
+`card wait` has its own:
+
+| Code | Meaning |
+|---|---|
+| 0 | ready for review |
+| 3 | waiting on you |
+| 4 | failed |
+| 5 | nothing running |
+| 6 | timed out |
+
+A prompt that hasn't reached Claude after 30 seconds puts the card in
+"needs input". That happens when something in the terminal is holding it
+up, such as trusting a new folder.
+
+**How it reaches the app.** It talks to the app over 127.0.0.1. The app writes
+its port and a fresh token to `server.json` in the data folder. Only you can
+read that file, and every request must carry the token. Requests from web
+pages are refused.
+
 ## Data
 
 The board is saved to `~/Library/Application Support/Reeve Terminal/board.json`.
-Set `REEVE_DATA_DIR` to put it somewhere else.
+Set `REEVE_DATA_DIR` to put it somewhere else. `reeve` reads it too, to find
+the same app.
 
 ## Smoke test
 

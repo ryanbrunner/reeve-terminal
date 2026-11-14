@@ -38,7 +38,7 @@ final class Terminals: NSObject, LocalProcessTerminalViewDelegate {
         let view = view(for: card.id)
         guard !live.contains(card.id) else { return }
         let claude = env.claudePath ?? "claude"
-        let command = "exec " + Launch.commandLine(claude, Launch.claudeArguments(for: card, prompt: prompt))
+        let command = Launch.shellCommand(claude, Launch.claudeArguments(for: card, prompt: prompt), cliDirectory: Self.cliDirectory)
         let environment = Launch.environment(base: env.baseEnvironment, hookPort: hookPort, cardId: card.id)
         if view.hasRun {
             view.feed(text: "\r\n\u{1b}[2m─── resuming session ───\u{1b}[0m\r\n")
@@ -86,6 +86,30 @@ final class Terminals: NSObject, LocalProcessTerminalViewDelegate {
         view.feed(text: "\r\n\u{1b}[2m─── session ended\(exitCode.map { $0 == 0 ? "" : " (exit \($0))" } ?? "") ───\u{1b}[0m\r\n")
         onStateChange?(id, false, exitCode)
     }
+
+    /// Types `text` into the card's terminal and presses Return, as a person
+    /// would. Sent as a paste when the program asks for pastes marked, so a
+    /// line break in it doesn't send the message early; Return follows a
+    /// moment later, since Claude Code takes a Return that arrives with a
+    /// paste as part of it.
+    func send(_ text: String, to cardId: UUID) {
+        guard let view = views[cardId], live.contains(cardId) else { return }
+        if view.terminal.bracketedPasteMode {
+            view.send(txt: "\u{1b}[200~" + text + "\u{1b}[201~")
+        } else {
+            view.send(txt: text.replacingOccurrences(of: "\n", with: " "))
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak view] in
+            view?.send(txt: "\r")
+        }
+    }
+
+    /// Where the app keeps `reeve`, which every card's shell finds first on
+    /// its PATH. Nil in a build without it.
+    static let cliDirectory: String? = {
+        let helpers = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers")
+        return FileManager.default.isExecutableFile(atPath: helpers.appendingPathComponent("reeve").path) ? helpers.path : nil
+    }()
 
     func stop(_ cardId: UUID) {
         guard let view = views[cardId], live.contains(cardId) else { return }

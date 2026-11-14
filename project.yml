@@ -28,6 +28,14 @@ targets:
         product: ReeveKit
       - package: SwiftTerm
         product: SwiftTerm
+      # `reeve`, in Contents/Helpers: Contents/MacOS already has `Reeve`,
+      # which a case-insensitive disk takes for the same name.
+      - target: ReeveCLI
+        embed: true
+        codeSign: false
+        copy:
+          destination: wrapper
+          subpath: Contents/Helpers
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ryanbrunner.reeve-terminal
@@ -44,3 +52,20 @@ targets:
         ENABLE_HARDENED_RUNTIME: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
         COMBINE_HIDPI_IMAGES: YES
+  # The command line, from the same sources SwiftPM builds it from
+  # (`cd ReeveKit && swift build`).
+  ReeveCLI:
+    type: tool
+    platform: macOS
+    sources:
+      - path: ReeveKit/Sources/reeve
+    dependencies:
+      - package: ReeveKit
+        product: ReeveKit
+    settings:
+      base:
+        PRODUCT_NAME: reeve
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        ENABLE_HARDENED_RUNTIME: NO
+        SKIP_INSTALL: YES

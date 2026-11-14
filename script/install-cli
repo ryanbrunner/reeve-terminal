@@ -1,0 +1,25 @@
+#!/bin/sh
+# Links `reeve`, the command line inside Reeve.app, onto your PATH.
+#   script/install-cli                    → ~/.local/bin/reeve, from the Debug build
+#   script/install-cli /usr/local/bin     → another folder
+#   REEVE_APP=/Applications/Reeve.app script/install-cli
+# Cards' own terminals find the app's `reeve` without this.
+set -e
+cd "$(dirname "$0")/.."
+app="${REEVE_APP:-$PWD/build/Build/Products/Debug/Reeve.app}"
+bin="$app/Contents/Helpers/reeve"
+dir="${1:-$HOME/.local/bin}"
+if [ ! -x "$bin" ]; then
+  echo "No reeve at $bin — run script/build first, or set REEVE_APP." >&2
+  exit 1
+fi
+mkdir -p "$dir"
+ln -sf "$bin" "$dir/reeve"
+echo "→ $dir/reeve -> $bin"
+found="$(command -v reeve || true)"
+if [ -z "$found" ]; then
+  echo "$dir isn't on your PATH yet." >&2
+elif [ "$(cd "$(dirname "$found")" && pwd -P)/reeve" != "$(cd "$dir" && pwd -P)/reeve" ]; then
+  # reeve-board's CLI is called reeve too.
+  echo "Note: $found comes first on your PATH, so \`reeve\` runs that one." >&2
+fi

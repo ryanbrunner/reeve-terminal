@@ -34,7 +34,15 @@ final class Board: ObservableObject {
     @Published private(set) var environment: ShellEnvironment?
 
     let terminals = Terminals()
-    private var hooks: HookServer?
+    /// Claude Code is showing a dialog on these cards — a permission prompt,
+    /// a question, a plan to approve — so typing into them would answer it.
+    private(set) var dialogOpen: Set<UUID> = []
+    /// Cards sent a prompt that hasn't reached Claude yet. Their title can't
+    /// say the turn was interrupted, because it hasn't started.
+    private var awaitingPrompt: Set<UUID> = []
+    /// Raised with each prompt sent, so only the latest one's timer acts.
+    private var promptsSent: [UUID: Int] = [:]
+    private var server: LocalServer?
     private var hookPort: UInt16?
     /// Raised by every prompt, so a classification that a newer turn has
     /// overtaken leaves the card's activity alone.
@@ -46,14 +54,13 @@ final class Board: ObservableObject {
     private var pendingRemovals: [WorktreeRemoval] = []
     /// Starts waiting on the shell environment or the hook port.
     private var waitingToStart: [(Card, String?)] = []
+    private let dataDir: URL
     private let storeURL: URL
 
     init() {
-        let support = ProcessInfo.processInfo.environment["REEVE_DATA_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
-            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("Reeve Terminal", isDirectory: true)
-        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
-        storeURL = support.appendingPathComponent("board.json")
+        dataDir = DataDirectory.url()
+        try? FileManager.default.createDirectory(at: dataDir, withIntermediateDirectories: true)
+        storeURL = dataDir.appendingPathComponent("board.json")
         load()
 
         terminals.onStateChange = { [weak self] id, running, exitCode in
@@ -64,16 +71,27 @@ final class Board: ObservableObject {
         }
 
         do {
-            let server = try HookServer()
-            server.onReady = { [weak self] port in
-                self?.hookPort = port
-                self?.drainStarts()
+            let server = try LocalServer()
+            server.onReady = { [weak self, weak server] port in
+                guard let self, let server else { return }
+                self.hookPort = port
+                // How `reeve` finds this app.
+                do {
+                    try ServerInfo(port: port, pid: ProcessInfo.processInfo.processIdentifier, token: server.token).write(dataDir: self.dataDir)
+                } catch {
+                    NSLog("Reeve: couldn't write server.json: \(error)")
+                }
+                self.drainStarts()
             }
             server.onEvent = { [weak self] id, body in self?.receive(id, body) }
+            server.onRequest = { [weak self] request in
+                guard let self else { return .error(503, APIError("shutting down")) }
+                return await APIRouter.handle(request, board: self)
+            }
             server.start()
-            hooks = server
+            self.server = server
         } catch {
-            NSLog("Reeve: hook server failed to start: \(error)")
+            NSLog("Reeve: local server failed to start: \(error)")
         }
 
         Task {
@@ -119,24 +137,12 @@ final class Board: ObservableObject {
 
     // MARK: Changing the board
 
-    /// A card in a git repo gets its own worktree, on a branch from the
-    /// folder's HEAD; anywhere else it works in the folder itself. It starts
-    /// in the column its mode begins in.
+    /// Starts a card from the new card sheet, and opens it. When git can't
+    /// make a worktree, asks whether to work in the folder instead.
     func create(cwd: String, title: String, prompt: String?, mode: StartMode, model: String? = nil, effort: String? = nil) {
-        RecentFolders.add(cwd)
-        var card = Card(title: title.trimmingCharacters(in: .whitespacesAndNewlines), cwd: cwd, stage: mode.stage)
-        card.startMode = mode
-        card.model = model
-        card.effort = effort
         Task {
             do {
-                if let made = try await Worktrees.make(for: card.id, in: cwd, env: environment) {
-                    card.cwd = made.cwd
-                    card.repoPath = made.repo
-                    card.worktreePath = made.path
-                    card.branch = made.branch
-                    card.baseCommit = made.base
-                }
+                _ = try await createCard(cwd: cwd, title: title, prompt: prompt, mode: mode, model: model, effort: effort, open: true, inFolder: false)
             } catch {
                 let alert = NSAlert()
                 alert.messageText = "Couldn't make a worktree for this card"
@@ -144,12 +150,44 @@ final class Board: ObservableObject {
                 alert.addButton(withTitle: "Work in the Folder")
                 alert.addButton(withTitle: "Cancel")
                 guard alert.runModal() == .alertFirstButtonReturn else { return }
+                _ = try? await createCard(cwd: cwd, title: title, prompt: prompt, mode: mode, model: model, effort: effort, open: true, inFolder: true)
             }
-            cards.append(card)
-            selectedId = card.id
-            save()
-            start(card, prompt: prompt)
         }
+    }
+
+    /// A card in a git repo gets its own worktree, on a branch from the
+    /// folder's HEAD; anywhere else it works in the folder itself. It starts
+    /// in the column its mode begins in. When git can't make the worktree,
+    /// the card works in the folder if `inFolder`, else this throws.
+    @discardableResult
+    func createCard(cwd: String, title: String, prompt: String?, mode: StartMode, model: String?, effort: String?,
+                    open: Bool, inFolder: Bool) async throws -> Card {
+        var card = Card(title: title.trimmingCharacters(in: .whitespacesAndNewlines), cwd: cwd, stage: mode.stage)
+        card.startMode = mode
+        card.model = model
+        card.effort = effort
+        do {
+            if let made = try await Worktrees.make(for: card.id, in: cwd, env: environment) {
+                card.cwd = made.cwd
+                card.repoPath = made.repo
+                card.worktreePath = made.path
+                card.branch = made.branch
+                card.baseCommit = made.base
+            }
+        } catch {
+            guard inFolder else { throw error }
+        }
+        RecentFolders.add(cwd)
+        let prompted = prompt.map { !$0.isEmpty } ?? false
+        // Working from the moment it's asked, so a `reeve card wait` straight
+        // after doesn't find it idle before Claude has read the prompt.
+        if prompted { card.activity = .running }
+        cards.append(card)
+        if open { selectedId = card.id }
+        save()
+        if prompted { expectPrompt(card.id) }
+        start(card, prompt: prompt)
+        return card
     }
 
     func select(_ id: UUID) {
@@ -245,6 +283,8 @@ final class Board: ObservableObject {
         pendingClassify[id]?.cancel()
         cards.removeAll { $0.id == id }
         live.remove(id)
+        dialogOpen.remove(id)
+        awaitingPrompt.remove(id)
         classifying.remove(id)
         terminalTitles[id] = nil
         tabs[id] = nil
@@ -260,6 +300,84 @@ final class Board: ObservableObject {
             guard await Worktrees.remove(path: removal.path, branch: removal.branch, repo: removal.repo, env: environment) else { return }
             pendingRemovals.removeAll { $0 == removal }
             save()
+        }
+    }
+
+    /// What closing the card would lose that a person might want: its live
+    /// session, and work in its worktree not yet committed. Nil when nothing.
+    func closeWouldLose(_ id: UUID) async -> String? {
+        guard let card = card(id) else { return nil }
+        var reasons: [String] = []
+        if live.contains(id) { reasons.append("its session is live") }
+        if let path = card.worktreePath {
+            let changes = await Worktrees.uncommittedChanges(at: path, env: environment)
+            if changes > 0 { reasons.append("its worktree has \(changes) uncommitted change\(changes == 1 ? "" : "s")") }
+        }
+        return reasons.isEmpty ? nil : reasons.joined(separator: " and ")
+    }
+
+    /// Starts the card's session if it isn't running, without opening the card.
+    func startIfNeeded(_ id: UUID, prompt: String? = nil) {
+        guard let card = card(id), !live.contains(id), !starting.contains(id) else { return }
+        if let prompt, !prompt.isEmpty { sendingPrompt(id) }
+        start(self.card(id) ?? card, prompt: prompt)
+    }
+
+    /// Cards waiting for the shell environment or the server before they start.
+    var starting: Set<UUID> {
+        Set(waitingToStart.map(\.0.id))
+    }
+
+    /// Sends the card's Claude a message: typed into its terminal when the
+    /// session is live, else as the prompt the session starts with. Not while
+    /// a dialog is up unless `force`, since the text would answer it.
+    func reply(_ id: UUID, text: String, force: Bool) throws -> ReplyResponse.Delivery {
+        guard card(id) != nil else { throw APIError("no such card") }
+        if starting.contains(id) {
+            throw APIError("the session is still starting", detail: "try again in a moment")
+        }
+        guard live.contains(id) else {
+            startIfNeeded(id, prompt: text)
+            return .started
+        }
+        if dialogOpen.contains(id), !force {
+            let showing = card(id)?.waitingOn.map { ": \($0)" } ?? ""
+            throw APIError("Claude is showing a dialog\(showing)", detail: "answer it in the app, or pass --force to type into it anyway")
+        }
+        sendingPrompt(id)
+        terminals.send(text, to: id)
+        return .typed
+    }
+
+    /// The card is busy from the moment a prompt goes out, until its hooks say otherwise.
+    private func sendingPrompt(_ id: UUID) {
+        // Typed into a turn in progress, the message waits in Claude Code's
+        // queue, which a long tool call can hold for minutes: not a stall.
+        let midTurn = live.contains(id) && card(id)?.activity == .running
+        update(id) { card in
+            card.activity = .running
+            card.waitingOn = nil
+        }
+        if !midTurn { expectPrompt(id) }
+    }
+
+    /// The title check for interrupted turns waits for the prompt to arrive.
+    /// A prompt that hasn't arrived in half a minute is held up by something
+    /// in the terminal that fires no hook (trusting a new folder, logging in),
+    /// so the card says it needs you rather than look busy forever.
+    private func expectPrompt(_ id: UUID) {
+        awaitingPrompt.insert(id)
+        promptsSent[id, default: 0] += 1
+        let sent = promptsSent[id]
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+            guard let self, self.promptsSent[id] == sent, self.awaitingPrompt.remove(id) != nil,
+                  self.live.contains(id), self.card(id)?.activity == .running else { return }
+            self.dialogOpen.insert(id)
+            self.update(id) { card in
+                card.activity = .needsInput
+                card.waitingOn = "Something in the terminal needs you before Claude gets the message"
+            }
+            self.updateBadge()
         }
     }
 
@@ -280,7 +398,8 @@ final class Board: ObservableObject {
 
     func shutdown() {
         terminals.stopAll()
-        hooks?.stop()
+        server?.stop()
+        ServerInfo.remove(dataDir: dataDir, pid: ProcessInfo.processInfo.processIdentifier)
         save()
     }
 
@@ -316,6 +435,8 @@ final class Board: ObservableObject {
             return
         }
         live.remove(id)
+        dialogOpen.remove(id)
+        awaitingPrompt.remove(id)
         update(id) { card in
             if card.activity == .running || card.activity == .needsInput {
                 card.activity = (exitCode ?? 0) == 0 ? .idle : .error
@@ -332,9 +453,10 @@ final class Board: ObservableObject {
     /// mid-turn, so the title is how a card learns its turn was interrupted.
     private func titleChanged(_ id: UUID, _ title: String) {
         terminalTitles[id] = title
-        guard title.hasPrefix("\u{2733}"), card(id)?.activity == .running else { return }
+        guard title.hasPrefix("\u{2733}"), card(id)?.activity == .running, !awaitingPrompt.contains(id) else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            guard let self, self.terminalTitles[id]?.hasPrefix("\u{2733}") == true, self.card(id)?.activity == .running else { return }
+            guard let self, self.terminalTitles[id]?.hasPrefix("\u{2733}") == true, self.card(id)?.activity == .running,
+                  !self.awaitingPrompt.contains(id) else { return }
             self.update(id) { card in
                 card.activity = .idle
                 card.waitingOn = nil
@@ -348,7 +470,15 @@ final class Board: ObservableObject {
     private func receive(_ cardId: UUID, _ body: Data) {
         guard let event = try? HookEvent.decode(body), card(cardId) != nil else { return }
         let effect = event.effect
-        if effect.startsConversation { turns[cardId, default: 0] += 1 }
+        if effect.startsConversation {
+            turns[cardId, default: 0] += 1
+            awaitingPrompt.remove(cardId)
+        }
+        if effect.activity == .needsInput {
+            dialogOpen.insert(cardId)
+        } else if effect.activity != nil {
+            dialogOpen.remove(cardId)
+        }
         update(cardId) { card in
             // `/clear` starts a new session in the same terminal; follow it, so
             // a restart resumes the conversation that is actually on screen.
@@ -454,7 +584,7 @@ final class Board: ObservableObject {
     }
 
     /// A pull request found open or merged moves the card to Release.
-    private func findPullRequest(_ id: UUID) async {
+    func findPullRequest(_ id: UUID) async {
         guard let card = card(id), let worktree = card.worktreePath, let env = environment,
               !findingPullRequests.contains(id), FileManager.default.fileExists(atPath: worktree) else { return }
         findingPullRequests.insert(id)
@@ -466,6 +596,12 @@ final class Board: ObservableObject {
             card.pullRequest = found
             if card.hasLivePullRequest, !card.stagePinned { card.stage = .release }
         }
+    }
+
+    /// The card as `reeve` sees it.
+    func apiCard(_ card: Card) -> APICard {
+        APICard(card: card, live: live.contains(card.id), starting: starting.contains(card.id),
+                dialogOpen: dialogOpen.contains(card.id), displayTitle: displayTitle(card))
     }
 
     // MARK: Persistence

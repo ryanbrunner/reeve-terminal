@@ -35,7 +35,8 @@ public enum Launch {
     /// `claude`'s arguments for a card: a new session under the card's id, in
     /// the mode the card was started in, or the card's session picked up again.
     /// The card's model and effort come along on a resume too, so a card woken
-    /// after a restart keeps them.
+    /// after a restart keeps them. A prompt is the session's next message,
+    /// whether it is new or resumed.
     public static func claudeArguments(for card: Card, prompt: String? = nil) -> [String] {
         var args = card.hasConversation
             ? ["--resume", card.sessionId.uuidString.lowercased()]
@@ -48,7 +49,7 @@ public enum Launch {
         if let mode = card.startMode, !card.hasConversation {
             args += ["--permission-mode", mode.permissionMode]
         }
-        if let prompt, !prompt.isEmpty, !card.hasConversation {
+        if let prompt, !prompt.isEmpty {
             args.append(prompt)
         }
         return args
@@ -57,6 +58,16 @@ public enum Launch {
     /// A shell command line that runs `executable` with `args`, each quoted.
     public static func commandLine(_ executable: String, _ args: [String]) -> String {
         ([executable] + args).map(shellQuote).joined(separator: " ")
+    }
+
+    /// What a card's login shell runs: `claude`, with `cliDirectory` (where the
+    /// app keeps `reeve`) put first on PATH. Done here rather than in the
+    /// environment, so the person's profile, which runs first, can't put
+    /// another `reeve` ahead of it.
+    public static func shellCommand(_ claude: String, _ args: [String], cliDirectory: String?) -> String {
+        let exec = "exec " + commandLine(claude, args)
+        guard let cliDirectory else { return exec }
+        return "export PATH=\(shellQuote(cliDirectory)):\"$PATH\"; " + exec
     }
 
     public static func shellQuote(_ s: String) -> String {
