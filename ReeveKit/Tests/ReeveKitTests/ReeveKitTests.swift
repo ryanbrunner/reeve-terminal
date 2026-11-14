@@ -267,6 +267,13 @@ import Testing
         #expect(Launch.claudeArguments(for: card, prompt: "go").last == "go")
     }
 
+    @Test func theCLIGoesFirstOnPathAfterTheProfile() {
+        #expect(Launch.shellCommand("/bin/claude", ["--resume", "x"], cliDirectory: nil) == "exec /bin/claude --resume x")
+        #expect(Launch.shellCommand("/bin/claude", [], cliDirectory: "/Apps/Reeve.app/Contents/Helpers")
+            == #"export PATH=/Apps/Reeve.app/Contents/Helpers:"$PATH"; exec /bin/claude"#)
+        #expect(Launch.shellCommand("claude", [], cliDirectory: "/My Apps/bin").hasPrefix("export PATH='/My Apps/bin':"))
+    }
+
     @Test func newSessionsStartInTheCardsModeAndResumedOnesDont() {
         var card = Card(cwd: "/tmp")
         #expect(!Launch.claudeArguments(for: card).contains("--permission-mode"))
@@ -814,6 +821,199 @@ import Testing
     }
 }
 
+@Suite struct StageNameTests {
+    @Test func acceptsWhatPeopleType() {
+        #expect(StageName.parse("backlog") == .backlog)
+        #expect(StageName.parse("in-progress") == .inProgress)
+        #expect(StageName.parse("in_progress") == .inProgress)
+        #expect(StageName.parse("In Progress") == .inProgress)
+        #expect(StageName.parse("Testing") == .testing)
+        #expect(StageName.parse("done") == .release)
+        #expect(StageName.parse("shipped") == nil)
+        #expect(StageName.name(.inProgress) == "in-progress")
+    }
+}
+
+@Suite struct CardRefTests {
+    private let a = Card(id: UUID(uuidString: "5B701C1D-0000-4000-8000-000000000001")!, title: "Login form", cwd: "/r")
+    private let b = Card(id: UUID(uuidString: "5B70AAAA-0000-4000-8000-000000000002")!, title: "Fix tests", cwd: "/r")
+    private var cards: [Card] { [a, b] }
+
+    @Test func byIdPrefixOrTitle() throws {
+        #expect(try CardRef.resolve("5b701c1d", in: cards).id == a.id)
+        #expect(try CardRef.resolve(a.id.uuidString.lowercased(), in: cards).id == a.id)
+        #expect(try CardRef.resolve("5B70AA", in: cards).id == b.id)
+        #expect(try CardRef.resolve("fix TESTS", in: cards).id == b.id)
+    }
+
+    @Test func refusesWhatIsAmbiguousOrMissing() {
+        #expect(throws: CardRef.Failure.ambiguous("5b70", [a.id, b.id])) { try CardRef.resolve("5b70", in: cards) }
+        #expect(throws: CardRef.Failure.notFound("nope")) { try CardRef.resolve("nope", in: cards) }
+        // Too short to be taken for an id.
+        #expect(throws: CardRef.Failure.notFound("5b7")) { try CardRef.resolve("5b7", in: cards) }
+    }
+
+    @Test func defaultsToTheCardsOwnTerminal() throws {
+        let found = try CardRef.current(in: cards, cwd: "/elsewhere", environment: ["REEVE_CARD_ID": b.id.uuidString], realpath: { $0 })
+        #expect(found.id == b.id)
+    }
+
+    @Test func defaultsToTheDeepestWorktreeHoldingTheFolder() throws {
+        var outer = a, inner = b
+        outer.worktreePath = "/private/tmp/repo"
+        inner.worktreePath = "/private/tmp/repo/.claude/worktrees/reeve-5b70aaaa"
+        let realpath = { (p: String) in p.hasPrefix("/tmp") ? "/private" + p : p }
+        #expect(try CardRef.current(in: [outer, inner], cwd: "/tmp/repo/.claude/worktrees/reeve-5b70aaaa/src", environment: [:], realpath: realpath).id == b.id)
+        #expect(try CardRef.current(in: [outer, inner], cwd: "/tmp/repo/src", environment: [:], realpath: realpath).id == a.id)
+        // A sibling folder that only starts with the same name isn't inside it.
+        #expect(throws: CardRef.Failure.noDefault) {
+            try CardRef.current(in: [outer], cwd: "/private/tmp/repo-2", environment: [:], realpath: realpath)
+        }
+    }
+
+    @Test func aNamedCardWinsOverTheDefault() throws {
+        let found = try CardRef.resolve("login form", in: cards, cwd: "/", environment: ["REEVE_CARD_ID": b.id.uuidString], realpath: { $0 })
+        #expect(found.id == a.id)
+    }
+}
+
+@Suite struct ArgumentsTests {
+    @Test func splitsPositionalsOptionsAndFlags() throws {
+        let args = try Arguments(["fix", "the", "--title", "New", "--json", "-f", "--model=opus", "--", "--literal"],
+                                 valued: ["title", "model"], flags: ["json", "follow"], short: ["f": "follow"])
+        #expect(args.positionals == ["fix", "the", "--literal"])
+        #expect(args.value("title") == "New")
+        #expect(args.value("model") == "opus")
+        #expect(args.has("json"))
+        #expect(args.has("follow"))
+    }
+
+    @Test func refusesWhatItDoesntKnow() {
+        #expect(throws: UsageError("unknown option --nope")) { try Arguments(["--nope"], valued: [], flags: []) }
+        #expect(throws: UsageError("--title needs a value")) { try Arguments(["--title"], valued: ["title"], flags: []) }
+        #expect(throws: UsageError("--json doesn't take a value")) { try Arguments(["--json=1"], valued: [], flags: ["json"]) }
+    }
+
+    @Test func aDashAloneIsStdin() throws {
+        #expect(try Arguments(["-"], valued: [], flags: []).positionals == ["-"])
+    }
+}
+
+@Suite struct TableTests {
+    @Test func padsAllButTheLastColumn() {
+        let text = Table.format([["a", "stage", "title one"], ["bbb", "x", "t"]], indent: "  ")
+        #expect(text == "  a    stage  title one\n  bbb  x      t")
+    }
+}
+
+@Suite struct WaitOutcomeTests {
+    private func card(_ activity: Activity, live: Bool = true, starting: Bool = false) -> APICard {
+        APICard(card: Card(cwd: "/r", activity: activity), live: live, starting: starting, dialogOpen: false, displayTitle: "t")
+    }
+
+    @Test func endsTheWayReeveBoardsDoes() {
+        #expect(WaitOutcome.of(card(.running)) == nil)
+        #expect(WaitOutcome.of(card(.waiting)) == nil)
+        #expect(WaitOutcome.of(card(.idle, starting: true)) == nil)
+        #expect(WaitOutcome.of(card(.needsReview)) == .ok)
+        #expect(WaitOutcome.of(card(.needsInput)) == .needsInput)
+        #expect(WaitOutcome.of(card(.error)) == .failed)
+        #expect(WaitOutcome.of(card(.idle)) == .idle)
+        // Left running by a session that is gone: nothing to wait for.
+        #expect(WaitOutcome.of(card(.running, live: false)) == .idle)
+    }
+}
+
+@Suite struct APITests {
+    @Test func aCardIsFlatWithWhatTheAppKnows() throws {
+        var card = Card(title: "Login", cwd: "/r", stage: .inProgress, activity: .running)
+        card.branch = "reeve/1a2b3c4d"
+        card.pullRequests = [PullRequest(number: 4, state: .open, url: "https://x/4", branch: "reeve/1a2b3c4d"),
+                             PullRequest(number: 2, state: .merged, url: "https://x/2", branch: "earlier")]
+        let api = APICard(card: card, live: true, starting: false, dialogOpen: true, displayTitle: "Login")
+        let data = try API.encoder().encode(api)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        #expect((json["pullRequest"] as? [String: Any])?["number"] as? Int == 4)
+        #expect((json["pullRequests"] as? [Any])?.count == 2)
+        #expect(json["stage"] as? String == "in_progress")
+        #expect(json["live"] as? Bool == true)
+        #expect(json["dialogOpen"] as? Bool == true)
+        #expect(json["displayTitle"] as? String == "Login")
+        let back = try API.decoder().decode(APICard.self, from: data)
+        #expect(back.card.id == card.id)
+        #expect(back.card.pullRequest == card.pullRequest)
+        #expect(back.card.pullRequests == card.pullRequests)
+        #expect(back.live && back.dialogOpen && !back.starting)
+    }
+
+    @Test func serverInfoIsPrivateToThePerson() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let info = ServerInfo(port: 5000, pid: 42, token: ServerInfo.newToken())
+        try info.write(dataDir: dir)
+        #expect(ServerInfo.read(dataDir: dir) == info)
+        let mode = try FileManager.default.attributesOfItem(atPath: ServerInfo.url(in: dir).path)[.posixPermissions] as? Int
+        #expect(mode == 0o600)
+        ServerInfo.remove(dataDir: dir, pid: 7)
+        #expect(ServerInfo.read(dataDir: dir) != nil)
+        ServerInfo.remove(dataDir: dir, pid: 42)
+        #expect(ServerInfo.read(dataDir: dir) == nil)
+    }
+
+    @Test func dataDirectoryFollowsTheEnvironment() {
+        #expect(DataDirectory.url(environment: ["REEVE_DATA_DIR": "/tmp/r"]).path == "/tmp/r")
+        #expect(DataDirectory.url(environment: [:]).path.hasSuffix("Application Support/Reeve Terminal"))
+    }
+}
+
+@Suite struct DiffRenderTests {
+    @Test func rendersWhatItParses() {
+        let text = """
+        diff --git a/README.md b/README.md
+        --- a/README.md
+        +++ b/README.md
+        @@ -1,3 +1,3 @@
+         # Reeve
+        -old line
+        +new line
+         end
+        \\ No newline at end of file
+        diff --git a/new.txt b/new.txt
+        new file mode 100644
+        --- /dev/null
+        +++ b/new.txt
+        @@ -0,0 +1 @@
+        +hello
+        diff --git a/gone.txt b/gone.txt
+        deleted file mode 100644
+        --- a/gone.txt
+        +++ /dev/null
+        @@ -1 +0,0 @@
+        -bye
+        diff --git a/old.txt b/moved.txt
+        rename from old.txt
+        rename to moved.txt
+        diff --git a/run.sh b/run.sh
+        old mode 100644
+        new mode 100755
+        diff --git a/logo.png b/logo.png
+        Binary files a/logo.png and b/logo.png differ
+
+        """
+        let files = DiffParser.parse(text)
+        #expect(files.count == 6)
+        #expect(DiffParser.parse(DiffParser.render(files)) == files)
+    }
+
+    @Test func survivesJSON() throws {
+        let files = DiffParser.parse("diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-x\n+y\n")
+        let changes = ChangesResponse(files: files, base: "abc1234", untrackedLeftOut: 0, truncated: false)
+        let back = try API.decoder().decode(ChangesResponse.self, from: API.encoder().encode(changes))
+        #expect(back == changes)
+    }
+}
+
 @Suite struct ReviewTests {
     private let diff = DiffParser.parse("""
     diff --git a/app.swift b/app.swift
@@ -883,5 +1083,106 @@ import Testing
     @Test func aBrokenFileChangesNothing() {
         let a = comment(.new, 2, "let b = 3")
         #expect(ReviewFile.merge(Data("{not json".utf8), into: [a]) == [a])
+    }
+}
+
+@Suite struct PlanDialogTests {
+    // The labels Claude Code 2.1.286 draws, with the plan above them.
+    private let screen = [
+        "│ 1. Add the button                                │",
+        "│ 2. Wire it up                                    │",
+        "",
+        " Would you like to proceed?",
+        "",
+        " ❯ 1. Yes, clear context (42% used) and use auto mode",
+        "   2. Yes, and use auto mode",
+        "   3. Yes, manually approve edits",
+        "   4. Tell Claude what to change",
+        "      shift+tab to approve with this feedback",
+        "",
+        " ctrl-g to edit in Vim",
+    ]
+
+    @Test func readsTheDialogBelowThePlan() {
+        let dialog = PlanDialog.find(onScreen: screen)
+        #expect(dialog?.options == ["Yes, clear context (42% used) and use auto mode", "Yes, and use auto mode", "Yes, manually approve edits", "Tell Claude what to change"])
+        #expect(dialog?.selected == 0)
+    }
+
+    @Test func approvesIntoAutoModeKeepingTheContext() throws {
+        let dialog = try #require(PlanDialog.find(onScreen: screen))
+        #expect(dialog.approval == 1)
+        #expect(dialog.moves(to: dialog.approval) == ["\u{1b}[B"])
+    }
+
+    @Test func followsAPointerMovedByHand() throws {
+        var moved = screen
+        moved[5] = "   1. Yes, clear context (42% used) and use auto mode"
+        moved[8] = " ❯ 4. Tell Claude what to change"
+        let dialog = try #require(PlanDialog.find(onScreen: moved))
+        #expect(dialog.selected == 3)
+        #expect(dialog.moves(to: dialog.approval) == ["\u{1b}[A", "\u{1b}[A"])
+    }
+
+    @Test func withoutAutoModeAcceptsEdits() throws {
+        let dialog = try #require(PlanDialog.find(onScreen: [" ❯ 1. Yes, auto-accept edits", "   2. Yes, manually approve edits", "   3. No, keep planning"]))
+        #expect(dialog.approval == 0)
+        #expect(dialog.moves(to: 0).isEmpty)
+    }
+
+    @Test func neverPicksBypassingPermissions() throws {
+        let dialog = try #require(PlanDialog.find(onScreen: [" ❯ 1. Yes, and switch to bypass permissions for this session", "   2. Yes, manually approve edits", "   3. No, keep planning"]))
+        #expect(dialog.approval == 1)
+    }
+
+    @Test func readsGapsTheTerminalLeftEmpty() throws {
+        // As SwiftTerm reads Claude Code's dialog back: skipped cells are NULs.
+        let dialog = try #require(PlanDialog.find(onScreen: ["\u{0} ❯ 1. Yes, and use auto mode", "\u{0}\u{0}\u{0}\u{0}\u{0}2. Yes,\u{0}manually\u{0}approve\u{0}edits", "     3. Tell Claude what to change"]))
+        #expect(dialog.options == ["Yes, and use auto mode", "Yes, manually approve edits", "Tell Claude what to change"])
+        #expect(dialog.approval == 0)
+    }
+
+    @Test func noPointerNoTellingWhereEnterLands() {
+        #expect(PlanDialog.find(onScreen: ["   1. Yes, and use auto mode", "   2. Yes, manually approve edits", "   3. Tell Claude what to change"]) == nil)
+    }
+
+    @Test func noDialogNoOptions() {
+        #expect(PlanDialog.find(onScreen: ["> hello", "1. Add the button", "2. Wire it up"]) == nil)
+    }
+
+    @Test func approvalAndDialogHooks() throws {
+        let approved = try HookEvent.decode(Data(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"ExitPlanMode"}"#.utf8))
+        #expect(approved.approvesPlan && approved.closesPlanDialog)
+        let subagent = try HookEvent.decode(Data(#"{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Read","agent_id":"a"}"#.utf8))
+        #expect(!subagent.closesPlanDialog)
+        let notification = try HookEvent.decode(Data(#"{"session_id":"s","hook_event_name":"Notification","notification_type":"permission_prompt"}"#.utf8))
+        #expect(!notification.closesPlanDialog)
+    }
+
+    @Test func aNewPlanIsNotYetApproved() throws {
+        func event(_ json: String) throws -> HookEvent { try HookEvent.decode(Data(json.utf8)) }
+        #expect(try event(#"{"session_id":"s","hook_event_name":"PreToolUse","permission_mode":"plan","tool_name":"ExitPlanMode","tool_input":{"plan":"p"}}"#).putsUpNewPlan)
+        #expect(try event(#"{"session_id":"s","hook_event_name":"PostToolUse","permission_mode":"plan","tool_name":"Write","tool_input":{"file_path":"/u/.claude/plans/a.md"}}"#).putsUpNewPlan)
+        // Ticking off the approved plan as the work goes.
+        #expect(try !event(#"{"session_id":"s","hook_event_name":"PostToolUse","permission_mode":"auto","tool_name":"Edit","tool_input":{"file_path":"/u/.claude/plans/a.md"}}"#).putsUpNewPlan)
+        #expect(try !event(#"{"session_id":"s","hook_event_name":"PostToolUse","permission_mode":"plan","tool_name":"ExitPlanMode"}"#).putsUpNewPlan)
+    }
+}
+
+@Suite struct RepoTests {
+    @Test func isNamedForItsFolder() {
+        #expect(Repo(path: "/code/app").name == "app")
+        #expect(Repo(path: "/code/app/").name == "app")
+    }
+
+    @Test func seedingKeepsOneOfEachInOrder() {
+        let repos = Repo.seeded(from: ["/code/b", "/code/a", "/code/b/", "/code/./a"])
+        #expect(repos.map(\.path) == ["/code/b", "/code/a"])
+    }
+
+    @Test func roundTripsThroughJSON() throws {
+        let repo = Repo(path: "/code/app")
+        let decoded = try JSONDecoder().decode(Repo.self, from: JSONEncoder().encode(repo))
+        #expect(decoded == repo)
     }
 }

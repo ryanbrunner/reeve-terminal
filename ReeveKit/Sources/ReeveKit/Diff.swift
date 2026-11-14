@@ -1,8 +1,8 @@
 import Foundation
 
 /// One file's changes, from `git diff`.
-public struct FileDiff: Identifiable, Equatable, Sendable {
-    public enum Status: String, Sendable {
+public struct FileDiff: Codable, Identifiable, Equatable, Sendable {
+    public enum Status: String, Codable, Sendable {
         case added, deleted, modified, renamed
     }
 
@@ -23,14 +23,14 @@ public struct FileDiff: Identifiable, Equatable, Sendable {
     public var lineCount: Int { hunks.reduce(0) { $0 + $1.lines.count } }
 }
 
-public struct DiffHunk: Equatable, Sendable {
+public struct DiffHunk: Codable, Equatable, Sendable {
     /// The `@@ -a,b +c,d @@` line, as git wrote it.
     public var header: String
     public var lines: [DiffLine] = []
 }
 
-public struct DiffLine: Equatable, Sendable {
-    public enum Kind: Sendable {
+public struct DiffLine: Codable, Equatable, Sendable {
+    public enum Kind: String, Codable, Sendable {
         case context, added, removed
         /// `\ No newline at end of file`.
         case note
@@ -165,6 +165,52 @@ public enum DiffParser {
         let a = String(chars[..<half]), b = String(chars[(half + 1)...])
         guard a.hasPrefix("a/"), b.hasPrefix("b/") else { return nil }
         return (String(a.dropFirst(2)), String(b.dropFirst(2)))
+    }
+
+    /// The files as `git diff` would print them, near enough for a person to
+    /// read or `git apply` to take: paths are written as they are, unquoted,
+    /// and modes git didn't report are left out.
+    public static func render(_ files: [FileDiff]) -> String {
+        var out = ""
+        for file in files {
+            let old = file.oldPath ?? file.newPath ?? ""
+            let new = file.newPath ?? file.oldPath ?? ""
+            out += "diff --git a/\(old) b/\(new)\n"
+            switch file.status {
+            case .added: out += "new file mode 100644\n"
+            case .deleted: out += "deleted file mode 100644\n"
+            case .renamed:
+                out += "rename from \(old)\n"
+                out += "rename to \(new)\n"
+            case .modified: break
+            }
+            if let mode = file.modeChange {
+                let modes = mode.components(separatedBy: " → ")
+                out += "old mode \(modes[0])\n"
+                if modes.count > 1 { out += "new mode \(modes[1])\n" }
+            }
+            let a = file.oldPath.map { "a/" + $0 } ?? "/dev/null"
+            let b = file.newPath.map { "b/" + $0 } ?? "/dev/null"
+            if file.isBinary {
+                out += "Binary files \(a) and \(b) differ\n"
+                continue
+            }
+            guard !file.hunks.isEmpty else { continue }
+            out += "--- \(a)\n+++ \(b)\n"
+            for hunk in file.hunks {
+                out += hunk.header + "\n"
+                for line in hunk.lines {
+                    switch line.kind {
+                    case .context: out += " " + line.text
+                    case .added: out += "+" + line.text
+                    case .removed: out += "-" + line.text
+                    case .note: out += "\\ " + line.text
+                    }
+                    out += "\n"
+                }
+            }
+        }
+        return out
     }
 
     private static func stripPrefix(_ path: String, _ prefix: String) -> String {

@@ -34,9 +34,13 @@ feature parity. What Reeve adds is the board.
   settings loaded.
 - **You can still drag.** A card you drag is pinned in its new column until
   your next prompt, so the board never undoes your move behind your back.
+- **Cards start in a repo.** Reeve keeps a list of the folders you work in,
+  so a new card picks one rather than browsing for it. Add and remove them in
+  Settings (⌘,), or with Add Repo… in the new card sheet, which starts in the
+  repo you used last. For now a repo is just its folder.
 - **Each card gets its own worktree.** A card started in a git repo works in
   a fresh worktree at `.claude/worktrees/reeve-<id>`, on a new branch
-  `reeve/<id>` from the folder's HEAD, so cards on one repo never collide.
+  `reeve/<id>` from the repo folder's HEAD, so cards on one repo never collide.
   Reeve adds the folder to the repo's `.git/info/exclude`. Closing the card
   deletes the worktree, uncommitted changes and all (it asks first if there
   are any). The branch is deleted too unless it has commits, which stay in
@@ -48,16 +52,22 @@ feature parity. What Reeve adds is the board.
   shows `+N` for the ones from other branches. Reeve asks your own `gh`
   at launch, when a turn ends and when you open the card. Without `gh` or a
   GitHub remote there is simply no badge.
-- **Each open card has five tabs.** Terminal is the session. Plan shows
-  the plan Claude wrote in plan mode, read from its file so later edits show,
-  with a dot on the tab when a new one arrives. Changes is everything the card
-  has done in its worktree since it started: commits, uncommitted edits and
-  new files, read again as Claude works. Preview is the app the card is
-  building, under review in [Gloss](https://github.com/ryanbrunner/gloss)
-  (below). PRs lists every pull request the card has opened, newest first,
-  each with its state, its checks (passing, running or failing) and its
-  review; it asks GitHub again when it shows, and every 30 seconds while a
-  check is running. ⌥⌘1–5 switch between them.
+- **Each open card has five tabs.** Terminal is the session. Plan shows the
+  plan Claude wrote in plan mode, read from its file so later edits show,
+  with a dot on the tab when a new one arrives. While Claude Code's plan
+  dialog is open, **Approve** answers it for you: Reeve reads the dialog off
+  the terminal and picks "Yes, and use auto mode", and the tab marks the
+  plan Approved, as it does however the plan was approved. When the dialog
+  has no auto mode option (a model without it, or with bypass permissions
+  on), it takes the first yes that keeps the context and doesn't bypass
+  permissions. Changes is everything the card has done in its worktree since
+  it started: commits, uncommitted edits and new files, read again as Claude
+  works. Preview is the app the card is building, under review in
+  [Gloss](https://github.com/ryanbrunner/gloss) (below). PRs lists every
+  pull request the card has opened, newest first, each with its state, its
+  checks (passing, running or failing) and its review; it asks GitHub again
+  when it shows, and every 30 seconds while a check is running. ⌥⌘1–5
+  switch between them.
 - **Review the changes like a pull request.** Hover a line in Changes and
   click + to comment on it. **Comment now** sends it straight away; **Add to
   review** keeps it as pending until you **Submit review**. Reeve writes the
@@ -157,6 +167,7 @@ toolchain, and 1.99 doesn't compile with the current Swift.
 | | |
 |---|---|
 | ⌘N | New card |
+| ⌘, | Settings: the repos new cards start in |
 | ⌘W | Close card (asks first if its session is live) |
 | ⌘1…⌘9 | Open card 1–9, in board order |
 | ⇧⌘] / ⇧⌘[ | Next / previous card |
@@ -171,10 +182,77 @@ Right-click a card, or use the ⋯ in an open card's header, to move it, rename
 it, re-sort it now, put it in VIBES MODE, restart its session or reveal its
 folder.
 
+## Command line
+
+`reeve` drives the board from a shell, with the same commands as reeve-board's
+`reeve` where this app does the same thing. It is built into
+`Reeve.app/Contents/Helpers`, and every card's terminal has it first on its
+PATH, so Claude in a card can use it too. To use it from your own shell:
+
+```sh
+script/install-cli      # links it into ~/.local/bin (or pass a folder)
+```
+
+reeve-board's CLI is also called `reeve`; whichever comes first on your PATH
+wins (a card's terminal always gets this one).
+
+```
+reeve board [--stage S] [--repo PATH]       every card, column by column
+reeve card show|plan|diff|worktree|pr [<card>]
+reeve card add [<title…>] [--prompt TEXT] [--mode plan|build] [--cwd DIR] [--model M] [--effort E]
+reeve card edit <card> [--title TITLE | --no-title] [--vibes | --no-vibes]
+reeve card move <card> <stage>
+reeve card run <card> [--restart]
+reeve card reply <card> <text…> [--file PATH|-] [--force]
+reeve card wait [<card>] [--timeout SECONDS]
+reeve card close <card> [--force]
+reeve vibes [on | off]                      the board's VIBES MODE switch
+reeve open [<card>] · status · models · doctor
+```
+
+- **Naming a card.** A card is named by its id, or its first characters as
+  in its branch (`reeve/<id>`), or its title. Left out, it is the card whose
+  terminal or worktree you're in.
+- **`--json`.** Prints the API's answer and nothing else.
+- **`reply`.** Types into the card's terminal when its session is running,
+  or starts the session with the message. It refuses while Claude Code shows
+  a dialog, unless you pass `--force`.
+- **`close`.** Deletes the worktree, as ⌘W does. It refuses a live session or
+  uncommitted work unless you pass `--force`.
+
+**Exit codes:**
+
+| Code | Meaning |
+|---|---|
+| 0 | ok |
+| 1 | error |
+| 2 | bad command line |
+
+`card wait` has its own codes. It keeps waiting while a card waits on its
+background work:
+
+| Code | Meaning |
+|---|---|
+| 0 | ready for review |
+| 3 | waiting on you |
+| 4 | failed |
+| 5 | nothing running |
+| 6 | timed out |
+
+A prompt that hasn't reached Claude after 30 seconds puts the card in
+"needs input". That happens when something in the terminal is holding it
+up, such as trusting a new folder.
+
+**How it reaches the app.** It talks to the app over 127.0.0.1. The app writes
+its port and a fresh token to `server.json` in the data folder. Only you can
+read that file, and every request must carry the token. Requests from web
+pages are refused.
+
 ## Data
 
-The board is saved to `~/Library/Application Support/Reeve Terminal/board.json`.
-Set `REEVE_DATA_DIR` to put it somewhere else.
+The board, and the list of repos, are saved to `~/Library/Application Support/Reeve Terminal/board.json`.
+Set `REEVE_DATA_DIR` to put it somewhere else. `reeve` reads it too, to find
+the same app.
 
 ## Smoke test
 
@@ -192,6 +270,14 @@ Add `REEVE_SMOKE_VIBES=1` to put the card in VIBES MODE and leave it alone
 until it ships (`REEVE_SMOKE_VIBES=board` flips the whole board's switch
 instead). `REEVE_SMOKE_START=plan` starts it planning, and
 `REEVE_SMOKE_MODEL`/`REEVE_SMOKE_EFFORT` pick its model and effort.
+`REEVE_SMOKE_APPROVE=1` (with `REEVE_SMOKE_START=plan`) presses the Plan
+tab's Approve once the plan dialog is up and logs the mode it lands in.
+
+`REEVE_SMOKE_MODE=repos` checks repos without Claude taking a turn: it adds
+`REEVE_SMOKE_DIR` as a repo, starts a card in it from the new card sheet,
+closes it, and opens Settings to take the repo off and put it back, with a
+picture of each window and a line per check in `timeline.txt`. Run it twice
+on one `REEVE_DATA_DIR` to see the list kept.
 
 `REEVE_SMOKE_MODE=preview` checks the Preview tab instead, without Claude
 taking a turn. It makes a card with no prompt, then does what the card's

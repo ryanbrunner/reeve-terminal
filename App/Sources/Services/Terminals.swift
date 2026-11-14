@@ -14,6 +14,9 @@ final class Terminals: NSObject, LocalProcessTerminalViewDelegate {
     private(set) var live: Set<UUID> = []
     /// Cards whose process has been asked to end and hasn't yet.
     private var stopping: Set<UUID> = []
+    /// Our own watch on each card's process. SwiftTerm's misses an exit when
+    /// the terminal's output ends before the exit is seen.
+    private var exitWatches: [UUID: DispatchSourceProcess] = [:]
 
     var onStateChange: ((_ cardId: UUID, _ running: Bool, _ exitCode: Int32?) -> Void)?
     var onTitle: ((_ cardId: UUID, _ title: String) -> Void)?
@@ -37,7 +40,7 @@ final class Terminals: NSObject, LocalProcessTerminalViewDelegate {
         let view = view(for: card.id)
         guard !live.contains(card.id) else { return }
         let claude = env.claudePath ?? "claude"
-        let command = "exec " + Launch.commandLine(claude, Launch.claudeArguments(for: card, prompt: prompt, reviewsDir: reviewsDir))
+        let command = Launch.shellCommand(claude, Launch.claudeArguments(for: card, prompt: prompt, reviewsDir: reviewsDir), cliDirectory: Self.cliDirectory)
         let environment = Launch.environment(base: env.baseEnvironment, hookPort: hookPort, cardId: card.id)
         if view.hasRun {
             view.feed(text: "\r\n\u{1b}[2m─── resuming session ───\u{1b}[0m\r\n")
@@ -51,8 +54,47 @@ final class Terminals: NSObject, LocalProcessTerminalViewDelegate {
             execName: "-" + URL(fileURLWithPath: env.shell).lastPathComponent,
             currentDirectory: card.cwd
         )
+        watchExit(of: view.process.shellPid, card: card.id)
         onStateChange?(card.id, true, nil)
     }
+
+    private func watchExit(of pid: pid_t, card id: UUID) {
+        exitWatches[id]?.cancel()
+        guard pid > 0 else { return }
+        let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .main)
+        source.setEventHandler { [weak self] in
+            // Reaped here whoever else hears of it, so no exit is left a zombie.
+            var status: Int32 = 0
+            let reaped = waitpid(pid, &status, WNOHANG) == pid
+            MainActor.assumeIsolated {
+                self?.exited(id, pid: pid, exitCode: reaped && status & 0x7f == 0 ? (status >> 8) & 0xff : nil)
+            }
+        }
+        exitWatches[id] = source
+        source.resume()
+    }
+
+    /// The card's process has gone, by whichever route heard first.
+    private func exited(_ id: UUID, pid: pid_t?, exitCode: Int32?) {
+        guard let view = views[id] else {
+            // The card was closed.
+            exitWatches.removeValue(forKey: id)?.cancel()
+            return
+        }
+        // A process from before a restart, whose successor is running now.
+        if let pid, view.process.shellPid != pid { return }
+        exitWatches.removeValue(forKey: id)?.cancel()
+        guard live.remove(id) != nil else { return }
+        view.feed(text: "\r\n\u{1b}[2m─── session ended\(exitCode.map { $0 == 0 ? "" : " (exit \($0))" } ?? "") ───\u{1b}[0m\r\n")
+        onStateChange?(id, false, exitCode)
+    }
+
+    /// Where the app keeps `reeve`, which every card's shell finds first on
+    /// its PATH. Nil in a build without it.
+    static let cliDirectory: String? = {
+        let helpers = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers")
+        return FileManager.default.isExecutableFile(atPath: helpers.appendingPathComponent("reeve").path) ? helpers.path : nil
+    }()
 
     /// Types a prompt into the card's running `claude` and submits it, as a
     /// person would. Pasted, so nothing in it is taken for a keystroke; the
@@ -66,6 +108,15 @@ final class Terminals: NSObject, LocalProcessTerminalViewDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak view] in
             view?.send(txt: "\r")
         }
+    }
+
+    /// The rows the card's terminal shows at the bottom of its buffer, top to
+    /// bottom, wherever the view is scrolled to.
+    func screen(_ cardId: UUID) -> [String] {
+        guard let view = views[cardId] else { return [] }
+        let terminal = view.getTerminal()
+        let lines = String(decoding: terminal.getBufferAsData(), as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: false)
+        return lines.suffix(terminal.rows + 1).map(String.init)
     }
 
     /// Ends the card's `claude`. SwiftTerm stops watching a process it is
@@ -87,7 +138,9 @@ final class Terminals: NSObject, LocalProcessTerminalViewDelegate {
             self.stopping.remove(cardId)
             // Closed meanwhile, or started again.
             guard let view, self.views[cardId] === view, self.live.contains(cardId) else { return }
-            self.processTerminated(source: view, exitCode: nil)
+            // For this process only: the exit watch may have seen it go and a
+            // restart begun its successor.
+            self.exited(cardId, pid: pid, exitCode: nil)
         }
     }
 
@@ -115,9 +168,7 @@ final class Terminals: NSObject, LocalProcessTerminalViewDelegate {
 
     func processTerminated(source: TerminalView, exitCode: Int32?) {
         guard let view = source as? CardTerminalView, let id = view.cardId else { return }
-        live.remove(id)
-        view.feed(text: "\r\n\u{1b}[2m─── session ended\(exitCode.map { $0 == 0 ? "" : " (exit \($0))" } ?? "") ───\u{1b}[0m\r\n")
-        onStateChange?(id, false, exitCode)
+        exited(id, pid: nil, exitCode: exitCode)
     }
 }
 

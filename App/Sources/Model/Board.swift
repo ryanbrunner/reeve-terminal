@@ -13,6 +13,13 @@ import SwiftUI
 @MainActor
 final class Board: ObservableObject {
     @Published private(set) var cards: [Card] = []
+    /// The folders a new card can start in.
+    @Published private(set) var repos: [Repo] = []
+    /// The repo picked for the last new card, so a run of cards starts in
+    /// the same one.
+    @Published var pickedRepoId: UUID? {
+        didSet { UserDefaults.standard.set(pickedRepoId?.uuidString, forKey: "newCardRepo") }
+    }
     /// The card open over the board, if any.
     @Published var selectedId: UUID?
     /// Cards whose terminal has a live `claude` in it.
@@ -27,6 +34,15 @@ final class Board: ObservableObject {
     @Published private(set) var tabs: [UUID: CardTab] = [:]
     /// Cards with a plan nobody has looked at in the Plan tab yet.
     @Published private(set) var unseenPlans: Set<UUID> = []
+    /// Cards whose terminal has the plan dialog open: Claude asked for its
+    /// plan to be approved, and nothing has happened since.
+    @Published private(set) var planDialogs: Set<UUID> = []
+    /// Cards whose plan a person approved from the Plan tab, while Reeve picks
+    /// the option in the dialog and until Claude Code says it took.
+    @Published private(set) var acceptingPlans: Set<UUID> = []
+    /// Cards whose plan dialog VIBES MODE has pressed Enter on and not yet
+    /// seen go: a key sent before the dialog drew is sent again.
+    @Published private(set) var approvingPlans: Set<UUID> = []
     /// Raised when a card showing its changes may have new ones, so the tab
     /// reads them again. Only for that card, so others' tool calls cost nothing.
     @Published private(set) var changeTicks: [UUID: Int] = [:]
@@ -53,7 +69,15 @@ final class Board: ObservableObject {
 
     let terminals = Terminals()
     let previews = Previews()
-    private var hooks: HookServer?
+    /// Claude Code is showing a dialog on these cards — a permission prompt,
+    /// a question, a plan to approve — so typing into them would answer it.
+    private(set) var dialogOpen: Set<UUID> = []
+    /// Cards sent a prompt that hasn't reached Claude yet. Their title can't
+    /// say the turn was interrupted, because it hasn't started.
+    private var awaitingPrompt: Set<UUID> = []
+    /// Raised with each prompt sent, so only the latest one's timer acts.
+    private var promptsSent: [UUID: Int] = [:]
+    private var server: LocalServer?
     private var hookPort: UInt16?
     /// Raised by every prompt, so a classification that a newer turn has
     /// overtaken leaves the card's activity alone.
@@ -78,21 +102,18 @@ final class Board: ObservableObject {
     /// What VIBES MODE last typed into each card, so its prompt is told apart
     /// from a person's when the hook reports it.
     private var vibesPrompts: [UUID: String] = [:]
-    /// Cards whose plan dialog VIBES MODE has pressed Enter on and not yet
-    /// seen go: a key sent before the dialog drew is sent again.
-    private var approvingPlans: Set<UUID> = []
+    private let dataDir: URL
     private let storeURL: URL
     /// Where each card's review goes to Claude and its replies come back.
     private let reviewsDir: URL
 
     init() {
-        let support = ProcessInfo.processInfo.environment["REEVE_DATA_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
-            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("Reeve Terminal", isDirectory: true)
-        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
-        storeURL = support.appendingPathComponent("board.json")
-        reviewsDir = support.appendingPathComponent("reviews", isDirectory: true)
+        dataDir = DataDirectory.url()
+        try? FileManager.default.createDirectory(at: dataDir, withIntermediateDirectories: true)
+        storeURL = dataDir.appendingPathComponent("board.json")
+        reviewsDir = dataDir.appendingPathComponent("reviews", isDirectory: true)
         try? FileManager.default.createDirectory(at: reviewsDir, withIntermediateDirectories: true)
+        pickedRepoId = UserDefaults.standard.string(forKey: "newCardRepo").flatMap(UUID.init)
         load()
 
         terminals.onStateChange = { [weak self] id, running, exitCode in
@@ -103,10 +124,17 @@ final class Board: ObservableObject {
         }
 
         do {
-            let server = try HookServer()
-            server.onReady = { [weak self] port in
-                self?.hookPort = port
-                self?.drainStarts()
+            let server = try LocalServer()
+            server.onReady = { [weak self, weak server] port in
+                guard let self, let server else { return }
+                self.hookPort = port
+                // How `reeve` finds this app.
+                do {
+                    try ServerInfo(port: port, pid: ProcessInfo.processInfo.processIdentifier, token: server.token).write(dataDir: self.dataDir)
+                } catch {
+                    NSLog("Reeve: couldn't write server.json: \(error)")
+                }
+                self.drainStarts()
             }
             server.onEvent = { [weak self] id, body, reply in self?.receive(id, body, reply: reply) }
             server.vibesCards.set(Set(cards.filter(inVibes).map(\.id)))
@@ -114,10 +142,14 @@ final class Board: ObservableObject {
                 guard let self else { return respond("Reeve is closing") }
                 self.hostGloss(id, body, respond: respond)
             }
+            server.onRequest = { [weak self] request in
+                guard let self else { return .error(503, APIError("shutting down")) }
+                return await APIRouter.handle(request, board: self)
+            }
             server.start()
-            hooks = server
+            self.server = server
         } catch {
-            NSLog("Reeve: hook server failed to start: \(error)")
+            NSLog("Reeve: local server failed to start: \(error)")
         }
 
         Task {
@@ -163,27 +195,12 @@ final class Board: ObservableObject {
 
     // MARK: Changing the board
 
-    /// A card in a git repo gets its own worktree, on a branch from the
-    /// folder's HEAD; anywhere else it works in the folder itself. It starts
-    /// in the column its mode begins in.
+    /// Starts a card from the new card sheet, and opens it. When git can't
+    /// make a worktree, asks whether to work in the folder instead.
     func create(cwd: String, title: String, prompt: String?, mode: StartMode, model: String? = nil, effort: String? = nil, vibes: Bool = false) {
-        RecentFolders.add(cwd)
-        // VIBES MODE flies over Planning unless its options say otherwise.
-        let mode: StartMode = (vibes || self.vibes != nil) && vibesOptions.skipPlanning ? .build : mode
-        var card = Card(title: title.trimmingCharacters(in: .whitespacesAndNewlines), cwd: cwd, stage: mode.stage)
-        card.vibes = vibes ? true : nil
-        card.startMode = mode
-        card.model = model
-        card.effort = effort
         Task {
             do {
-                if let made = try await Worktrees.make(for: card.id, in: cwd, env: environment) {
-                    card.cwd = made.cwd
-                    card.repoPath = made.repo
-                    card.worktreePath = made.path
-                    card.branch = made.branch
-                    card.baseCommit = made.base
-                }
+                _ = try await createCard(cwd: cwd, title: title, prompt: prompt, mode: mode, model: model, effort: effort, vibes: vibes, open: true, inFolder: false)
             } catch {
                 let alert = NSAlert()
                 alert.messageText = "Couldn't make a worktree for this card"
@@ -191,12 +208,75 @@ final class Board: ObservableObject {
                 alert.addButton(withTitle: "Work in the Folder")
                 alert.addButton(withTitle: "Cancel")
                 guard alert.runModal() == .alertFirstButtonReturn else { return }
+                _ = try? await createCard(cwd: cwd, title: title, prompt: prompt, mode: mode, model: model, effort: effort, vibes: vibes, open: true, inFolder: true)
             }
-            cards.append(card)
-            selectedId = card.id
-            save()
-            start(card, prompt: prompt)
         }
+    }
+
+    /// The repos a new card can start in: those whose folder is still there.
+    /// Settings shows the rest.
+    var availableRepos: [Repo] {
+        repos.filter { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    /// The repo a new card starts in: the one picked last while it is still
+    /// available, else the first.
+    var pickedRepo: Repo? {
+        let available = availableRepos
+        return available.first { $0.id == pickedRepoId } ?? available.first
+    }
+
+    /// The repo for `path`, added to the list if it isn't on it yet.
+    @discardableResult
+    func addRepo(path: String) -> Repo {
+        let repo = Repo(path: path)
+        if let existing = repos.first(where: { $0.path == repo.path }) { return existing }
+        repos.append(repo)
+        save()
+        return repo
+    }
+
+    /// Takes a repo off the list. Its cards keep working where they are.
+    func removeRepo(_ id: UUID) {
+        repos.removeAll { $0.id == id }
+        save()
+    }
+
+    /// A card in a git repo gets its own worktree, on a branch from the
+    /// folder's HEAD; anywhere else it works in the folder itself. It starts
+    /// in the column its mode begins in. When git can't make the worktree,
+    /// the card works in the folder if `inFolder`, else this throws.
+    @discardableResult
+    func createCard(cwd: String, title: String, prompt: String?, mode: StartMode, model: String?, effort: String?,
+                    vibes: Bool = false, open: Bool, inFolder: Bool) async throws -> Card {
+        // VIBES MODE flies over Planning unless its options say otherwise.
+        let mode: StartMode = (vibes || self.vibes != nil) && vibesOptions.skipPlanning ? .build : mode
+        var card = Card(title: title.trimmingCharacters(in: .whitespacesAndNewlines), cwd: cwd, stage: mode.stage)
+        card.vibes = vibes ? true : nil
+        card.startMode = mode
+        card.model = model
+        card.effort = effort
+        do {
+            if let made = try await Worktrees.make(for: card.id, in: cwd, env: environment) {
+                card.cwd = made.cwd
+                card.repoPath = made.repo
+                card.worktreePath = made.path
+                card.branch = made.branch
+                card.baseCommit = made.base
+            }
+        } catch {
+            guard inFolder else { throw error }
+        }
+        let prompted = prompt.map { !$0.isEmpty } ?? false
+        // Working from the moment it's asked, so a `reeve card wait` straight
+        // after doesn't find it idle before Claude has read the prompt.
+        if prompted { card.activity = .running }
+        cards.append(card)
+        if open { selectedId = card.id }
+        save()
+        if prompted { expectPrompt(card.id) }
+        start(card, prompt: prompt)
+        return card
     }
 
     func select(_ id: UUID) {
@@ -326,9 +406,13 @@ final class Board: ObservableObject {
         stopped.remove(id)
         settled.remove(id)
         approvingPlans.remove(id)
+        planDialogs.remove(id)
+        acceptingPlans.remove(id)
         vibesPrompts[id] = nil
         cards.removeAll { $0.id == id }
         live.remove(id)
+        dialogOpen.remove(id)
+        awaitingPrompt.remove(id)
         classifying.remove(id)
         terminalTitles[id] = nil
         tabs[id] = nil
@@ -345,6 +429,84 @@ final class Board: ObservableObject {
             guard await Worktrees.remove(path: removal.path, branch: removal.branch, repo: removal.repo, env: environment) else { return }
             pendingRemovals.removeAll { $0 == removal }
             save()
+        }
+    }
+
+    /// What closing the card would lose that a person might want: its live
+    /// session, and work in its worktree not yet committed. Nil when nothing.
+    func closeWouldLose(_ id: UUID) async -> String? {
+        guard let card = card(id) else { return nil }
+        var reasons: [String] = []
+        if live.contains(id) { reasons.append("its session is live") }
+        if let path = card.worktreePath {
+            let changes = await Worktrees.uncommittedChanges(at: path, env: environment)
+            if changes > 0 { reasons.append("its worktree has \(changes) uncommitted change\(changes == 1 ? "" : "s")") }
+        }
+        return reasons.isEmpty ? nil : reasons.joined(separator: " and ")
+    }
+
+    /// Starts the card's session if it isn't running, without opening the card.
+    func startIfNeeded(_ id: UUID, prompt: String? = nil) {
+        guard let card = card(id), !live.contains(id), !starting.contains(id) else { return }
+        if let prompt, !prompt.isEmpty { sendingPrompt(id) }
+        start(self.card(id) ?? card, prompt: prompt)
+    }
+
+    /// Cards waiting for the shell environment or the server before they start.
+    var starting: Set<UUID> {
+        Set(waitingToStart.map(\.0.id))
+    }
+
+    /// Sends the card's Claude a message: typed into its terminal when the
+    /// session is live, else as the prompt the session starts with. Not while
+    /// a dialog is up unless `force`, since the text would answer it.
+    func reply(_ id: UUID, text: String, force: Bool) throws -> ReplyResponse.Delivery {
+        guard card(id) != nil else { throw APIError("no such card") }
+        if starting.contains(id) {
+            throw APIError("the session is still starting", detail: "try again in a moment")
+        }
+        guard live.contains(id) else {
+            startIfNeeded(id, prompt: text)
+            return .started
+        }
+        if dialogOpen.contains(id), !force {
+            let showing = card(id)?.waitingOn.map { ": \($0)" } ?? ""
+            throw APIError("Claude is showing a dialog\(showing)", detail: "answer it in the app, or pass --force to type into it anyway")
+        }
+        sendingPrompt(id)
+        terminals.send(text, to: id)
+        return .typed
+    }
+
+    /// The card is busy from the moment a prompt goes out, until its hooks say otherwise.
+    private func sendingPrompt(_ id: UUID) {
+        // Typed into a turn in progress, the message waits in Claude Code's
+        // queue, which a long tool call can hold for minutes: not a stall.
+        let midTurn = live.contains(id) && card(id)?.activity == .running
+        update(id) { card in
+            card.activity = .running
+            card.waitingOn = nil
+        }
+        if !midTurn { expectPrompt(id) }
+    }
+
+    /// The title check for interrupted turns waits for the prompt to arrive.
+    /// A prompt that hasn't arrived in half a minute is held up by something
+    /// in the terminal that fires no hook (trusting a new folder, logging in),
+    /// so the card says it needs you rather than look busy forever.
+    private func expectPrompt(_ id: UUID) {
+        awaitingPrompt.insert(id)
+        promptsSent[id, default: 0] += 1
+        let sent = promptsSent[id]
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+            guard let self, self.promptsSent[id] == sent, self.awaitingPrompt.remove(id) != nil,
+                  self.live.contains(id), self.card(id)?.activity == .running else { return }
+            self.dialogOpen.insert(id)
+            self.update(id) { card in
+                card.activity = .needsInput
+                card.waitingOn = "Something in the terminal needs you before Claude gets the message"
+            }
+            self.updateBadge()
         }
     }
 
@@ -366,7 +528,8 @@ final class Board: ObservableObject {
     func shutdown() {
         terminals.stopAll()
         previews.stopAll()
-        hooks?.stop()
+        server?.stop()
+        ServerInfo.remove(dataDir: dataDir, pid: ProcessInfo.processInfo.processIdentifier)
         save()
     }
 
@@ -402,6 +565,10 @@ final class Board: ObservableObject {
             return
         }
         live.remove(id)
+        planDialogs.remove(id)
+        acceptingPlans.remove(id)
+        dialogOpen.remove(id)
+        awaitingPrompt.remove(id)
         update(id) { card in
             if card.activity == .running || card.activity == .needsInput || card.activity == .waiting {
                 card.activity = (exitCode ?? 0) == 0 ? .idle : .error
@@ -419,9 +586,10 @@ final class Board: ObservableObject {
     /// mid-turn, so the title is how a card learns its turn was interrupted.
     private func titleChanged(_ id: UUID, _ title: String) {
         terminalTitles[id] = title
-        guard title.hasPrefix("\u{2733}"), card(id)?.activity == .running else { return }
+        guard title.hasPrefix("\u{2733}"), card(id)?.activity == .running, !awaitingPrompt.contains(id) else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            guard let self, self.terminalTitles[id]?.hasPrefix("\u{2733}") == true, self.card(id)?.activity == .running else { return }
+            guard let self, self.terminalTitles[id]?.hasPrefix("\u{2733}") == true, self.card(id)?.activity == .running,
+                  !self.awaitingPrompt.contains(id) else { return }
             self.update(id) { card in
                 card.activity = .idle
                 card.waitingOn = nil
@@ -448,10 +616,24 @@ final class Board: ObservableObject {
             settled.remove(cardId)
         }
         if let reply { noteVibesReply(reply, on: before) }
+        if Vibes.showsPlanDialog(event) {
+            planDialogs.insert(cardId)
+        } else if event.closesPlanDialog {
+            planDialogs.remove(cardId)
+            acceptingPlans.remove(cardId)
+        }
         if Vibes.showsPlanDialog(event), inVibes(before) { approvePlan(before) }
         if event.hookEventName == "PostToolUse", event.toolName == "ExitPlanMode" { approvingPlans.remove(cardId) }
         if event.hookEventName == "UserPromptSubmit", inVibes(before) { notePrompt(event.prompt, on: before) }
-        if effect.startsConversation { turns[cardId, default: 0] += 1 }
+        if effect.startsConversation {
+            turns[cardId, default: 0] += 1
+            awaitingPrompt.remove(cardId)
+        }
+        if effect.activity == .needsInput {
+            dialogOpen.insert(cardId)
+        } else if effect.activity != nil {
+            dialogOpen.remove(cardId)
+        }
         let askedByNotification = notifiedInput.contains(cardId)
         if effect.activity != nil {
             if event.hookEventName == "Notification" { notifiedInput.insert(cardId) } else { notifiedInput.remove(cardId) }
@@ -482,6 +664,8 @@ final class Board: ObservableObject {
                 card.plan = merged.text
                 card.planPath = merged.path
             }
+            if event.putsUpNewPlan { card.planApproved = nil }
+            if event.approvesPlan { card.planApproved = true }
         }
         let showing = selectedId == cardId ? tab(cardId) : nil
         if effect.plan != nil, showing != .plan { unseenPlans.insert(cardId) }
@@ -720,6 +904,51 @@ final class Board: ObservableObject {
         save()
     }
 
+    /// A person approves the plan from the Plan tab: Reeve picks the dialog's
+    /// auto mode option, as they would in the terminal. The dialog is read off
+    /// the screen, so the selection moves from wherever it is, and nothing is
+    /// typed until the dialog is seen, nor Enter pressed until its selection
+    /// is the approval. Otherwise the button comes back.
+    func acceptPlan(_ id: UUID) {
+        guard planDialogs.contains(id), live.contains(id), !acceptingPlans.contains(id), !approvingPlans.contains(id) else { return }
+        acceptingPlans.insert(id)
+        choosePlanApproval(id, tries: 3)
+    }
+
+    private func choosePlanApproval(_ id: UUID, tries: Int) {
+        guard acceptingPlans.contains(id) else { return }
+        guard let dialog = PlanDialog.find(onScreen: terminals.screen(id)) else {
+            // Not drawn yet, perhaps.
+            if tries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.choosePlanApproval(id, tries: tries - 1) }
+            } else {
+                acceptingPlans.remove(id)
+            }
+            return
+        }
+        let target = dialog.approval
+        let view = terminals.view(for: id)
+        // One key a write, so Claude Code reads each arrow as its own.
+        let moves = dialog.moves(to: target)
+        for (i, key) in moves.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08 * Double(i)) { [weak self] in
+                guard self?.acceptingPlans.contains(id) == true else { return }
+                view.send(txt: key)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08 * Double(moves.count) + 0.3) { [weak self] in
+            guard let self, self.acceptingPlans.contains(id) else { return }
+            guard PlanDialog.find(onScreen: self.terminals.screen(id))?.selected == target else {
+                self.acceptingPlans.remove(id)
+                return
+            }
+            view.send(txt: "\r")
+            // A dialog that took the key says so with `ExitPlanMode`'s
+            // PostToolUse; one that didn't gets its button back.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.acceptingPlans.remove(id) }
+        }
+    }
+
     /// Types a line into the card's terminal and submits it, as a person would.
     private func type(_ text: String, into id: UUID) {
         vibesPrompts[id] = text
@@ -857,7 +1086,7 @@ final class Board: ObservableObject {
 
     /// A pull request found open or merged on the card's branch moves the
     /// card to Release.
-    private func findPullRequest(_ id: UUID) async {
+    func findPullRequest(_ id: UUID) async {
         guard let card = card(id), let worktree = card.worktreePath, let env = environment,
               !findingPullRequests.contains(id), FileManager.default.fileExists(atPath: worktree) else { return }
         findingPullRequests.insert(id)
@@ -902,6 +1131,12 @@ final class Board: ObservableObject {
         }
     }
 
+    /// The card as `reeve` sees it.
+    func apiCard(_ card: Card) -> APICard {
+        APICard(card: card, live: live.contains(card.id), starting: starting.contains(card.id),
+                dialogOpen: dialogOpen.contains(card.id), displayTitle: displayTitle(card))
+    }
+
     // MARK: Persistence
 
     private func update(_ id: UUID, _ change: (inout Card) -> Void) {
@@ -924,10 +1159,13 @@ final class Board: ObservableObject {
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: storeURL) else { return }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        guard let saved = try? decoder.decode(SavedBoard.self, from: data) else { return }
+        guard let data = try? Data(contentsOf: storeURL),
+              let saved = try? decoder.decode(SavedBoard.self, from: data) else {
+            repos = seededRepos()
+            return
+        }
         // Nothing is running after a restart; a card left mid-turn says so.
         cards = saved.cards.map { card in
             var card = card
@@ -935,6 +1173,8 @@ final class Board: ObservableObject {
             card.background = nil
             return card
         }
+        // Before anything below saves the board.
+        repos = saved.repos ?? seededRepos()
         // Launch lands on the board; opening a card is what starts its session.
         updateBadge()
         vibes = saved.vibes
@@ -943,14 +1183,23 @@ final class Board: ObservableObject {
         pendingRemovals.forEach(removeWorktree)
     }
 
+    /// A board saved before there were repos starts with the folders its
+    /// cards were made in, and the ones the new card sheet remembered. Not
+    /// a scratch folder in /tmp, which is where smoke tests start cards.
+    private func seededRepos() -> [Repo] {
+        let recent = UserDefaults.standard.stringArray(forKey: "recentFolders") ?? []
+        return Repo.seeded(from: recent + cards.compactMap { $0.repoPath ?? ($0.worktreePath == nil ? $0.cwd : nil) })
+            .filter { !$0.path.hasPrefix("/tmp/") && !$0.path.hasPrefix("/private/tmp/") && FileManager.default.fileExists(atPath: $0.path) }
+    }
+
     private func save() {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(SavedBoard(cards: cards, selectedId: selectedId, pendingRemovals: pendingRemovals, vibes: vibes, vibesOptions: vibesOptions)) else { return }
+        guard let data = try? encoder.encode(SavedBoard(cards: cards, selectedId: selectedId, pendingRemovals: pendingRemovals, vibes: vibes, vibesOptions: vibesOptions, repos: repos)) else { return }
         try? data.write(to: storeURL, options: .atomic)
         // Every change comes through here, so the hooks never answer off a stale list.
-        hooks?.vibesCards.set(Set(cards.filter(inVibes).map(\.id)))
+        server?.vibesCards.set(Set(cards.filter(inVibes).map(\.id)))
     }
 
     /// The Dock says how many cards are waiting on you.
@@ -966,26 +1215,12 @@ final class Board: ObservableObject {
         var pendingRemovals: [WorktreeRemoval]?
         var vibes: VibesLedger?
         var vibesOptions: VibesOptions?
+        var repos: [Repo]?
     }
 
     private struct WorktreeRemoval: Codable, Equatable {
         var path: String
         var repo: String
         var branch: String?
-    }
-}
-
-/// The folders cards were last started in, most recent first.
-enum RecentFolders {
-    private static let key = "recentFolders"
-
-    static var all: [String] {
-        (UserDefaults.standard.stringArray(forKey: key) ?? []).filter { FileManager.default.fileExists(atPath: $0) }
-    }
-
-    static func add(_ path: String) {
-        var list = all.filter { $0 != path }
-        list.insert(path, at: 0)
-        UserDefaults.standard.set(Array(list.prefix(10)), forKey: key)
     }
 }

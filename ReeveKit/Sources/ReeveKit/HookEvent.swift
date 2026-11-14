@@ -155,6 +155,31 @@ extension HookEvent {
         return waitingOnBackground ? .waiting : .running
     }
 
+    /// Claude Code ran `ExitPlanMode`: someone said yes to the plan.
+    public var approvesPlan: Bool {
+        hookEventName == "PostToolUse" && toolName == "ExitPlanMode" && agentId == nil
+    }
+
+    /// Claude drafted a plan in plan mode, or put one up for approval: one
+    /// nobody has approved yet. A plan file edited out of plan mode is the
+    /// approved plan, kept up to date.
+    public var putsUpNewPlan: Bool {
+        guard (permissionMode ?? "plan") == "plan", agentId == nil else { return false }
+        if hookEventName == "PreToolUse", toolName == "ExitPlanMode" { return true }
+        return hookEventName == "PostToolUse" && (toolName == "Write" || toolName == "Edit")
+            && toolInput?.filePath.map(PlanSighting.isPlanFile) == true
+    }
+
+    /// The plan dialog, if it was open, has closed: once it opens, anything
+    /// the main thread does means it was answered, one way or the other.
+    public var closesPlanDialog: Bool {
+        switch hookEventName {
+        case "UserPromptSubmit", "Stop", "SessionEnd": true
+        case "PreToolUse", "PostToolUse": agentId == nil
+        default: false
+        }
+    }
+
     /// The card's new activity, and what else changes, for this event.
     public var effect: HookEffect {
         switch hookEventName {
