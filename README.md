@@ -34,9 +34,13 @@ feature parity. What Reeve adds is the board.
   settings loaded.
 - **You can still drag.** A card you drag is pinned in its new column until
   your next prompt, so the board never undoes your move behind your back.
+- **Cards start in a repo.** Reeve keeps a list of the folders you work in,
+  so a new card picks one rather than browsing for it. Add and remove them in
+  Settings (⌘,), or with Add Repo… in the new card sheet, which starts in the
+  repo you used last. For now a repo is just its folder.
 - **Each card gets its own worktree.** A card started in a git repo works in
   a fresh worktree at `.claude/worktrees/reeve-<id>`, on a new branch
-  `reeve/<id>` from the folder's HEAD, so cards on one repo never collide.
+  `reeve/<id>` from the repo folder's HEAD, so cards on one repo never collide.
   Reeve adds the folder to the repo's `.git/info/exclude`. Closing the card
   deletes the worktree, uncommitted changes and all (it asks first if there
   are any). The branch is deleted too unless it has commits, which stay in
@@ -152,6 +156,7 @@ toolchain, and 1.99 doesn't compile with the current Swift.
 | | |
 |---|---|
 | ⌘N | New card |
+| ⌘, | Settings: the repos new cards start in |
 | ⌘W | Close card (asks first if its session is live) |
 | ⌘1…⌘9 | Open card 1–9, in board order |
 | ⇧⌘] / ⇧⌘[ | Next / previous card |
@@ -234,7 +239,7 @@ pages are refused.
 
 ## Data
 
-The board is saved to `~/Library/Application Support/Reeve Terminal/board.json`.
+The board, and the list of repos, are saved to `~/Library/Application Support/Reeve Terminal/board.json`.
 Set `REEVE_DATA_DIR` to put it somewhere else. `reeve` reads it too, to find
 the same app.
 
@@ -254,6 +259,12 @@ Add `REEVE_SMOKE_VIBES=1` to put the card in VIBES MODE and leave it alone
 until it ships (`REEVE_SMOKE_VIBES=board` flips the whole board's switch
 instead). `REEVE_SMOKE_START=plan` starts it planning, and
 `REEVE_SMOKE_MODEL`/`REEVE_SMOKE_EFFORT` pick its model and effort.
+
+`REEVE_SMOKE_MODE=repos` checks repos without Claude taking a turn: it adds
+`REEVE_SMOKE_DIR` as a repo, starts a card in it from the new card sheet,
+closes it, and opens Settings to take the repo off and put it back, with a
+picture of each window and a line per check in `timeline.txt`. Run it twice
+on one `REEVE_DATA_DIR` to see the list kept.
 
 `REEVE_SMOKE_MODE=preview` checks the Preview tab instead, without Claude
 taking a turn. It makes a card with no prompt, then does what the card's

@@ -965,3 +965,21 @@ import Testing
         #expect(ReviewFile.merge(Data("{not json".utf8), into: [a]) == [a])
     }
 }
+
+@Suite struct RepoTests {
+    @Test func isNamedForItsFolder() {
+        #expect(Repo(path: "/code/app").name == "app")
+        #expect(Repo(path: "/code/app/").name == "app")
+    }
+
+    @Test func seedingKeepsOneOfEachInOrder() {
+        let repos = Repo.seeded(from: ["/code/b", "/code/a", "/code/b/", "/code/./a"])
+        #expect(repos.map(\.path) == ["/code/b", "/code/a"])
+    }
+
+    @Test func roundTripsThroughJSON() throws {
+        let repo = Repo(path: "/code/app")
+        let decoded = try JSONDecoder().decode(Repo.self, from: JSONEncoder().encode(repo))
+        #expect(decoded == repo)
+    }
+}
