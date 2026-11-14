@@ -53,13 +53,20 @@ targets:
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
         INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 Ryan Brunner"
         # Each card runs a login shell and `claude` in it, which the App
-        # Sandbox would not allow. Signed to run locally until there is a
-        # release to sign properly.
+        # Sandbox would not allow, so Reeve can't go through the App Store
+        # or TestFlight. Debug is signed to run locally; Release is signed
+        # with Developer ID and notarized by script/release.
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGN_STYLE: Manual
         ENABLE_HARDENED_RUNTIME: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
         COMBINE_HIDPI_IMAGES: YES
+      configs:
+        Release:
+          CODE_SIGN_IDENTITY: "Apple Development"
+          CODE_SIGN_STYLE: Automatic
+          DEVELOPMENT_TEAM: X4GUBP555N
+          ENABLE_HARDENED_RUNTIME: YES
   # The command line, from the same sources SwiftPM builds it from
   # (`cd ReeveKit && swift build`).
   ReeveCLI:
@@ -77,3 +84,9 @@ targets:
         CODE_SIGN_STYLE: Manual
         ENABLE_HARDENED_RUNTIME: NO
         SKIP_INSTALL: YES
+      configs:
+        Release:
+          CODE_SIGN_IDENTITY: "Apple Development"
+          CODE_SIGN_STYLE: Automatic
+          DEVELOPMENT_TEAM: X4GUBP555N
+          ENABLE_HARDENED_RUNTIME: YES

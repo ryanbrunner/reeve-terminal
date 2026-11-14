@@ -1,0 +1,49 @@
+#!/bin/sh
+# Builds Reeve.app for release: archives it, signs it with Developer ID and
+# sends it to Apple to be notarized, using the account Xcode is signed in to.
+#   script/release           archive, export and submit for notarization
+#   script/release fetch     once Apple has notarized it, staple and zip it
+#                            → build/release/Reeve.zip
+set -e
+cd "$(dirname "$0")/.."
+export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
+TEAM=X4GUBP555N
+ARCHIVE=build/Reeve.xcarchive
+OUT=build/release
+
+if [ "$1" = fetch ]; then
+  # Fails until Apple has finished; run it again in a minute.
+  rm -rf "$OUT/Reeve.app"
+  xcodebuild -exportNotarizedApp -archivePath "$ARCHIVE" -exportPath "$OUT"
+  xcrun stapler validate "$OUT/Reeve.app"
+  spctl -a -vv -t exec "$OUT/Reeve.app"
+  rm -f "$OUT/Reeve.zip"
+  ditto -c -k --keepParent "$OUT/Reeve.app" "$OUT/Reeve.zip"
+  echo "→ $OUT/Reeve.zip"
+  exit 0
+fi
+
+xcodegen generate --quiet
+rm -rf "$ARCHIVE" "$OUT"
+xcodebuild -project Reeve.xcodeproj -scheme Reeve -configuration Release \
+  -archivePath "$ARCHIVE" -destination 'generic/platform=macOS' \
+  -skipPackagePluginValidation -skipMacroValidation -allowProvisioningUpdates \
+  archive | grep -E "error:|warning: .*App/Sources|ARCHIVE" || true
+test -d "$ARCHIVE"
+
+mkdir -p "$OUT"
+cat > "$OUT/ExportOptions.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>method</key><string>developer-id</string>
+  <key>teamID</key><string>$TEAM</string>
+  <key>signingStyle</key><string>automatic</string>
+  <key>destination</key><string>upload</string>
+</dict>
+</plist>
+EOF
+xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath "$OUT" \
+  -exportOptionsPlist "$OUT/ExportOptions.plist" -allowProvisioningUpdates
+echo "Submitted for notarization. When Apple is done: script/release fetch"

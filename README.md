@@ -164,6 +164,19 @@ The app icon is the Reeve mark on an ink plate, drawn by `script/icon` into
 SwiftTerm is pinned to 1.11.2. Releases from 1.12 on need Xcode's Metal
 toolchain, and 1.99 doesn't compile with the current Swift.
 
+## Release
+
+Reeve can't be sandboxed (each card runs a shell and `claude`), so it can't
+go through the App Store or TestFlight. Instead it's signed with Developer ID
+and notarized by Apple, using the account Xcode is signed in to:
+
+```sh
+script/release          # archive, sign and send to Apple to notarize
+script/release fetch    # once Apple is done → build/release/Reeve.zip
+```
+
+`fetch` fails while Apple is still processing; run it again a little later.
+
 ## Keys
 
 | | |
