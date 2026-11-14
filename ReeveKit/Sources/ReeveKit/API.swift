@@ -39,7 +39,7 @@ public struct APICard: Codable, Equatable, Sendable {
     }
 
     private enum Extra: String, CodingKey {
-        case live, starting, dialogOpen, displayTitle
+        case live, starting, dialogOpen, displayTitle, pullRequest
     }
 
     public init(from decoder: Decoder) throws {
@@ -58,6 +58,9 @@ public struct APICard: Codable, Equatable, Sendable {
         try extra.encode(starting, forKey: .starting)
         try extra.encode(dialogOpen, forKey: .dialogOpen)
         try extra.encode(displayTitle, forKey: .displayTitle)
+        // The one on the badge, worked out from `pullRequests` and not stored,
+        // written out for scripts reading the JSON. Worked out again on decode.
+        try extra.encodeIfPresent(card.pullRequest, forKey: .pullRequest)
     }
 }
 

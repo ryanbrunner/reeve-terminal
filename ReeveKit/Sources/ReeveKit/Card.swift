@@ -83,8 +83,13 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     public var worktreePath: String?
     /// The branch checked out in the card's worktree.
     public var branch: String?
-    /// The pull request opened from the card's branch, once there is one.
-    public var pullRequest: PullRequest?
+    /// The branch the card's worktree was on when its pull requests were last
+    /// looked up, which Claude may have switched to from `branch`. Kept apart
+    /// from `branch` because closing the card deletes that one.
+    public var headBranch: String?
+    /// Every pull request opened from a branch the card's worktree has been
+    /// on, newest first. Nil until there is one.
+    public var pullRequests: [PullRequest]?
     /// The commit the card's worktree started from, which its changes are
     /// shown against. Nil for cards made before Reeve kept it.
     public var baseCommit: String?
@@ -169,6 +174,12 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
 }
 
 extension Card {
+    /// The pull request from the branch the card is on now, which it wears
+    /// as a badge. Ones from branches it has left are only in its PRs tab.
+    public var pullRequest: PullRequest? {
+        PullRequest.primary(of: pullRequests ?? [], on: headBranch ?? branch)
+    }
+
     /// The card's branch has a pull request that is open (draft or not) or
     /// merged: the work has gone out for release.
     public var hasLivePullRequest: Bool {

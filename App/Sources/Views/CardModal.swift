@@ -2,9 +2,10 @@ import ReeveKit
 import SwiftUI
 
 /// What an open card shows: the session itself, the plan it made, what it
-/// has changed, or the app it is building, under review in Gloss.
+/// has changed, the app it is building, under review in Gloss, or the pull
+/// requests it has opened.
 enum CardTab: String, CaseIterable, Identifiable {
-    case terminal, plan, changes, preview
+    case terminal, plan, changes, preview, prs
 
     var id: String { rawValue }
 
@@ -14,6 +15,7 @@ enum CardTab: String, CaseIterable, Identifiable {
         case .plan: "Plan"
         case .changes: "Changes"
         case .preview: "Preview"
+        case .prs: "PRs"
         }
     }
 }
@@ -58,6 +60,8 @@ struct CardModal: View {
                         ChangesView(card: card).id(card.id)
                     case .preview:
                         PreviewView(card: card, preview: board.previews.preview(for: card.id)).id(card.id)
+                    case .prs:
+                        PullRequestsView(card: card).id(card.id)
                     }
                 }
             }
@@ -164,6 +168,9 @@ private struct CardTabBar: View {
                         if tab == .plan, board.unseenPlans.contains(card.id) {
                             Circle().fill(Theme.sky400).frame(width: 6, height: 6)
                                 .help("A new plan")
+                        }
+                        if tab == .prs, let count = card.pullRequests?.count, count > 1 {
+                            Text("\(count)").font(.mono(10)).foregroundStyle(Theme.muted)
                         }
                     }
                     .font(.geist(12, tab == selected ? .medium : .regular))

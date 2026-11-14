@@ -83,8 +83,8 @@ final class Board: ObservableObject {
     /// overtaken leaves the card's activity alone.
     private var turns: [UUID: Int] = [:]
     private var pendingClassify: [UUID: Task<Void, Never>] = [:]
-    /// Cards whose pull request is being looked up right now.
-    private var findingPullRequests: Set<UUID> = []
+    /// Cards whose pull requests are being looked up right now.
+    @Published private(set) var findingPullRequests: Set<UUID> = []
     private var restarting: Set<UUID> = []
     /// Cards waiting on a person because of a notification (a permission
     /// prompt, often a subagent's) rather than a question Claude asked.
@@ -318,6 +318,8 @@ final class Board: ObservableObject {
     func show(_ tab: CardTab, for id: UUID) {
         tabs[id] = tab
         if tab == .plan { unseenPlans.remove(id) }
+        // Checks and reviews move on their own, so the tab is never stale.
+        if tab == .prs { refreshPullRequest(id) }
     }
 
     /// The text of the card's plan: its file, which may have been edited since
@@ -1074,24 +1076,57 @@ final class Board: ObservableObject {
 
     // MARK: Pull requests
 
-    /// Looks up the pull request from the branch the card's worktree is on,
-    /// which Claude may have switched from the one Reeve made. When gh can't
-    /// say, the card keeps the one it had.
-    private func refreshPullRequest(_ id: UUID) {
+    /// Looks up the pull requests from every branch the card's worktree has
+    /// been on: the one it is on now, which Claude may have switched to from
+    /// the one Reeve made, and the ones it left. A branch gh can't say about
+    /// keeps the pull requests it had.
+    func refreshPullRequest(_ id: UUID) {
         Task { await findPullRequest(id) }
     }
 
-    /// A pull request found open or merged moves the card to Release.
+    /// A pull request found open or merged on the card's branch moves the
+    /// card to Release.
     func findPullRequest(_ id: UUID) async {
         guard let card = card(id), let worktree = card.worktreePath, let env = environment,
               !findingPullRequests.contains(id), FileManager.default.fileExists(atPath: worktree) else { return }
         findingPullRequests.insert(id)
         defer { findingPullRequests.remove(id) }
-        // Never written back: closing the card deletes `card.branch`.
-        guard let branch = await Worktrees.currentBranch(at: worktree, env: env) ?? card.branch,
-              let found = await PullRequests.find(branch: branch, in: worktree, env: env) else { return }
+        let head = await Worktrees.currentBranch(at: worktree, env: env)
+        let owns = Set([head, card.branch].compactMap { $0 })
+        let tracked = card.pullRequests ?? []
+        // A branch whose pull requests have all merged has nothing left to say.
+        let settled = Set(tracked.map(\.branch)).filter { branch in
+            !owns.contains(branch) && tracked.allSatisfy { $0.branch != branch || $0.state == .merged }
+        }
+        var branches: [String] = []
+        for branch in [head, card.branch].compactMap({ $0 }) + tracked.map(\.branch)
+            + (await Worktrees.reflogBranches(at: worktree, env: env))
+        where !branch.isEmpty && !settled.contains(branch) && !branches.contains(branch) {
+            branches.append(branch)
+        }
+        // A few at a time, so the end of a turn isn't waiting on one gh after
+        // another, and a launch that refreshes every card doesn't start dozens.
+        let answers = await withTaskGroup(of: [PullRequest]?.self) { group in
+            var pending = branches[...]
+            var answers: [[PullRequest]?] = []
+            func next() {
+                guard let branch = pending.popFirst() else { return }
+                group.addTask { await PullRequests.find(branch: branch, in: worktree, env: env) }
+            }
+            for _ in 0..<4 { next() }
+            for await answer in group {
+                answers.append(answer)
+                next()
+            }
+            return answers
+        }
+        guard answers.contains(where: { $0 != nil }) else { return }
+        let found = PullRequest.belonging(answers.compactMap { $0 }.flatMap { $0 }, owns: owns, tracked: tracked, since: card.createdAt)
         update(id) { card in
-            card.pullRequest = found
+            let all = PullRequest.merge(card.pullRequests ?? [], found)
+            card.pullRequests = all.isEmpty ? nil : all
+            // Never written to `card.branch`: closing the card deletes that one.
+            if let head { card.headBranch = head }
             if card.hasLivePullRequest, !card.stagePinned { card.stage = .release }
         }
     }

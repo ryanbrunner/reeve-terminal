@@ -99,7 +99,7 @@ struct CardFace: View {
         .contentShape(RoundedRectangle(cornerRadius: 6))
         .help(help)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel([board.displayTitle(card), label, card.pullRequest?.spoken].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityLabel([board.displayTitle(card), label, card.pullRequest?.spoken, card.morePullRequestsSpoken].compactMap { $0 }.joined(separator: ", "))
     }
 
     @ViewBuilder
@@ -129,6 +129,9 @@ struct CardFace: View {
             Chip(text: card.folderName, color: Theme.folderColor(card.folderName), fill: Theme.folderColor(card.folderName).opacity(0.2))
             if let pr = card.pullRequest {
                 Chip(text: "#\(pr.number)", color: pr.state.color, fill: pr.state.color.opacity(0.18))
+            }
+            if let more = card.morePullRequests {
+                Chip(text: card.pullRequest == nil ? "\(more) PRs" : "+\(more)", color: Theme.muted)
             }
             if board.classifying.contains(card.id) {
                 Chip(text: "sorting…", color: Theme.sky300, fill: Theme.sky500.opacity(0.15))
@@ -176,6 +179,7 @@ struct CardFace: View {
     private var help: String {
         var lines = [board.displayTitle(card), card.cwd]
         if let pr = card.pullRequest { lines.append(pr.spoken) }
+        if let more = card.morePullRequestsSpoken { lines.append(more) }
         if let error = board.classifyErrors[card.id] { lines.append("Couldn't sort: \(error)") }
         return lines.joined(separator: "\n")
     }
@@ -251,6 +255,22 @@ extension PullRequest {
         case .closed: "closed"
         }
         return "pull request #\(number), \(state)"
+    }
+}
+
+extension Card {
+    /// How many of the card's pull requests are not the one on its badge,
+    /// when there are any.
+    var morePullRequests: Int? {
+        let others = (pullRequests?.count ?? 0) - (pullRequest == nil ? 0 : 1)
+        return others > 0 ? others : nil
+    }
+
+    var morePullRequestsSpoken: String? {
+        morePullRequests.map { more in
+            let noun = more == 1 ? "pull request" : "pull requests"
+            return pullRequest == nil ? "\(more) \(noun) from other branches" : "\(more) more \(noun)"
+        }
     }
 }
 
