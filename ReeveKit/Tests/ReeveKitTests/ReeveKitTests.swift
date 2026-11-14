@@ -777,6 +777,59 @@ import Testing
     }
 }
 
+@Suite struct FileTreeTests {
+    private func files(_ paths: String...) -> [FileDiff] {
+        paths.map { FileDiff(oldPath: $0, newPath: $0) }
+    }
+
+    /// Each visible row as indent and name, so a test reads like the tree.
+    private func outline(_ tree: FileTree, collapsed: Set<String> = []) -> [String] {
+        tree.rows(collapsed: collapsed).map { String(repeating: "  ", count: $0.depth) + $0.node.name }
+    }
+
+    @Test func foldersComeFirstInNameOrder() {
+        let tree = FileTree(files("README.md", "b/z.swift", "a.txt", "b/c/d.swift", "B2/x", "b/file10", "b/file9"))
+        #expect(outline(tree) == ["b", "  c", "    d.swift", "  file9", "  file10", "  z.swift", "B2", "  x", "a.txt", "README.md"])
+    }
+
+    @Test func loneFoldersShareARow() {
+        let tree = FileTree(files("App/Sources/Views/A.swift", "App/Sources/Views/B.swift"))
+        #expect(outline(tree) == ["App/Sources/Views", "  A.swift", "  B.swift"])
+        #expect(tree.nodes.first?.id == "App/Sources/Views/")
+    }
+
+    @Test func foldsOnlyUpToWhereTheTreeBranches() {
+        let tree = FileTree(files("App/Sources/Views/A.swift", "App/Sources/Model/B.swift", "App/README.md"))
+        #expect(outline(tree) == ["App", "  Sources", "    Model", "      B.swift", "    Views", "      A.swift", "  README.md"])
+        #expect(tree.rows(collapsed: []).map(\.node.id).contains("App/Sources/Views/"))
+    }
+
+    @Test func aFileKeepsItsIndexAndId() {
+        let diffs = files("z/one", "a/two")
+        let tree = FileTree(diffs)
+        let leaves = tree.rows(collapsed: []).compactMap { row -> (String, Int)? in
+            if case let .file(i) = row.node.kind { (row.node.id, i) } else { nil }
+        }
+        #expect(leaves.map(\.0) == [diffs[1].id, diffs[0].id])
+        #expect(leaves.map(\.1) == [1, 0])
+    }
+
+    @Test func aRenameSitsAtItsNewPath() {
+        let tree = FileTree([FileDiff(oldPath: "old/name.swift", newPath: "new/name.swift", status: .renamed)])
+        #expect(outline(tree) == ["new", "  name.swift"])
+    }
+
+    @Test func aDeletedFileSitsAtItsOldPath() {
+        let tree = FileTree([FileDiff(oldPath: "gone/file", newPath: nil, status: .deleted)])
+        #expect(outline(tree) == ["gone", "  file"])
+    }
+
+    @Test func aClosedFolderHidesWhatsInIt() {
+        let tree = FileTree(files("a/x", "a/y", "b/z", "c"))
+        #expect(outline(tree, collapsed: ["a/"]) == ["a", "b", "  z", "c"])
+    }
+}
+
 @Suite struct MarkdownTests {
     @Test func readsAPlan() {
         let md = """

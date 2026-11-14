@@ -62,7 +62,9 @@ feature parity. What Reeve adds is the board.
   on), it takes the first yes that keeps the context and doesn't bypass
   permissions. Changes is everything the card has done in its worktree since
   it started: commits, uncommitted edits and new files, read again as Claude
-  works. Preview is the app the card is building, under review in
+  works, with a tree of the changed files beside it: click one to jump to it
+  (opening it if it was too long to start open), or hide the tree from the
+  bar above. Preview is the app the card is building, under review in
   [Gloss](https://github.com/ryanbrunner/gloss) (below). PRs lists every
   pull request the card has opened, newest first, each with its state, its
   checks (passing, running or failing) and its review; it asks GitHub again

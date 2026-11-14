@@ -20,6 +20,11 @@ struct ChangesView: View {
     @State private var revision = 0
     /// Files a person opened or closed, over the size-based default.
     @State private var expanded: [String: Bool] = [:]
+    /// Folders closed in the file tree, by path.
+    @State private var collapsed: Set<String> = []
+    /// The file last picked in the tree, for the diff to scroll to.
+    @State private var jump: Jump?
+    @AppStorage("changesTree") private var showTree = true
     /// The comment or reply being written, if any.
     @State private var editing: Editing?
     /// What's been typed in composers, kept here because diff rows come and
@@ -37,18 +42,32 @@ struct ChangesView: View {
                     changes: changes, loading: loading,
                     pending: threads.filter(\.hasPending).count, blocker: blocker,
                     submit: { board.submitReview(card.id) },
-                    reload: { reloads += 1 }
+                    reload: { reloads += 1 },
+                    tree: changes.files.isEmpty ? nil : $showTree
                 )
                 if changes.files.isEmpty, threads.isEmpty {
                     TabEmptyState(title: "No changes yet", detail: changes.base == nil ? "Nothing here differs from HEAD." : "Nothing here differs from where the card started.")
                 } else {
-                    DiffList(
-                        changes: changes, revision: revision, expanded: expanded,
-                        review: ReviewContext(threads: threads, editing: editing, blocker: blocker, working: card.activity == .running, drafts: drafts, actions: actions)
-                    ) { id, open in
-                        expanded[id] = !open
+                    HStack(spacing: 0) {
+                        if showTree, !changes.files.isEmpty {
+                            FileNavigator(
+                                files: changes.files, revision: revision, collapsed: collapsed, selected: jump?.file,
+                                comments: Dictionary(threads.map { ($0.path, 1) }, uniquingKeysWith: +),
+                                toggle: { collapsed.formSymmetricDifference([$0]) },
+                                pick: reveal
+                            )
+                            .equatable()
+                            .frame(width: 260)
+                            Rectangle().fill(Theme.edge).frame(width: 1)
+                        }
+                        DiffList(
+                            changes: changes, revision: revision, expanded: expanded, jump: jump,
+                            review: ReviewContext(threads: threads, editing: editing, blocker: blocker, working: card.activity == .running, drafts: drafts, actions: actions)
+                        ) { id, open in
+                            expanded[id] = !open
+                        }
+                        .equatable()
                     }
-                    .equatable()
                 }
             } else if let problem {
                 TabEmptyState(title: "Couldn't read the changes", detail: problem)
@@ -88,6 +107,12 @@ struct ChangesView: View {
         )
     }
 
+    /// Opens the file if it's closed, and scrolls the diff to it.
+    private func reveal(_ file: FileDiff) {
+        if !DiffList.isOpen(file, expanded) { expanded[file.id] = true }
+        jump = Jump(file: file.id, count: (jump?.count ?? 0) + 1)
+    }
+
     private func load() async {
         loading = true
         defer { loading = false }
@@ -113,6 +138,7 @@ private struct DiffList: View, Equatable {
     let changes: Worktrees.Changes
     let revision: Int
     let expanded: [String: Bool]
+    let jump: Jump?
     let review: ReviewContext
     let toggle: (_ id: String, _ open: Bool) -> Void
 
@@ -121,24 +147,41 @@ private struct DiffList: View, Equatable {
     private static let openLimit = 300
 
     static func == (a: DiffList, b: DiffList) -> Bool {
-        a.revision == b.revision && a.expanded == b.expanded && a.review == b.review
+        a.revision == b.revision && a.expanded == b.expanded && a.jump == b.jump && a.review == b.review
     }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(rows(changes.files)) { row in
-                    RowView(row: row, review: review) { file in toggle(file.id, isOpen(file)) }
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(rows(changes.files)) { row in
+                        RowView(row: row, review: review) { file in toggle(file.id, isOpen(file)) }
+                    }
+                    notes(changes)
                 }
-                notes(changes)
+                .textSelection(.enabled)
             }
-            .textSelection(.enabled)
+            .onChange(of: jump) { _, jump in
+                guard let jump else { return }
+                let id = Self.headerId(jump.file)
+                proxy.scrollTo(id, anchor: .top)
+                // Rows far off haven't been laid out, so the first scroll
+                // goes by estimated heights and can stop short.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { proxy.scrollTo(id, anchor: .top) }
+            }
         }
     }
 
-    private func isOpen(_ file: FileDiff) -> Bool {
-        expanded[file.id] ?? (file.lineCount <= Self.openLimit)
+    static func isOpen(_ file: FileDiff, _ expanded: [String: Bool]) -> Bool {
+        expanded[file.id] ?? (file.lineCount <= openLimit)
     }
+
+    private func isOpen(_ file: FileDiff) -> Bool {
+        Self.isOpen(file, expanded)
+    }
+
+    /// By the file, not its place, so a jump finds it after a read reorders them.
+    static func headerId(_ file: String) -> String { "f." + file }
 
     /// The diff as one flat list, so only the rows on screen are laid out.
     /// Comments follow the line they're on, or sit under the file's header
@@ -153,7 +196,7 @@ private struct DiffList: View, Equatable {
         for (f, file) in files.enumerated() {
             let open = isOpen(file)
             let comments = review.threads.filter { $0.path == file.path }.count
-            rows.append(Row(id: "\(f)", kind: .file(file, open: open, comments: comments)))
+            rows.append(Row(id: Self.headerId(file.id), kind: .file(file, open: open, comments: comments)))
             guard open else { continue }
             rows += threads(placed.outdated[file.path] ?? [], outdated: true)
             if file.isBinary {
@@ -257,11 +300,7 @@ private struct FileHeader: View {
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(Theme.muted)
                     .frame(width: 10)
-                Text(badge.letter)
-                    .font(.mono(10, .semibold))
-                    .foregroundStyle(badge.color)
-                    .frame(width: 16, height: 16)
-                    .background(RoundedRectangle(cornerRadius: 3).fill(badge.color.opacity(0.15)))
+                StatusBadge(status: file.status)
                 Text(name)
                     .font(.mono(12))
                     .foregroundStyle(Theme.text)
@@ -296,13 +335,131 @@ private struct FileHeader: View {
         return file.path
     }
 
-    private var badge: (letter: String, color: Color) {
-        switch file.status {
-        case .added: ("A", DiffColors.addedText)
-        case .deleted: ("D", DiffColors.removedText)
-        case .renamed: ("R", Theme.sky300)
-        case .modified: ("M", Color(hex: 0xE3B341))
+}
+
+/// A, M, D or R, in the colour of what happened to the file.
+private struct StatusBadge: View {
+    let status: FileDiff.Status
+
+    var body: some View {
+        Text(letter)
+            .font(.mono(10, .semibold))
+            .foregroundStyle(color)
+            .frame(width: 16, height: 16)
+            .background(RoundedRectangle(cornerRadius: 3).fill(color.opacity(0.15)))
+    }
+
+    private var letter: String {
+        switch status {
+        case .added: "A"
+        case .deleted: "D"
+        case .renamed: "R"
+        case .modified: "M"
         }
+    }
+
+    private var color: Color {
+        switch status {
+        case .added: DiffColors.addedText
+        case .deleted: DiffColors.removedText
+        case .renamed: Theme.sky300
+        case .modified: Color(hex: 0xE3B341)
+        }
+    }
+}
+
+/// A file picked in the tree. Counted, so picking the same one again still
+/// scrolls back to it.
+private struct Jump: Equatable {
+    let file: String
+    let count: Int
+}
+
+/// The changed files as folders, beside the diff. Picking one scrolls to it.
+/// Equatable on what it shows, as `DiffList` is.
+private struct FileNavigator: View, Equatable {
+    let files: [FileDiff]
+    let revision: Int
+    let collapsed: Set<String>
+    let selected: String?
+    /// Comments by path.
+    let comments: [String: Int]
+    let toggle: (_ folder: String) -> Void
+    let pick: (FileDiff) -> Void
+
+    static func == (a: FileNavigator, b: FileNavigator) -> Bool {
+        a.revision == b.revision && a.collapsed == b.collapsed && a.selected == b.selected && a.comments == b.comments
+    }
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(FileTree(files).rows(collapsed: collapsed), id: \.node.id) { row in
+                    switch row.node.kind {
+                    case .folder:
+                        NavigatorRow(depth: row.depth, selected: false, help: String(row.node.id.dropLast()), action: { toggle(row.node.id) }) {
+                            Image(systemName: collapsed.contains(row.node.id) ? "chevron.right" : "chevron.down")
+                                .font(.system(size: 8, weight: .semibold))
+                                .foregroundStyle(Theme.muted)
+                                .frame(width: 10)
+                            Image(systemName: "folder")
+                                .font(.system(size: 11))
+                                .foregroundStyle(Theme.muted)
+                            Text(row.node.name)
+                                .font(.mono(12))
+                                .foregroundStyle(Theme.textSoft)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    case let .file(i):
+                        let file = files[i]
+                        NavigatorRow(depth: row.depth, selected: selected == file.id, help: file.path, action: { pick(file) }) {
+                            // Under its folder's name, past the chevron.
+                            Color.clear.frame(width: 10, height: 1)
+                            StatusBadge(status: file.status)
+                            Text(row.node.name)
+                                .font(.mono(12))
+                                .foregroundStyle(selected == file.id ? Theme.text : Theme.textSoft)
+                                .strikethrough(file.status == .deleted, color: Theme.muted)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 4)
+                            if let count = comments[file.path] {
+                                Label("\(count)", systemImage: "text.bubble")
+                                    .font(.geist(10))
+                                    .foregroundStyle(Theme.muted)
+                                    .labelStyle(.titleAndIcon)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.vertical, 6)
+        }
+        .background(Theme.panel)
+    }
+}
+
+private struct NavigatorRow<Content: View>: View {
+    let depth: Int
+    let selected: Bool
+    let help: String
+    let action: () -> Void
+    @ViewBuilder let content: Content
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) { content }
+                .padding(.leading, 10 + CGFloat(depth) * 14)
+                .padding(.trailing, 10)
+                .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(selected ? Theme.sky950 : hovering ? Theme.edge.opacity(0.5) : .clear)
+        .onHover { hovering = $0 }
+        .help(help)
     }
 }
 
@@ -383,11 +540,21 @@ private struct SummaryBar: View {
     let blocker: String?
     let submit: () -> Void
     let reload: () -> Void
+    /// Whether the file tree shows; nil when there are no files for one.
+    let tree: Binding<Bool>?
 
     var body: some View {
         let added = changes.files.reduce(0) { $0 + $1.additions }
         let removed = changes.files.reduce(0) { $0 + $1.deletions }
         HStack(spacing: 10) {
+            if let tree {
+                Button { tree.wrappedValue.toggle() } label: {
+                    Image(systemName: "sidebar.left").font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(tree.wrappedValue ? Theme.sky300 : Theme.muted)
+                .help(tree.wrappedValue ? "Hide the file tree" : "Show the file tree")
+            }
             Text(changes.files.count == 1 ? "1 file changed" : "\(changes.files.count) files changed")
                 .font(.geist(12, .medium))
                 .foregroundStyle(Theme.text)
