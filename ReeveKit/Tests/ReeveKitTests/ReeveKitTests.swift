@@ -159,9 +159,17 @@ import Testing
     private func card(_ stage: Stage, mode: String?, pr: PullRequest.State? = nil, pinned: Bool = false) -> Card {
         var card = Card(cwd: "/tmp", stage: stage)
         card.permissionMode = mode
-        card.pullRequest = pr.map { PullRequest(number: 1, state: $0, url: "https://github.com/o/r/pull/1") }
+        card.branch = "reeve/1a2b3c4d"
+        card.pullRequests = pr.map { [PullRequest(number: 1, state: $0, url: "https://github.com/o/r/pull/1", branch: "reeve/1a2b3c4d")] }
         card.stagePinned = pinned
         return card
+    }
+
+    @Test func aPullRequestFromABranchLeftBehindIsNotRelease() {
+        var moved = card(.testing, mode: "auto", pr: .merged)
+        moved.headBranch = "next-thing"
+        #expect(moved.pullRequest == nil)
+        #expect(moved.stage(running: false, hasChanges: true) == .testing)
     }
 
     @Test func planModeIsPlanning() {
@@ -529,31 +537,138 @@ import Testing
 }
 
 @Suite struct PullRequestTests {
-    private func parse(_ json: String) throws -> PullRequest? {
-        try PullRequest.parse(Data(json.utf8))
+    private func parse(_ json: String) throws -> [PullRequest] {
+        try PullRequest.parseAll(Data(json.utf8))
+    }
+
+    /// One pull request on branch `b` with the given status rollup.
+    private func checks(_ rollup: String) throws -> PullRequest.Checks? {
+        try parse(#"[{"number":1,"state":"OPEN","url":"u","headRefName":"b","statusCheckRollup":"# + rollup + #"}]"#).first?.checks
     }
 
     @Test func noPullRequest() throws {
-        #expect(try parse("[]") == nil)
+        #expect(try parse("[]").isEmpty)
+        #expect(PullRequest.primary(of: [], on: "b") == nil)
+    }
+
+    @Test func readsThemAllNewestFirst() throws {
+        let prs = try parse(#"[{"number":3,"state":"CLOSED","url":"u3","title":"First go","headRefName":"a"},{"number":7,"state":"MERGED","url":"u7","title":"Second go","headRefName":"b"}]"#)
+        #expect(prs == [
+            PullRequest(number: 7, state: .merged, url: "u7", title: "Second go", branch: "b"),
+            PullRequest(number: 3, state: .closed, url: "u3", title: "First go", branch: "a"),
+        ])
     }
 
     @Test func prefersTheOpenOne() throws {
-        let pr = try parse(#"[{"number":12,"state":"CLOSED","isDraft":false,"url":"u12"},{"number":9,"state":"OPEN","isDraft":false,"url":"u9"}]"#)
-        #expect(pr == PullRequest(number: 9, state: .open, url: "u9"))
+        let prs = try parse(#"[{"number":12,"state":"CLOSED","isDraft":false,"url":"u12","headRefName":"b"},{"number":9,"state":"OPEN","isDraft":false,"url":"u9","headRefName":"b"}]"#)
+        #expect(PullRequest.primary(of: prs, on: "b")?.number == 9)
     }
 
     @Test func otherwiseTheNewest() throws {
-        let pr = try parse(#"[{"number":3,"state":"CLOSED","isDraft":false,"url":"u3"},{"number":7,"state":"MERGED","isDraft":false,"url":"u7"}]"#)
-        #expect(pr == PullRequest(number: 7, state: .merged, url: "u7"))
+        let prs = try parse(#"[{"number":3,"state":"CLOSED","isDraft":false,"url":"u3","headRefName":"b"},{"number":7,"state":"MERGED","isDraft":false,"url":"u7","headRefName":"b"}]"#)
+        #expect(PullRequest.primary(of: prs, on: "b")?.number == 7)
+    }
+
+    @Test func onlyTheBranchTheCardIsOn() throws {
+        let prs = try parse(#"[{"number":5,"state":"OPEN","url":"u5","headRefName":"old"}]"#)
+        #expect(PullRequest.primary(of: prs, on: "new") == nil)
+        #expect(PullRequest.primary(of: prs, on: nil) == nil)
     }
 
     @Test func draftIsItsOwnState() throws {
-        let pr = try parse(#"[{"number":4,"state":"OPEN","isDraft":true,"url":"u4"}]"#)
-        #expect(pr?.state == .draft)
+        let prs = try parse(#"[{"number":4,"state":"OPEN","isDraft":true,"url":"u4"}]"#)
+        #expect(prs.first?.state == .draft)
+    }
+
+    @Test func noChecksIsNil() throws {
+        #expect(try checks("[]") == nil)
+        #expect(try parse(#"[{"number":1,"state":"OPEN","url":"u"}]"#).first?.checks == nil)
+    }
+
+    @Test func countsCheckRunsAndStatuses() throws {
+        let failing = try checks(#"[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"},{"__typename":"StatusContext","state":"PENDING"}]"#)
+        #expect(failing == PullRequest.Checks(passed: 1, failed: 1, pending: 1))
+        #expect(failing?.overall == .failing)
+
+        let pending = try checks(#"[{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SKIPPED"}]"#)
+        #expect(pending == PullRequest.Checks(passed: 1, pending: 1))
+        #expect(pending?.overall == .pending)
+
+        let passing = try checks(#"[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"NEUTRAL"},{"__typename":"StatusContext","state":"SUCCESS"}]"#)
+        #expect(passing == PullRequest.Checks(passed: 2))
+        #expect(passing?.overall == .passing)
+
+        let errored = try checks(#"[{"__typename":"StatusContext","state":"ERROR"},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"TIMED_OUT"}]"#)
+        #expect(errored == PullRequest.Checks(failed: 2))
+    }
+
+    @Test func aSuccessfulStatusIsNotPending() throws {
+        #expect(try checks(#"[{"__typename":"StatusContext","state":"SUCCESS"}]"#) == PullRequest.Checks(passed: 1))
+    }
+
+    @Test func readsTheReviewDecision() throws {
+        func review(_ decision: String) throws -> PullRequest.Review? {
+            try parse(#"[{"number":1,"state":"OPEN","url":"u","reviewDecision":""# + decision + #""}]"#).first?.review
+        }
+        #expect(try review("APPROVED") == .approved)
+        #expect(try review("CHANGES_REQUESTED") == .changesRequested)
+        #expect(try review("REVIEW_REQUIRED") == .required)
+        #expect(try review("") == nil)
+    }
+
+    @Test func readsWhenItWasOpened() throws {
+        let prs = try parse(#"[{"number":1,"state":"OPEN","url":"u","createdAt":"2025-11-10T09:30:00Z"}]"#)
+        #expect(prs.first?.createdAt == Date(timeIntervalSince1970: 1_762_767_000))
+    }
+
+    @Test func leavesAColleaguesPullRequestAlone() {
+        let made = Date(timeIntervalSince1970: 1_000_000)
+        let before = made.addingTimeInterval(-60), after = made.addingTimeInterval(60)
+        let found = [
+            PullRequest(number: 1, state: .merged, url: "u1", branch: "theirs", createdAt: before),
+            PullRequest(number: 2, state: .open, url: "u2", branch: "split", createdAt: after),
+            PullRequest(number: 3, state: .open, url: "u3", branch: "feature", createdAt: before),
+            PullRequest(number: 4, state: .open, url: "u4", branch: "old", createdAt: before),
+        ]
+        let tracked = [PullRequest(number: 4, state: .draft, url: "u4", branch: "old")]
+        let kept = PullRequest.belonging(found, owns: ["feature"], tracked: tracked, since: made)
+        #expect(kept.map(\.number) == [2, 3, 4])
+    }
+
+    @Test func mergeReplacesAndKeeps() {
+        let tracked = [PullRequest(number: 3, state: .open, url: "u3", branch: "a"), PullRequest(number: 5, state: .open, url: "u5", branch: "b")]
+        let found = [PullRequest(number: 8, state: .draft, url: "u8", branch: "b"), PullRequest(number: 3, state: .merged, url: "u3", branch: "a")]
+        #expect(PullRequest.merge(tracked, found).map(\.number) == [8, 5, 3])
+        #expect(PullRequest.merge(tracked, found).last?.state == .merged)
+    }
+
+    @Test func branchesFromTheReflog() {
+        let reflog = """
+        commit: Split out the parser
+        checkout: moving from reeve/1a2b3c4d to parser-split
+        commit: Add the PRs tab
+        checkout: moving from 0123456789abcdef0123456789abcdef01234567 to reeve/1a2b3c4d
+        checkout: moving from main to 0123456789abcdef0123456789abcdef01234567
+        reset: moving to HEAD
+        """
+        #expect(PullRequest.checkedOutBranches(reflog: reflog) == ["parser-split", "reeve/1a2b3c4d", "main"])
+        #expect(PullRequest.checkedOutBranches(reflog: reflog, limit: 1) == ["parser-split"])
+        #expect(PullRequest.checkedOutBranches(reflog: "") == [])
     }
 
     @Test func listsByHeadBranch() {
-        #expect(PullRequest.listArguments(branch: "reeve/1a2b3c4d").prefix(4) == ["pr", "list", "--head", "reeve/1a2b3c4d"])
+        let arguments = PullRequest.listArguments(branch: "reeve/1a2b3c4d")
+        #expect(arguments.prefix(4) == ["pr", "list", "--head", "reeve/1a2b3c4d"])
+        #expect(arguments.contains("number,state,isDraft,url,title,headRefName,statusCheckRollup,reviewDecision,createdAt"))
+    }
+
+    @Test func aCardSavedWithOnePullRequestStillLoads() throws {
+        let json = #"{"id":"1A2B3C4D-0000-0000-0000-000000000000","sessionId":"1A2B3C4D-0000-0000-0000-000000000001","title":"","titledByPerson":false,"cwd":"/code/app","pullRequest":{"number":4,"state":"open","url":"u4"},"stage":"release","activity":"idle","stagePinned":false,"hasConversation":false,"createdAt":"2026-11-01T00:00:00Z","updatedAt":"2026-11-01T00:00:00Z"}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let card = try decoder.decode(Card.self, from: Data(json.utf8))
+        #expect(card.pullRequests == nil)
+        #expect(card.stage == .release)
     }
 }
 

@@ -89,6 +89,13 @@ enum Worktrees {
         return branch?.isEmpty == false ? branch : nil
     }
 
+    /// The branches the worktree at `path` has been on, newest first, from
+    /// its HEAD reflog. Empty when git can't say.
+    static func reflogBranches(at path: String, env: ShellEnvironment?) async -> [String] {
+        guard let reflog = try? await git(["reflog", "show", "HEAD", "--format=%gs"], in: path, env: env) else { return [] }
+        return PullRequest.checkedOutBranches(reflog: reflog)
+    }
+
     /// Everything a card has changed: its commits since `base` and what isn't
     /// committed yet, new files included. Nil outside a git repo.
     static func changes(in folder: String, base: String?, env: ShellEnvironment?) async throws -> Changes? {
@@ -170,21 +177,17 @@ enum Worktrees {
     }
 }
 
-/// Finds the pull request opened from a card's branch, with the person's own
-/// `gh` and its login.
+/// Finds the pull requests opened from a card's branches, with the person's
+/// own `gh` and its login.
 enum PullRequests {
-    /// The branch's pull request, `.some(nil)` when it has none, or nil when
-    /// gh couldn't say: not installed, not logged in, or not a GitHub repo.
-    static func find(branch: String, in directory: String, env: ShellEnvironment?) async -> PullRequest?? {
+    /// Every pull request opened from `branch`, empty when it has none, or nil
+    /// when gh couldn't say: not installed, not logged in, or not a GitHub repo.
+    static func find(branch: String, in directory: String, env: ShellEnvironment?) async -> [PullRequest]? {
         let environment = (env?.baseEnvironment ?? ProcessInfo.processInfo.environment).filter { !$0.key.hasPrefix("GIT_") }
         guard let result = try? await Subprocess.run(
             "/usr/bin/env", ["gh"] + PullRequest.listArguments(branch: branch),
             environment: environment, currentDirectory: directory, timeout: 15
         ), result.status == 0 else { return nil }
-        do {
-            return .some(try PullRequest.parse(result.stdout))
-        } catch {
-            return nil
-        }
+        return try? PullRequest.parseAll(result.stdout)
     }
 }

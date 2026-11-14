@@ -73,17 +73,24 @@ enum Smoke {
 
         func showTabs(_ id: UUID, then done: @escaping () -> Void) {
             let order = CardTab.allCases.filter { $0 != .terminal } + [.terminal]
+            /// Presses ⌥⌘N for `tab` as a keyboard would: a key event posted
+            /// through the window server, so AppKit offers it to the menu before
+            /// the focused terminal, as it does a person's key. An NSEvent handed
+            /// to `NSApp.sendEvent` skips that and lands in the terminal.
+            func press(_ tab: CardTab) {
+                let number = CardTab.allCases.firstIndex(of: tab)! + 1
+                let source = CGEventSource(stateID: .hidSystemState)
+                for down in [true, false] {
+                    let event = CGEvent(keyboardEventSource: source, virtualKey: [18, 19, 20, 21, 23][number - 1], keyDown: down)
+                    event?.flags = [.maskCommand, .maskAlternate]
+                    event?.postToPid(getpid())
+                }
+            }
             for (index, tab) in order.enumerated() {
                 // The keys a person would press, so the menu's shortcut is
                 // what's tested, past a terminal that has the keyboard.
                 DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 3) {
-                    let number = CardTab.allCases.firstIndex(of: tab)! + 1
-                    guard let window = NSApp.windows.first(where: { $0.isVisible }),
-                          let key = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command, .option], timestamp: ProcessInfo.processInfo.systemUptime,
-                                                     windowNumber: window.windowNumber, context: nil, characters: String(number),
-                                                     charactersIgnoringModifiers: String(number), isARepeat: false, keyCode: [18, 19, 20, 21][number - 1])
-                    else { return }
-                    NSApp.sendEvent(key)
+                    press(tab)
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 3 + 2.5) {
                     let view = board.terminals.view(for: id)

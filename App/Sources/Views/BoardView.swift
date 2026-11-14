@@ -101,8 +101,16 @@ struct CardMenu: View {
         Divider()
         Button(board.live.contains(card.id) ? "Restart Session" : "Resume Session") { board.restart(card.id) }
         Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: card.cwd)]) }
-        if let pr = card.pullRequest, let url = URL(string: pr.url) {
-            Button("Open Pull Request #\(pr.number)") { NSWorkspace.shared.open(url) }
+        if let prs = card.pullRequests, prs.count > 1 {
+            Menu("Open Pull Request") {
+                ForEach(prs, id: \.number) { pr in
+                    Button(String("#\(pr.number) \(pr.title)")) {
+                        if let url = URL(string: pr.url) { NSWorkspace.shared.open(url) }
+                    }
+                }
+            }
+        } else if let pr = card.pullRequests?.first, let url = URL(string: pr.url) {
+            Button(String("Open Pull Request #\(pr.number)")) { NSWorkspace.shared.open(url) }
         }
         Divider()
         Button("Close Card") { CloseCard.confirm(card: card, board: board) }

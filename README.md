@@ -43,16 +43,21 @@ feature parity. What Reeve adds is the board.
   the repo. A folder outside git is used as it is.
 - **A card shows its pull request.** Once a pull request is opened from a
   card's branch, the card wears its number as a badge: green when open, grey
-  as a draft, violet once merged, red if closed. Reeve asks your own `gh`
+  as a draft, violet once merged, red if closed. A card keeps every pull
+  request opened from any branch its worktree has been on, and the badge
+  shows `+N` for the ones from other branches. Reeve asks your own `gh`
   at launch, when a turn ends and when you open the card. Without `gh` or a
   GitHub remote there is simply no badge.
-- **Each open card has four tabs.** Terminal is the session. Plan shows
+- **Each open card has five tabs.** Terminal is the session. Plan shows
   the plan Claude wrote in plan mode, read from its file so later edits show,
   with a dot on the tab when a new one arrives. Changes is everything the card
   has done in its worktree since it started: commits, uncommitted edits and
   new files, read again as Claude works. Preview is the app the card is
   building, under review in [Gloss](https://github.com/ryanbrunner/gloss)
-  (below). ⌥⌘1–4 switch between them.
+  (below). PRs lists every pull request the card has opened, newest first,
+  each with its state, its checks (passing, running or failing) and its
+  review; it asks GitHub again when it shows, and every 30 seconds while a
+  check is running. ⌥⌘1–5 switch between them.
 - **Review the changes like a pull request.** Hover a line in Changes and
   click + to comment on it. **Comment now** sends it straight away; **Add to
   review** keeps it as pending until you **Submit review**. Reeve writes the
@@ -156,7 +161,7 @@ toolchain, and 1.99 doesn't compile with the current Swift.
 | ⌘1…⌘9 | Open card 1–9, in board order |
 | ⇧⌘] / ⇧⌘[ | Next / previous card |
 | ⌘B | Back to the board (the session keeps running) |
-| ⌥⌘1 / ⌥⌘2 / ⌥⌘3 / ⌥⌘4 | The open card's Terminal / Plan / Changes / Preview |
+| ⌥⌘1 / ⌥⌘2 / ⌥⌘3 / ⌥⌘4 / ⌥⌘5 | The open card's Terminal / Plan / Changes / Preview / PRs |
 | ⇧⌘V | VIBES MODE for the whole board |
 
 Esc goes to Claude Code, where it interrupts a turn, so it doesn't close an
