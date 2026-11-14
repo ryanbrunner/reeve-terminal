@@ -2,13 +2,12 @@ import AppKit
 import ReeveKit
 import SwiftUI
 
-/// A new card: a folder to work in, and whether to plan first or start right
+/// A new card: a repo to work in, and whether to plan first or start right
 /// away. The model, effort, a name and a first prompt are there if you want
 /// them; everything else happens in the terminal.
 struct NewCardSheet: View {
     @EnvironmentObject var board: Board
     @Environment(\.dismiss) private var dismiss
-    @State private var folder: String = RecentFolders.all.first ?? ""
     @State private var title = ""
     @State private var prompt = ""
     @State private var showingDetails = false
@@ -16,39 +15,59 @@ struct NewCardSheet: View {
     /// means the person's own default.
     @AppStorage("newCardModel") private var model = ""
     @AppStorage("newCardEffort") private var effort = ""
+    @State private var vibes = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("New card").font(.geist(16, .semibold)).foregroundStyle(Theme.text)
 
             VStack(alignment: .leading, spacing: 6) {
-                SectionLabel(text: "Folder")
-                HStack(spacing: 8) {
-                    Menu {
-                        ForEach(RecentFolders.all, id: \.self) { path in
-                            Button(path) { folder = path }
+                SectionLabel(text: "Repo")
+                Menu {
+                    ForEach(board.availableRepos) { repo in
+                        Button { board.pickedRepoId = repo.id } label: {
+                            Text(repo.name)
+                            Text(repo.path)
                         }
-                        if !RecentFolders.all.isEmpty { Divider() }
-                        Button("Choose…", action: choose)
-                    } label: {
-                        Text(folder.isEmpty ? "Choose a folder…" : folder)
-                            .font(.mono(12))
-                            .lineLimit(1)
-                            .truncationMode(.head)
                     }
-                    .menuStyle(.borderlessButton)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .frame(height: 32)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Theme.ink))
-                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Theme.edge))
-                    Button("Choose…", action: choose).buttonStyle(SecondaryButtonStyle(height: 32))
+                    if !board.availableRepos.isEmpty { Divider() }
+                    Button("Add Repo…", action: addRepo)
+                } label: {
+                    // A menu's label is drawn as plain text, so the path goes below.
+                    Text(repo?.name ?? "Add a repo…")
+                        .font(.geist(13))
+                        .foregroundStyle(repo == nil ? Theme.muted : Theme.text)
+                }
+                .menuStyle(.borderlessButton)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .frame(height: 32)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Theme.ink))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Theme.edge))
+                if let repo {
+                    Text(repo.path)
+                        .font(.mono(11))
+                        .foregroundStyle(Theme.muted)
+                        .lineLimit(1)
+                        .truncationMode(.head)
                 }
             }
 
             HStack(spacing: 12) {
                 OptionMenu(label: "Model", choices: Launch.models, selection: $model)
                 OptionMenu(label: "Effort", choices: Launch.efforts, selection: $effort)
+            }
+
+            HStack(spacing: 12) {
+                VibesSwitch(on: vibes || board.vibes != nil, help: board.vibes != nil ? "The whole board is in VIBES MODE" : nil) { vibes.toggle() }
+                    .disabled(board.vibes != nil)
+                Text(board.vibes != nil
+                     ? "The board is in VIBES MODE, so this card is too."
+                     : vibes ? "Claude approves its own plan, answers its own questions and ships this card without you."
+                     : "Off: Claude waits for you, as usual.")
+                    .font(.geist(12))
+                    .foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -67,8 +86,8 @@ struct NewCardSheet: View {
                     ) { start(.build) }
                     .keyboardShortcut(.return, modifiers: .command)
                 }
-                .disabled(folder.isEmpty)
-                .opacity(folder.isEmpty ? 0.4 : 1)
+                .disabled(repo == nil)
+                .opacity(repo == nil ? 0.4 : 1)
             }
 
             Button {
@@ -123,32 +142,30 @@ struct NewCardSheet: View {
         .padding(20)
         .frame(width: 520)
         .background(Theme.panel)
-        .onAppear { if folder.isEmpty { choose() } }
+        .onAppear { if board.availableRepos.isEmpty { addRepo() } }
     }
 
+    private var repo: Repo? { board.pickedRepo }
+
     private func start(_ mode: StartMode) {
+        guard let repo else { return }
+        board.pickedRepoId = repo.id
         let first = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         board.create(
-            cwd: folder,
+            cwd: repo.path,
             title: title,
             prompt: first.isEmpty ? nil : first,
             mode: mode,
             model: model.isEmpty ? nil : model,
-            effort: effort.isEmpty ? nil : effort
+            effort: effort.isEmpty ? nil : effort,
+            vibes: vibes
         )
         dismiss()
     }
 
-    private func choose() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Choose"
-        panel.message = "The folder Claude works in"
-        if !folder.isEmpty { panel.directoryURL = URL(fileURLWithPath: folder) }
-        if panel.runModal() == .OK, let url = panel.url {
-            folder = url.path
+    private func addRepo() {
+        if let path = RepoPicker.choose(from: repo?.path) {
+            board.pickedRepoId = board.addRepo(path: path).id
         }
     }
 }

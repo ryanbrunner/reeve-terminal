@@ -60,6 +60,21 @@ enum Worktrees {
         return status.split(separator: "\n").count
     }
 
+    /// Whether a card's branch really landed: its pull request says MERGED,
+    /// or it has commits of its own and they are in the repo's checked-out
+    /// branch. A branch nobody committed to is in HEAD's history too, which
+    /// is why the commits are asked about.
+    static func isMerged(branch: String, repo: String, env: ShellEnvironment?) async -> Bool {
+        let environment = (env?.baseEnvironment ?? ProcessInfo.processInfo.environment).filter { !$0.key.hasPrefix("GIT_") }
+        if let pr = try? await Subprocess.run("/usr/bin/env", ["gh", "pr", "view", branch, "--json", "state", "-q", ".state"], environment: environment, currentDirectory: repo, timeout: 20),
+           String(decoding: pr.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == "MERGED" {
+            return true
+        }
+        guard let reflog = try? await git(["reflog", "show", "--format=%H", branch], in: repo, env: env),
+              reflog.split(separator: "\n").count > 1 else { return false }
+        return (try? await git(["merge-base", "--is-ancestor", branch, "HEAD"], in: repo, env: env)) != nil
+    }
+
     /// How many commits the worktree at `path` has made since `base`.
     static func commits(at path: String, since base: String, env: ShellEnvironment?) async -> Int {
         guard let count = try? await git(["rev-list", "--count", "\(base)..HEAD"], in: path, env: env) else { return 0 }
@@ -72,6 +87,13 @@ enum Worktrees {
         let branch = (try? await git(["symbolic-ref", "--short", "-q", "HEAD"], in: path, env: env))?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return branch?.isEmpty == false ? branch : nil
+    }
+
+    /// The branches the worktree at `path` has been on, newest first, from
+    /// its HEAD reflog. Empty when git can't say.
+    static func reflogBranches(at path: String, env: ShellEnvironment?) async -> [String] {
+        guard let reflog = try? await git(["reflog", "show", "HEAD", "--format=%gs"], in: path, env: env) else { return [] }
+        return PullRequest.checkedOutBranches(reflog: reflog)
     }
 
     /// Everything a card has changed: its commits since `base` and what isn't
@@ -155,21 +177,17 @@ enum Worktrees {
     }
 }
 
-/// Finds the pull request opened from a card's branch, with the person's own
-/// `gh` and its login.
+/// Finds the pull requests opened from a card's branches, with the person's
+/// own `gh` and its login.
 enum PullRequests {
-    /// The branch's pull request, `.some(nil)` when it has none, or nil when
-    /// gh couldn't say: not installed, not logged in, or not a GitHub repo.
-    static func find(branch: String, in directory: String, env: ShellEnvironment?) async -> PullRequest?? {
+    /// Every pull request opened from `branch`, empty when it has none, or nil
+    /// when gh couldn't say: not installed, not logged in, or not a GitHub repo.
+    static func find(branch: String, in directory: String, env: ShellEnvironment?) async -> [PullRequest]? {
         let environment = (env?.baseEnvironment ?? ProcessInfo.processInfo.environment).filter { !$0.key.hasPrefix("GIT_") }
         guard let result = try? await Subprocess.run(
             "/usr/bin/env", ["gh"] + PullRequest.listArguments(branch: branch),
             environment: environment, currentDirectory: directory, timeout: 15
         ), result.status == 0 else { return nil }
-        do {
-            return .some(try PullRequest.parse(result.stdout))
-        } catch {
-            return nil
-        }
+        return try? PullRequest.parseAll(result.stdout)
     }
 }

@@ -64,3 +64,70 @@ public struct PlanSighting: Equatable, Sendable {
         return latest(inTranscript: String(decoding: data, as: UTF8.self))
     }
 }
+
+/// Claude Code's plan dialog, read off the terminal's screen: its options, in
+/// order, and the one that is selected.
+///
+/// The dialog's first options approve the plan, each into a different mode
+/// (auto mode, auto-accept edits, manual edits, optionally clearing the
+/// context first); the last is "No, keep planning". Only some show, depending
+/// on the model and settings, so the option is picked by what it says.
+public struct PlanDialog: Equatable, Sendable {
+    public var options: [String]
+    /// Index into `options`.
+    public var selected: Int
+
+    public init(options: [String], selected: Int) {
+        self.options = options
+        self.selected = selected
+    }
+
+    /// The dialog on `lines`, the screen's rows top to bottom: the last list
+    /// numbered from a "1. Yes…", with a pointer on the selected option. With
+    /// no pointer to be seen, there is no telling where Enter would land, so
+    /// there is no dialog to answer.
+    public static func find(onScreen lines: [String]) -> PlanDialog? {
+        let rows = lines.map(option)
+        guard let start = rows.lastIndex(where: { $0?.number == 1 && $0?.label.hasPrefix("Yes") == true }) else { return nil }
+        var options: [String] = []
+        var selected: Int?
+        // Wrapped labels and descriptions sit between options; skip them.
+        for row in rows[start...] {
+            guard let row else { continue }
+            guard row.number == options.count + 1 else { break }
+            if row.pointed { selected = options.count }
+            options.append(row.label)
+        }
+        guard options.count >= 2, let selected else { return nil }
+        return PlanDialog(options: options, selected: selected)
+    }
+
+    /// The option that approves the plan into auto mode, keeping the context.
+    /// Without one (a model with no auto mode), the first that approves it
+    /// keeping the context and stopping short of bypassing permissions.
+    public var approval: Int {
+        let keeping = options.indices.filter { options[$0].hasPrefix("Yes") && !options[$0].contains("clear context") }
+        return keeping.first { options[$0].contains("auto mode") }
+            ?? keeping.first { !options[$0].contains("bypass") }
+            ?? 0
+    }
+
+    /// The arrow keys that move the selection to `index`, one a keystroke.
+    public func moves(to index: Int) -> [String] {
+        Array(repeating: index > selected ? "\u{1b}[B" : "\u{1b}[A", count: abs(index - selected))
+    }
+
+    /// One row as an option: `❯ 2. Yes, and use auto mode`, perhaps inside the
+    /// dialog's box. Claude Code moves the cursor over gaps rather than
+    /// writing spaces, so the terminal's cells there are empty: NULs, read as
+    /// the blanks they look like.
+    private static func option(_ line: String) -> (number: Int, label: String, pointed: Bool)? {
+        var text = line.replacingOccurrences(of: "\u{0}", with: " ").trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: "│┃|")))[...]
+        let pointed = text.first.map { "❯›>▸".contains($0) } ?? false
+        if pointed { text = text.dropFirst().drop(while: \.isWhitespace) }
+        let digits = text.prefix(while: \.isNumber)
+        guard let number = Int(digits), text.dropFirst(digits.count).hasPrefix(". ") else { return nil }
+        let label = text.dropFirst(digits.count + 2).trimmingCharacters(in: .whitespaces)
+        return label.isEmpty ? nil : (number, label, pointed)
+    }
+}

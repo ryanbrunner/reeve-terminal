@@ -15,6 +15,12 @@ struct ReeveApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1400, height: 900)
         .commands { BoardCommands(board: delegate.board) }
+
+        Settings {
+            ReposSettings()
+                .environmentObject(delegate.board)
+                .preferredColorScheme(.dark)
+        }
     }
 }
 
@@ -38,7 +44,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        let running = board.cards.filter { board.live.contains($0.id) && $0.activity == .running }
+        // A card waiting on its agents is still working: quitting stops them too.
+        let running = board.cards.filter { board.live.contains($0.id) && ($0.activity == .running || $0.activity == .waiting) }
         guard !running.isEmpty else { return .terminateNow }
         let alert = NSAlert()
         alert.messageText = running.count == 1 ? "Claude is still working on a card" : "Claude is still working on \(running.count) cards"
@@ -96,6 +103,14 @@ struct BoardCommands: Commands {
                     .disabled(card.transcriptPath == nil)
                 Button(board.live.contains(card.id) ? "Restart Session" : "Resume Session") { board.restart(card.id) }
             }
+        }
+        CommandMenu("Vibes") {
+            Toggle("Vibes Mode", isOn: Binding(get: { board.vibes != nil }, set: { _ in board.toggleVibes() }))
+                .keyboardShortcut("v", modifiers: [.command, .shift])
+            Divider()
+            Toggle("Skip Planning", isOn: $board.vibesOptions.skipPlanning)
+            Toggle("Skip Testing", isOn: $board.vibesOptions.skipTesting)
+            Toggle("Merge to Main", isOn: $board.vibesOptions.autoMerge)
         }
         CommandGroup(after: .toolbar) {
             Button("Back to Board") { board.dismissOpenCard() }

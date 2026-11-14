@@ -10,7 +10,7 @@ import Testing
     @Test func promptStartsARun() throws {
         let e = try event(#"{"session_id":"s","hook_event_name":"UserPromptSubmit","prompt":"hi","transcript_path":"/t.jsonl"}"#)
         #expect(e.transcriptPath == "/t.jsonl")
-        #expect(e.effect == HookEffect(activity: .running, waitingOn: .some(nil), startsConversation: true, unpinsStage: true, working: true))
+        #expect(e.effect == HookEffect(activity: .running, waitingOn: .some(nil), startsConversation: true, unpinsStage: true, working: true, background: []))
     }
 
     @Test func askingAQuestionNeedsInput() throws {
@@ -73,6 +73,85 @@ import Testing
         let e = try event(#"{"session_id":"s","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Done."}"#)
         #expect(e.effect.activity == .needsReview)
         #expect(e.effect.classify)
+        #expect(e.effect.background == [])
+    }
+
+    @Test func stopWithBackgroundAgentsIsWaiting() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"Stop","last_assistant_message":"I'll report back.","background_tasks":[{"id":"a1","type":"subagent","status":"running","description":"Explore hooks","agent_type":"Explore"},{"id":"b1","type":"shell","status":"running","description":"npm run dev","command":"npm run dev"}]}"#)
+        #expect(e.effect.activity == .waiting)
+        #expect(e.effect.classify)
+        #expect(e.effect.waitingOn == .some(nil))
+        #expect(e.effect.background == [BackgroundWork(id: "a1", type: "subagent", description: "Explore hooks", agentType: "Explore")])
+    }
+
+    @Test func stopWithOnlyShellsAndMonitorsIsReview() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"Stop","background_tasks":[{"id":"b1","type":"shell","status":"running","description":"npm run dev"},{"id":"m1","type":"monitor","status":"running","description":"watch logs"}]}"#)
+        #expect(e.effect.activity == .needsReview)
+    }
+
+    @Test func subagentToolsLeaveTheActivityAlone() throws {
+        let pre = try event(#"{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Bash","agent_id":"a1","agent_type":"Explore"}"#)
+        #expect(pre.effect.activity == nil)
+        #expect(pre.effect.waitingOn == nil)
+        #expect(pre.effect.background == nil)
+        let post = try event(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Edit","agent_id":"a1","tool_input":{"file_path":"/a"}}"#)
+        #expect(post.effect.activity == nil)
+        #expect(post.effect.editsFiles)
+    }
+
+    @Test func subagentWorkClearsAnAnsweredPrompt() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Bash","agent_id":"a1"}"#)
+        #expect(e.effect.bySubagent)
+        #expect(HookEvent.activityAfterSubagentWork(.needsInput, askedByNotification: true, waitingOnBackground: true) == .waiting)
+        #expect(HookEvent.activityAfterSubagentWork(.needsInput, askedByNotification: true, waitingOnBackground: false) == .running)
+        // Claude's own question stands until Claude moves on.
+        #expect(HookEvent.activityAfterSubagentWork(.needsInput, askedByNotification: false, waitingOnBackground: true) == nil)
+        #expect(HookEvent.activityAfterSubagentWork(.waiting, askedByNotification: true, waitingOnBackground: true) == nil)
+    }
+
+    @Test func aSubagentAskingStillNeedsInput() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","agent_id":"a1","tool_input":{"questions":[{"question":"Which one?"}]}}"#)
+        #expect(e.effect.activity == .needsInput)
+    }
+
+    @Test func onlyBlockingNotificationsNeedInput() throws {
+        for type in ["agent_needs_input", "elicitation_dialog", "worker_permission_prompt"] {
+            let e = try event(#"{"session_id":"s","hook_event_name":"Notification","message":"m","notification_type":"\#(type)"}"#)
+            #expect(e.effect.activity == .needsInput, "\(type)")
+        }
+        for type in ["agent_completed", "auth_success", "quota_auto_resume_fired"] {
+            let e = try event(#"{"session_id":"s","hook_event_name":"Notification","message":"Explore finished","notification_type":"\#(type)"}"#)
+            #expect(e.effect == HookEffect(), "\(type)")
+        }
+    }
+
+    @Test func untypedNotificationsAreToldByTheirWords() throws {
+        let idle = try event(#"{"session_id":"s","hook_event_name":"Notification","message":"Claude is waiting for your input"}"#)
+        #expect(idle.effect == HookEffect())
+        let permission = try event(#"{"session_id":"s","hook_event_name":"Notification","message":"Claude needs your permission to use Bash"}"#)
+        #expect(permission.effect.activity == .needsInput)
+    }
+
+    @Test func aWaitingCardSaysWhatItWaitsOn() {
+        var card = Card(cwd: "/tmp", activity: .waiting)
+        card.background = [BackgroundWork(id: "a", type: "subagent"), BackgroundWork(id: "b", type: "subagent")]
+        #expect(card.backgroundLine == "Waiting on 2 subagents")
+        card.background = [BackgroundWork(id: "w", type: "workflow")]
+        #expect(card.backgroundLine == "Waiting on 1 workflow")
+        card.background = [BackgroundWork(id: "a", type: "subagent"), BackgroundWork(id: "w", type: "workflow")]
+        #expect(card.backgroundLine == "Waiting on 2 tasks")
+        card.activity = .running
+        #expect(card.backgroundLine == nil)
+    }
+
+    @Test func aCardSavedBeforeBackgroundDecodes() throws {
+        var card = Card(cwd: "/tmp")
+        card.background = [BackgroundWork(id: "a1", type: "subagent")]
+        let encoder = JSONEncoder()
+        var json = try JSONSerialization.jsonObject(with: encoder.encode(card)) as! [String: Any]
+        json["background"] = nil
+        let decoded = try JSONDecoder().decode(Card.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(decoded.background == nil)
     }
 }
 
@@ -80,9 +159,17 @@ import Testing
     private func card(_ stage: Stage, mode: String?, pr: PullRequest.State? = nil, pinned: Bool = false) -> Card {
         var card = Card(cwd: "/tmp", stage: stage)
         card.permissionMode = mode
-        card.pullRequest = pr.map { PullRequest(number: 1, state: $0, url: "https://github.com/o/r/pull/1") }
+        card.branch = "reeve/1a2b3c4d"
+        card.pullRequests = pr.map { [PullRequest(number: 1, state: $0, url: "https://github.com/o/r/pull/1", branch: "reeve/1a2b3c4d")] }
         card.stagePinned = pinned
         return card
+    }
+
+    @Test func aPullRequestFromABranchLeftBehindIsNotRelease() {
+        var moved = card(.testing, mode: "auto", pr: .merged)
+        moved.headBranch = "next-thing"
+        #expect(moved.pullRequest == nil)
+        #expect(moved.stage(running: false, hasChanges: true) == .testing)
     }
 
     @Test func planModeIsPlanning() {
@@ -153,6 +240,11 @@ import Testing
         #expect(c.waitingOn == nil)
     }
 
+    @Test func waitingOnThatIsNoQuestionIsDropped() throws {
+        let out = #"{"type":"result","is_error":false,"result":"","structured_output":{"title":"X","summary":"Y","waiting_on":"Both background agents to finish"}}"#
+        #expect(try Classifier.parse(Data(out.utf8)).waitingOn == nil)
+    }
+
     @Test func reportsErrors() {
         let out = #"{"type":"result","is_error":true,"result":"Not logged in"}"#
         #expect(throws: ClassifierError.self) { try Classifier.parse(Data(out.utf8)) }
@@ -169,9 +261,17 @@ import Testing
         #expect(Launch.claudeArguments(for: card, prompt: "go").prefix(2) == ["--session-id", card.sessionId.uuidString.lowercased()])
         #expect(Launch.claudeArguments(for: card, prompt: "go").last == "go")
         card.hasConversation = true
-        let resumed = Launch.claudeArguments(for: card, prompt: "go")
+        let resumed = Launch.claudeArguments(for: card)
         #expect(resumed.prefix(2) == ["--resume", card.sessionId.uuidString.lowercased()])
-        #expect(resumed.last != "go")
+        // A resumed session takes a prompt as its next turn: how a review wakes it.
+        #expect(Launch.claudeArguments(for: card, prompt: "go").last == "go")
+    }
+
+    @Test func theCLIGoesFirstOnPathAfterTheProfile() {
+        #expect(Launch.shellCommand("/bin/claude", ["--resume", "x"], cliDirectory: nil) == "exec /bin/claude --resume x")
+        #expect(Launch.shellCommand("/bin/claude", [], cliDirectory: "/Apps/Reeve.app/Contents/Helpers")
+            == #"export PATH=/Apps/Reeve.app/Contents/Helpers:"$PATH"; exec /bin/claude"#)
+        #expect(Launch.shellCommand("claude", [], cliDirectory: "/My Apps/bin").hasPrefix("export PATH='/My Apps/bin':"))
     }
 
     @Test func newSessionsStartInTheCardsModeAndResumedOnesDont() {
@@ -220,6 +320,15 @@ import Testing
         #expect(Set(hooks.keys) == Set(Launch.hookedEvents))
     }
 
+    @Test func reviewFilesNeedNoPermission() throws {
+        let settings = try JSONSerialization.jsonObject(with: Data(Launch.hookSettings(reviewsDir: "/Users/a/Library/Application Support/Reeve/reviews").utf8)) as! [String: Any]
+        let allow = (settings["permissions"] as! [String: Any])["allow"] as! [String]
+        #expect(allow == ["Read(//Users/a/Library/Application Support/Reeve/reviews/*.json)", "Edit(//Users/a/Library/Application Support/Reeve/reviews/*.json)"])
+        #expect(settings["hooks"] != nil)
+        let plain = try JSONSerialization.jsonObject(with: Data(Launch.hookSettings().utf8)) as! [String: Any]
+        #expect(plain["permissions"] == nil)
+    }
+
     @Test func quoting() {
         #expect(Launch.shellQuote("plain-arg") == "plain-arg")
         #expect(Launch.shellQuote("it's") == #"'it'\''s'"#)
@@ -232,6 +341,67 @@ import Testing
         #expect(env["CLAUDE_CODE_ENTRYPOINT"] == nil)
         #expect(env["PATH"] == "/bin")
         #expect(env["REEVE_HOOK_PORT"] == "4000")
+    }
+
+    @Test func environmentPointsGlossAtThePreview() {
+        let id = UUID(uuidString: "1A2B3C4D-0000-0000-0000-000000000000")!
+        let env = Launch.environment(base: [:], hookPort: 4000, cardId: id)
+        #expect(env["GLOSS_HOST"] == "http://127.0.0.1:4000/gloss/1A2B3C4D-0000-0000-0000-000000000000")
+    }
+}
+
+@Suite struct GlossTests {
+    private func parse(_ json: String) -> Gloss.Message? {
+        Gloss.parse(Data(json.utf8))
+    }
+
+    @Test func hello() {
+        #expect(parse(#"{"type":"hello","script":"x()","binding":"__glossRpc","deliver":"__glossDeliver"}"#)
+            == .hello(script: "x()", binding: "__glossRpc", deliver: "__glossDeliver"))
+    }
+
+    @Test func helloRefusesNamesThatArentPlain() {
+        #expect(parse(#"{"type":"hello","script":"x()","binding":"a;alert(1)","deliver":"d"}"#) == nil)
+    }
+
+    @Test func deliverKeepsTheDelivery() throws {
+        guard case let .deliver(json) = parse(#"{"type":"deliver","delivery":{"id":3,"state":{"round":1}}}"#) else {
+            Issue.record("not a delivery")
+            return
+        }
+        let object = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+        #expect(object?["id"] as? Int == 3)
+    }
+
+    @Test func requests() {
+        #expect(parse(#"{"type":"request","id":1,"method":"navigate","url":"http://localhost:3000/"}"#)
+            == .request(id: 1, .navigate(URL(string: "http://localhost:3000/")!)))
+        #expect(parse(#"{"type":"request","id":2,"method":"reload"}"#) == .request(id: 2, .reload))
+        #expect(parse(#"{"type":"request","id":3,"method":"view"}"#) == .request(id: 3, .view))
+        #expect(parse(#"{"type":"request","id":4,"method":"snapshot","clip":{"x":1,"y":2.5,"width":3,"height":4},"path":"/s/p.png"}"#)
+            == .request(id: 4, .snapshot(clip: CGRect(x: 1, y: 2.5, width: 3, height: 4), path: "/s/p.png")))
+        #expect(parse(#"{"type":"request","id":5,"method":"dance"}"#) == nil)
+    }
+
+    @Test func readyAndNoise() {
+        #expect(parse(#"{"type":"ready","id":"abc","port":1}"#) == .ready)
+        #expect(parse("Debugger attached.") == nil)
+    }
+
+    @Test func linesToGloss() throws {
+        let rpc = Gloss.rpc(payload: #"{"id":1}"#, url: "http://localhost/", topFrame: true)
+        #expect(rpc.last == 0x0A)
+        let object = try JSONSerialization.jsonObject(with: rpc) as? [String: Any]
+        #expect(object?["type"] as? String == "rpc")
+        #expect(object?["topFrame"] as? Bool == true)
+        let failed = try JSONSerialization.jsonObject(with: Gloss.reply(id: 2, error: "no page")) as? [String: Any]
+        #expect(failed?["error"] as? String == "no page")
+        #expect(failed?["result"] == nil)
+    }
+
+    @Test func sessionArguments() {
+        #expect(Gloss.sessionArguments(cwd: "/w", url: "http://localhost/", live: true)
+            == ["__session", "--host", "--cwd", "/w", "--url", "http://localhost/", "--live"])
     }
 }
 
@@ -267,36 +437,245 @@ import Testing
         #expect(card.startMode == nil)
         #expect(card.baseCommit == nil)
         #expect(card.plan == nil)
+        #expect(card.review == nil)
         #expect(card.folderName == "app")
     }
 }
 
+@Suite struct VibesTests {
+    private func event(_ json: String) throws -> HookEvent {
+        try HookEvent.decode(Data(json.utf8))
+    }
+
+    @Test func knowsWhenThePlanDialogIsUp() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"PermissionRequest","tool_name":"ExitPlanMode","tool_input":{"plan":"x"}}"#)
+        #expect(Vibes.showsPlanDialog(e))
+        // No hook answer gets past the dialog, so none is given.
+        #expect(Vibes.reply(to: e) == nil)
+        let pre = try event(#"{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"ExitPlanMode"}"#)
+        #expect(!Vibes.showsPlanDialog(pre))
+    }
+
+    @Test func answersQuestionsByRefusingThem() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which database?"}]}}"#)
+        #expect(Vibes.reply(to: e) == VibesReply(question: "Which database?"))
+        let out = try JSONSerialization.jsonObject(with: VibesReply(question: nil).json) as! [String: Any]
+        let specific = out["hookSpecificOutput"] as! [String: Any]
+        #expect(specific["permissionDecision"] as? String == "deny")
+        #expect(specific["permissionDecisionReason"] as? String == Vibes.noOneHome)
+    }
+
+    @Test func leavesToolPermissionsToAPerson() throws {
+        let bash = try event(#"{"session_id":"s","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"rm -rf x"}}"#)
+        #expect(Vibes.reply(to: bash) == nil)
+        let plan = try event(#"{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"ExitPlanMode"}"#)
+        #expect(Vibes.reply(to: plan) == nil)
+    }
+
+    @Test func walksACardToShipping() {
+        let options = VibesOptions()
+        guard case .nudge(_, .build) = Vibes.next(stage: .inProgress, waitingOn: nil, nudges: nil, options: options) else {
+            Issue.record("nothing changed yet: build it"); return
+        }
+        guard case .nudge(let test, .test) = Vibes.next(stage: .testing, waitingOn: nil, nudges: nil, options: options) else {
+            Issue.record("changes made: test them"); return
+        }
+        #expect(test.contains("test"))
+        let tested = VibesNudges(stage: .testing).adding(from: .testing, step: .test)
+        guard case .nudge(let ship, .ship) = Vibes.next(stage: .testing, waitingOn: nil, nudges: tested, options: options) else {
+            Issue.record("tested: ship it"); return
+        }
+        #expect(ship.contains("merge it into main"))
+        #expect(!ship.contains("\n"))
+        // Wherever its column ends up, a card told to ship is checked.
+        let asked = tested.adding(from: .testing, step: .ship)
+        #expect(Vibes.next(stage: .testing, waitingOn: nil, nudges: asked, options: options) == .checkShipped)
+        #expect(Vibes.next(stage: .release, waitingOn: nil, nudges: asked, options: options) == .checkShipped)
+    }
+
+    @Test func skippingTestingShipsStraightFromChanges() {
+        let options = VibesOptions(skipPlanning: false, skipTesting: true, autoMerge: false)
+        guard case .nudge(let ship, .ship) = Vibes.next(stage: .testing, waitingOn: nil, nudges: nil, options: options) else {
+            Issue.record("expected a nudge to ship"); return
+        }
+        #expect(ship.contains("Leave it open"))
+        #expect(options.skips(.testing))
+        #expect(!options.skips(.planning))
+    }
+
+    @Test func answersAQuestionLeftInTheMessage() {
+        #expect(Vibes.next(stage: .planning, waitingOn: "Go ahead?", nudges: nil, options: VibesOptions()) == .answer("Go ahead?"))
+    }
+
+    @Test func answersDontUseUpThePushes() {
+        var nudges = VibesNudges(stage: .testing)
+        for _ in 0..<Vibes.maxNudges { nudges = nudges.answering(in: .testing) }
+        #expect(Vibes.next(stage: .testing, waitingOn: "More?", nudges: nudges, options: VibesOptions()) == .giveUp)
+        if case .nudge = Vibes.next(stage: .testing, waitingOn: nil, nudges: nudges, options: VibesOptions()) {} else {
+            Issue.record("answers shouldn't stop the pushes")
+        }
+    }
+
+    @Test func givesUpGoingRoundInCircles() {
+        var nudges = VibesNudges(stage: .inProgress)
+        for _ in 0..<Vibes.maxNudges { nudges = nudges.adding(from: .inProgress, step: .build) }
+        #expect(Vibes.next(stage: .inProgress, waitingOn: nil, nudges: nudges, options: VibesOptions()) == .giveUp)
+        // A new column starts the count again.
+        #expect(nudges.adding(from: .testing, step: .test).count == 1)
+        if case .nudge = Vibes.next(stage: .testing, waitingOn: nil, nudges: nudges, options: VibesOptions()) {} else {
+            Issue.record("a new column should be pushed again")
+        }
+    }
+
+    @Test func ledgerKeepsFourLines() {
+        var ledger = VibesLedger()
+        for n in 1...6 { ledger.note("line \(n)") }
+        #expect(ledger.log == ["line 6", "line 5", "line 4", "line 3"])
+    }
+
+    @Test func cardsSavedBeforeVibesStillLoad() throws {
+        let json = #"{"id":"1A2B3C4D-0000-0000-0000-000000000000","sessionId":"1A2B3C4D-0000-0000-0000-000000000001","title":"","titledByPerson":false,"cwd":"/code/app","stage":"backlog","activity":"idle","stagePinned":false,"hasConversation":false,"createdAt":"2026-11-01T00:00:00Z","updatedAt":"2026-11-01T00:00:00Z"}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let card = try decoder.decode(Card.self, from: Data(json.utf8))
+        #expect(card.vibes == nil)
+        #expect(card.shippedAt == nil)
+    }
+}
+
 @Suite struct PullRequestTests {
-    private func parse(_ json: String) throws -> PullRequest? {
-        try PullRequest.parse(Data(json.utf8))
+    private func parse(_ json: String) throws -> [PullRequest] {
+        try PullRequest.parseAll(Data(json.utf8))
+    }
+
+    /// One pull request on branch `b` with the given status rollup.
+    private func checks(_ rollup: String) throws -> PullRequest.Checks? {
+        try parse(#"[{"number":1,"state":"OPEN","url":"u","headRefName":"b","statusCheckRollup":"# + rollup + #"}]"#).first?.checks
     }
 
     @Test func noPullRequest() throws {
-        #expect(try parse("[]") == nil)
+        #expect(try parse("[]").isEmpty)
+        #expect(PullRequest.primary(of: [], on: "b") == nil)
+    }
+
+    @Test func readsThemAllNewestFirst() throws {
+        let prs = try parse(#"[{"number":3,"state":"CLOSED","url":"u3","title":"First go","headRefName":"a"},{"number":7,"state":"MERGED","url":"u7","title":"Second go","headRefName":"b"}]"#)
+        #expect(prs == [
+            PullRequest(number: 7, state: .merged, url: "u7", title: "Second go", branch: "b"),
+            PullRequest(number: 3, state: .closed, url: "u3", title: "First go", branch: "a"),
+        ])
     }
 
     @Test func prefersTheOpenOne() throws {
-        let pr = try parse(#"[{"number":12,"state":"CLOSED","isDraft":false,"url":"u12"},{"number":9,"state":"OPEN","isDraft":false,"url":"u9"}]"#)
-        #expect(pr == PullRequest(number: 9, state: .open, url: "u9"))
+        let prs = try parse(#"[{"number":12,"state":"CLOSED","isDraft":false,"url":"u12","headRefName":"b"},{"number":9,"state":"OPEN","isDraft":false,"url":"u9","headRefName":"b"}]"#)
+        #expect(PullRequest.primary(of: prs, on: "b")?.number == 9)
     }
 
     @Test func otherwiseTheNewest() throws {
-        let pr = try parse(#"[{"number":3,"state":"CLOSED","isDraft":false,"url":"u3"},{"number":7,"state":"MERGED","isDraft":false,"url":"u7"}]"#)
-        #expect(pr == PullRequest(number: 7, state: .merged, url: "u7"))
+        let prs = try parse(#"[{"number":3,"state":"CLOSED","isDraft":false,"url":"u3","headRefName":"b"},{"number":7,"state":"MERGED","isDraft":false,"url":"u7","headRefName":"b"}]"#)
+        #expect(PullRequest.primary(of: prs, on: "b")?.number == 7)
+    }
+
+    @Test func onlyTheBranchTheCardIsOn() throws {
+        let prs = try parse(#"[{"number":5,"state":"OPEN","url":"u5","headRefName":"old"}]"#)
+        #expect(PullRequest.primary(of: prs, on: "new") == nil)
+        #expect(PullRequest.primary(of: prs, on: nil) == nil)
     }
 
     @Test func draftIsItsOwnState() throws {
-        let pr = try parse(#"[{"number":4,"state":"OPEN","isDraft":true,"url":"u4"}]"#)
-        #expect(pr?.state == .draft)
+        let prs = try parse(#"[{"number":4,"state":"OPEN","isDraft":true,"url":"u4"}]"#)
+        #expect(prs.first?.state == .draft)
+    }
+
+    @Test func noChecksIsNil() throws {
+        #expect(try checks("[]") == nil)
+        #expect(try parse(#"[{"number":1,"state":"OPEN","url":"u"}]"#).first?.checks == nil)
+    }
+
+    @Test func countsCheckRunsAndStatuses() throws {
+        let failing = try checks(#"[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"},{"__typename":"StatusContext","state":"PENDING"}]"#)
+        #expect(failing == PullRequest.Checks(passed: 1, failed: 1, pending: 1))
+        #expect(failing?.overall == .failing)
+
+        let pending = try checks(#"[{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SKIPPED"}]"#)
+        #expect(pending == PullRequest.Checks(passed: 1, pending: 1))
+        #expect(pending?.overall == .pending)
+
+        let passing = try checks(#"[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"NEUTRAL"},{"__typename":"StatusContext","state":"SUCCESS"}]"#)
+        #expect(passing == PullRequest.Checks(passed: 2))
+        #expect(passing?.overall == .passing)
+
+        let errored = try checks(#"[{"__typename":"StatusContext","state":"ERROR"},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"TIMED_OUT"}]"#)
+        #expect(errored == PullRequest.Checks(failed: 2))
+    }
+
+    @Test func aSuccessfulStatusIsNotPending() throws {
+        #expect(try checks(#"[{"__typename":"StatusContext","state":"SUCCESS"}]"#) == PullRequest.Checks(passed: 1))
+    }
+
+    @Test func readsTheReviewDecision() throws {
+        func review(_ decision: String) throws -> PullRequest.Review? {
+            try parse(#"[{"number":1,"state":"OPEN","url":"u","reviewDecision":""# + decision + #""}]"#).first?.review
+        }
+        #expect(try review("APPROVED") == .approved)
+        #expect(try review("CHANGES_REQUESTED") == .changesRequested)
+        #expect(try review("REVIEW_REQUIRED") == .required)
+        #expect(try review("") == nil)
+    }
+
+    @Test func readsWhenItWasOpened() throws {
+        let prs = try parse(#"[{"number":1,"state":"OPEN","url":"u","createdAt":"2025-11-10T09:30:00Z"}]"#)
+        #expect(prs.first?.createdAt == Date(timeIntervalSince1970: 1_762_767_000))
+    }
+
+    @Test func leavesAColleaguesPullRequestAlone() {
+        let made = Date(timeIntervalSince1970: 1_000_000)
+        let before = made.addingTimeInterval(-60), after = made.addingTimeInterval(60)
+        let found = [
+            PullRequest(number: 1, state: .merged, url: "u1", branch: "theirs", createdAt: before),
+            PullRequest(number: 2, state: .open, url: "u2", branch: "split", createdAt: after),
+            PullRequest(number: 3, state: .open, url: "u3", branch: "feature", createdAt: before),
+            PullRequest(number: 4, state: .open, url: "u4", branch: "old", createdAt: before),
+        ]
+        let tracked = [PullRequest(number: 4, state: .draft, url: "u4", branch: "old")]
+        let kept = PullRequest.belonging(found, owns: ["feature"], tracked: tracked, since: made)
+        #expect(kept.map(\.number) == [2, 3, 4])
+    }
+
+    @Test func mergeReplacesAndKeeps() {
+        let tracked = [PullRequest(number: 3, state: .open, url: "u3", branch: "a"), PullRequest(number: 5, state: .open, url: "u5", branch: "b")]
+        let found = [PullRequest(number: 8, state: .draft, url: "u8", branch: "b"), PullRequest(number: 3, state: .merged, url: "u3", branch: "a")]
+        #expect(PullRequest.merge(tracked, found).map(\.number) == [8, 5, 3])
+        #expect(PullRequest.merge(tracked, found).last?.state == .merged)
+    }
+
+    @Test func branchesFromTheReflog() {
+        let reflog = """
+        commit: Split out the parser
+        checkout: moving from reeve/1a2b3c4d to parser-split
+        commit: Add the PRs tab
+        checkout: moving from 0123456789abcdef0123456789abcdef01234567 to reeve/1a2b3c4d
+        checkout: moving from main to 0123456789abcdef0123456789abcdef01234567
+        reset: moving to HEAD
+        """
+        #expect(PullRequest.checkedOutBranches(reflog: reflog) == ["parser-split", "reeve/1a2b3c4d", "main"])
+        #expect(PullRequest.checkedOutBranches(reflog: reflog, limit: 1) == ["parser-split"])
+        #expect(PullRequest.checkedOutBranches(reflog: "") == [])
     }
 
     @Test func listsByHeadBranch() {
-        #expect(PullRequest.listArguments(branch: "reeve/1a2b3c4d").prefix(4) == ["pr", "list", "--head", "reeve/1a2b3c4d"])
+        let arguments = PullRequest.listArguments(branch: "reeve/1a2b3c4d")
+        #expect(arguments.prefix(4) == ["pr", "list", "--head", "reeve/1a2b3c4d"])
+        #expect(arguments.contains("number,state,isDraft,url,title,headRefName,statusCheckRollup,reviewDecision,createdAt"))
+    }
+
+    @Test func aCardSavedWithOnePullRequestStillLoads() throws {
+        let json = #"{"id":"1A2B3C4D-0000-0000-0000-000000000000","sessionId":"1A2B3C4D-0000-0000-0000-000000000001","title":"","titledByPerson":false,"cwd":"/code/app","pullRequest":{"number":4,"state":"open","url":"u4"},"stage":"release","activity":"idle","stagePinned":false,"hasConversation":false,"createdAt":"2026-11-01T00:00:00Z","updatedAt":"2026-11-01T00:00:00Z"}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let card = try decoder.decode(Card.self, from: Data(json.utf8))
+        #expect(card.pullRequests == nil)
+        #expect(card.stage == .release)
     }
 }
 
@@ -439,5 +818,371 @@ import Testing
             .quote("Note this"),
             .rule,
         ])
+    }
+}
+
+@Suite struct StageNameTests {
+    @Test func acceptsWhatPeopleType() {
+        #expect(StageName.parse("backlog") == .backlog)
+        #expect(StageName.parse("in-progress") == .inProgress)
+        #expect(StageName.parse("in_progress") == .inProgress)
+        #expect(StageName.parse("In Progress") == .inProgress)
+        #expect(StageName.parse("Testing") == .testing)
+        #expect(StageName.parse("done") == .release)
+        #expect(StageName.parse("shipped") == nil)
+        #expect(StageName.name(.inProgress) == "in-progress")
+    }
+}
+
+@Suite struct CardRefTests {
+    private let a = Card(id: UUID(uuidString: "5B701C1D-0000-4000-8000-000000000001")!, title: "Login form", cwd: "/r")
+    private let b = Card(id: UUID(uuidString: "5B70AAAA-0000-4000-8000-000000000002")!, title: "Fix tests", cwd: "/r")
+    private var cards: [Card] { [a, b] }
+
+    @Test func byIdPrefixOrTitle() throws {
+        #expect(try CardRef.resolve("5b701c1d", in: cards).id == a.id)
+        #expect(try CardRef.resolve(a.id.uuidString.lowercased(), in: cards).id == a.id)
+        #expect(try CardRef.resolve("5B70AA", in: cards).id == b.id)
+        #expect(try CardRef.resolve("fix TESTS", in: cards).id == b.id)
+    }
+
+    @Test func refusesWhatIsAmbiguousOrMissing() {
+        #expect(throws: CardRef.Failure.ambiguous("5b70", [a.id, b.id])) { try CardRef.resolve("5b70", in: cards) }
+        #expect(throws: CardRef.Failure.notFound("nope")) { try CardRef.resolve("nope", in: cards) }
+        // Too short to be taken for an id.
+        #expect(throws: CardRef.Failure.notFound("5b7")) { try CardRef.resolve("5b7", in: cards) }
+    }
+
+    @Test func defaultsToTheCardsOwnTerminal() throws {
+        let found = try CardRef.current(in: cards, cwd: "/elsewhere", environment: ["REEVE_CARD_ID": b.id.uuidString], realpath: { $0 })
+        #expect(found.id == b.id)
+    }
+
+    @Test func defaultsToTheDeepestWorktreeHoldingTheFolder() throws {
+        var outer = a, inner = b
+        outer.worktreePath = "/private/tmp/repo"
+        inner.worktreePath = "/private/tmp/repo/.claude/worktrees/reeve-5b70aaaa"
+        let realpath = { (p: String) in p.hasPrefix("/tmp") ? "/private" + p : p }
+        #expect(try CardRef.current(in: [outer, inner], cwd: "/tmp/repo/.claude/worktrees/reeve-5b70aaaa/src", environment: [:], realpath: realpath).id == b.id)
+        #expect(try CardRef.current(in: [outer, inner], cwd: "/tmp/repo/src", environment: [:], realpath: realpath).id == a.id)
+        // A sibling folder that only starts with the same name isn't inside it.
+        #expect(throws: CardRef.Failure.noDefault) {
+            try CardRef.current(in: [outer], cwd: "/private/tmp/repo-2", environment: [:], realpath: realpath)
+        }
+    }
+
+    @Test func aNamedCardWinsOverTheDefault() throws {
+        let found = try CardRef.resolve("login form", in: cards, cwd: "/", environment: ["REEVE_CARD_ID": b.id.uuidString], realpath: { $0 })
+        #expect(found.id == a.id)
+    }
+}
+
+@Suite struct ArgumentsTests {
+    @Test func splitsPositionalsOptionsAndFlags() throws {
+        let args = try Arguments(["fix", "the", "--title", "New", "--json", "-f", "--model=opus", "--", "--literal"],
+                                 valued: ["title", "model"], flags: ["json", "follow"], short: ["f": "follow"])
+        #expect(args.positionals == ["fix", "the", "--literal"])
+        #expect(args.value("title") == "New")
+        #expect(args.value("model") == "opus")
+        #expect(args.has("json"))
+        #expect(args.has("follow"))
+    }
+
+    @Test func refusesWhatItDoesntKnow() {
+        #expect(throws: UsageError("unknown option --nope")) { try Arguments(["--nope"], valued: [], flags: []) }
+        #expect(throws: UsageError("--title needs a value")) { try Arguments(["--title"], valued: ["title"], flags: []) }
+        #expect(throws: UsageError("--json doesn't take a value")) { try Arguments(["--json=1"], valued: [], flags: ["json"]) }
+    }
+
+    @Test func aDashAloneIsStdin() throws {
+        #expect(try Arguments(["-"], valued: [], flags: []).positionals == ["-"])
+    }
+}
+
+@Suite struct TableTests {
+    @Test func padsAllButTheLastColumn() {
+        let text = Table.format([["a", "stage", "title one"], ["bbb", "x", "t"]], indent: "  ")
+        #expect(text == "  a    stage  title one\n  bbb  x      t")
+    }
+}
+
+@Suite struct WaitOutcomeTests {
+    private func card(_ activity: Activity, live: Bool = true, starting: Bool = false) -> APICard {
+        APICard(card: Card(cwd: "/r", activity: activity), live: live, starting: starting, dialogOpen: false, displayTitle: "t")
+    }
+
+    @Test func endsTheWayReeveBoardsDoes() {
+        #expect(WaitOutcome.of(card(.running)) == nil)
+        #expect(WaitOutcome.of(card(.waiting)) == nil)
+        #expect(WaitOutcome.of(card(.idle, starting: true)) == nil)
+        #expect(WaitOutcome.of(card(.needsReview)) == .ok)
+        #expect(WaitOutcome.of(card(.needsInput)) == .needsInput)
+        #expect(WaitOutcome.of(card(.error)) == .failed)
+        #expect(WaitOutcome.of(card(.idle)) == .idle)
+        // Left running by a session that is gone: nothing to wait for.
+        #expect(WaitOutcome.of(card(.running, live: false)) == .idle)
+    }
+}
+
+@Suite struct APITests {
+    @Test func aCardIsFlatWithWhatTheAppKnows() throws {
+        var card = Card(title: "Login", cwd: "/r", stage: .inProgress, activity: .running)
+        card.branch = "reeve/1a2b3c4d"
+        card.pullRequests = [PullRequest(number: 4, state: .open, url: "https://x/4", branch: "reeve/1a2b3c4d"),
+                             PullRequest(number: 2, state: .merged, url: "https://x/2", branch: "earlier")]
+        let api = APICard(card: card, live: true, starting: false, dialogOpen: true, displayTitle: "Login")
+        let data = try API.encoder().encode(api)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        #expect((json["pullRequest"] as? [String: Any])?["number"] as? Int == 4)
+        #expect((json["pullRequests"] as? [Any])?.count == 2)
+        #expect(json["stage"] as? String == "in_progress")
+        #expect(json["live"] as? Bool == true)
+        #expect(json["dialogOpen"] as? Bool == true)
+        #expect(json["displayTitle"] as? String == "Login")
+        let back = try API.decoder().decode(APICard.self, from: data)
+        #expect(back.card.id == card.id)
+        #expect(back.card.pullRequest == card.pullRequest)
+        #expect(back.card.pullRequests == card.pullRequests)
+        #expect(back.live && back.dialogOpen && !back.starting)
+    }
+
+    @Test func serverInfoIsPrivateToThePerson() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let info = ServerInfo(port: 5000, pid: 42, token: ServerInfo.newToken())
+        try info.write(dataDir: dir)
+        #expect(ServerInfo.read(dataDir: dir) == info)
+        let mode = try FileManager.default.attributesOfItem(atPath: ServerInfo.url(in: dir).path)[.posixPermissions] as? Int
+        #expect(mode == 0o600)
+        ServerInfo.remove(dataDir: dir, pid: 7)
+        #expect(ServerInfo.read(dataDir: dir) != nil)
+        ServerInfo.remove(dataDir: dir, pid: 42)
+        #expect(ServerInfo.read(dataDir: dir) == nil)
+    }
+
+    @Test func dataDirectoryFollowsTheEnvironment() {
+        #expect(DataDirectory.url(environment: ["REEVE_DATA_DIR": "/tmp/r"]).path == "/tmp/r")
+        #expect(DataDirectory.url(environment: [:]).path.hasSuffix("Application Support/Reeve Terminal"))
+    }
+}
+
+@Suite struct DiffRenderTests {
+    @Test func rendersWhatItParses() {
+        let text = """
+        diff --git a/README.md b/README.md
+        --- a/README.md
+        +++ b/README.md
+        @@ -1,3 +1,3 @@
+         # Reeve
+        -old line
+        +new line
+         end
+        \\ No newline at end of file
+        diff --git a/new.txt b/new.txt
+        new file mode 100644
+        --- /dev/null
+        +++ b/new.txt
+        @@ -0,0 +1 @@
+        +hello
+        diff --git a/gone.txt b/gone.txt
+        deleted file mode 100644
+        --- a/gone.txt
+        +++ /dev/null
+        @@ -1 +0,0 @@
+        -bye
+        diff --git a/old.txt b/moved.txt
+        rename from old.txt
+        rename to moved.txt
+        diff --git a/run.sh b/run.sh
+        old mode 100644
+        new mode 100755
+        diff --git a/logo.png b/logo.png
+        Binary files a/logo.png and b/logo.png differ
+
+        """
+        let files = DiffParser.parse(text)
+        #expect(files.count == 6)
+        #expect(DiffParser.parse(DiffParser.render(files)) == files)
+    }
+
+    @Test func survivesJSON() throws {
+        let files = DiffParser.parse("diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-x\n+y\n")
+        let changes = ChangesResponse(files: files, base: "abc1234", untrackedLeftOut: 0, truncated: false)
+        let back = try API.decoder().decode(ChangesResponse.self, from: API.encoder().encode(changes))
+        #expect(back == changes)
+    }
+}
+
+@Suite struct ReviewTests {
+    private let diff = DiffParser.parse("""
+    diff --git a/app.swift b/app.swift
+    --- a/app.swift
+    +++ b/app.swift
+    @@ -1,3 +1,3 @@
+     let a = 1
+    -let b = 2
+    +let b = 3
+     let c = 4
+    """)
+
+    private func comment(_ path: String = "app.swift", _ side: ReviewThread.Side = .new, _ line: Int, _ code: String, pending: Bool = false) -> ReviewThread {
+        ReviewThread(anchor: ReviewAnchor(path: path, side: side, line: line, code: code), messages: [ReviewMessage(author: .person, body: "why?", pending: pending)])
+    }
+
+    private func comment(_ side: ReviewThread.Side, _ line: Int, _ code: String) -> ReviewThread {
+        comment("app.swift", side, line, code)
+    }
+
+    @Test func linesAnchorOnTheirSide() {
+        let lines = diff[0].hunks[0].lines
+        #expect(ReviewAnchor(file: diff[0], line: lines[1]) == ReviewAnchor(path: "app.swift", side: .old, line: 2, code: "let b = 2"))
+        #expect(ReviewAnchor(file: diff[0], line: lines[2]) == ReviewAnchor(path: "app.swift", side: .new, line: 2, code: "let b = 3"))
+        #expect(ReviewAnchor(file: diff[0], line: lines[3]) == ReviewAnchor(path: "app.swift", side: .new, line: 3, code: "let c = 4"))
+    }
+
+    @Test func threadsFollowTheirLineOrSayItChanged() {
+        let onAdded = comment(.new, 2, "let b = 3")
+        let onRemoved = comment(.old, 2, "let b = 2")
+        let changed = comment(.new, 2, "let b = 9")
+        let gone = comment(.new, 40, "let z = 0")
+        let elsewhere = comment("other.swift", .new, 1, "x")
+        let placed = ReviewPlacement([onAdded, onRemoved, changed, gone, elsewhere], in: diff)
+        #expect(placed.byLine[onAdded.anchor.key] == [onAdded])
+        #expect(placed.byLine[onRemoved.anchor.key] == [onRemoved])
+        #expect(placed.outdated["app.swift"] == [changed, gone])
+        #expect(placed.orphaned == [elsewhere])
+    }
+
+    @Test func theFileHoldsEveryThreadWaitingOnClaude() throws {
+        let sent = comment(.new, 2, "let b = 3")
+        var answered = comment(.new, 3, "let c = 4")
+        answered.messages.append(ReviewMessage(author: .claude, body: "done"))
+        let draft = comment("app.swift", .new, 1, "let a = 1", pending: true)
+        var resolved = comment(.old, 2, "let b = 2")
+        resolved.resolved = true
+        let doc = try JSONSerialization.jsonObject(with: ReviewFile.encode([sent, answered, draft, resolved])) as! [String: Any]
+        let comments = doc["comments"] as! [[String: Any]]
+        #expect(comments.map { $0["id"] as! String } == [sent.id.uuidString])
+        #expect(comments[0]["reply"] is NSNull)
+        #expect(comments[0]["line"] as? Int == 2)
+    }
+
+    @Test func repliesComeBackOnce() {
+        let a = comment(.new, 2, "let b = 3")
+        let b = comment(.new, 3, "let c = 4")
+        let file = Data(#"{"comments":[{"id":"\#(a.id.uuidString)","reply":"Fixed it."},{"id":"\#(b.id.uuidString)","reply":null},{"id":"\#(UUID().uuidString)","reply":"?"}]}"#.utf8)
+        let merged = ReviewFile.merge(file, into: [a, b])
+        #expect(merged[0].messages.last?.author == .claude)
+        #expect(merged[0].messages.last?.body == "Fixed it.")
+        #expect(!merged[0].awaitingReply)
+        #expect(merged[1] == b)
+        #expect(ReviewFile.merge(file, into: merged) == merged)
+    }
+
+    @Test func aBrokenFileChangesNothing() {
+        let a = comment(.new, 2, "let b = 3")
+        #expect(ReviewFile.merge(Data("{not json".utf8), into: [a]) == [a])
+    }
+}
+
+@Suite struct PlanDialogTests {
+    // The labels Claude Code 2.1.286 draws, with the plan above them.
+    private let screen = [
+        "│ 1. Add the button                                │",
+        "│ 2. Wire it up                                    │",
+        "",
+        " Would you like to proceed?",
+        "",
+        " ❯ 1. Yes, clear context (42% used) and use auto mode",
+        "   2. Yes, and use auto mode",
+        "   3. Yes, manually approve edits",
+        "   4. Tell Claude what to change",
+        "      shift+tab to approve with this feedback",
+        "",
+        " ctrl-g to edit in Vim",
+    ]
+
+    @Test func readsTheDialogBelowThePlan() {
+        let dialog = PlanDialog.find(onScreen: screen)
+        #expect(dialog?.options == ["Yes, clear context (42% used) and use auto mode", "Yes, and use auto mode", "Yes, manually approve edits", "Tell Claude what to change"])
+        #expect(dialog?.selected == 0)
+    }
+
+    @Test func approvesIntoAutoModeKeepingTheContext() throws {
+        let dialog = try #require(PlanDialog.find(onScreen: screen))
+        #expect(dialog.approval == 1)
+        #expect(dialog.moves(to: dialog.approval) == ["\u{1b}[B"])
+    }
+
+    @Test func followsAPointerMovedByHand() throws {
+        var moved = screen
+        moved[5] = "   1. Yes, clear context (42% used) and use auto mode"
+        moved[8] = " ❯ 4. Tell Claude what to change"
+        let dialog = try #require(PlanDialog.find(onScreen: moved))
+        #expect(dialog.selected == 3)
+        #expect(dialog.moves(to: dialog.approval) == ["\u{1b}[A", "\u{1b}[A"])
+    }
+
+    @Test func withoutAutoModeAcceptsEdits() throws {
+        let dialog = try #require(PlanDialog.find(onScreen: [" ❯ 1. Yes, auto-accept edits", "   2. Yes, manually approve edits", "   3. No, keep planning"]))
+        #expect(dialog.approval == 0)
+        #expect(dialog.moves(to: 0).isEmpty)
+    }
+
+    @Test func neverPicksBypassingPermissions() throws {
+        let dialog = try #require(PlanDialog.find(onScreen: [" ❯ 1. Yes, and switch to bypass permissions for this session", "   2. Yes, manually approve edits", "   3. No, keep planning"]))
+        #expect(dialog.approval == 1)
+    }
+
+    @Test func readsGapsTheTerminalLeftEmpty() throws {
+        // As SwiftTerm reads Claude Code's dialog back: skipped cells are NULs.
+        let dialog = try #require(PlanDialog.find(onScreen: ["\u{0} ❯ 1. Yes, and use auto mode", "\u{0}\u{0}\u{0}\u{0}\u{0}2. Yes,\u{0}manually\u{0}approve\u{0}edits", "     3. Tell Claude what to change"]))
+        #expect(dialog.options == ["Yes, and use auto mode", "Yes, manually approve edits", "Tell Claude what to change"])
+        #expect(dialog.approval == 0)
+    }
+
+    @Test func noPointerNoTellingWhereEnterLands() {
+        #expect(PlanDialog.find(onScreen: ["   1. Yes, and use auto mode", "   2. Yes, manually approve edits", "   3. Tell Claude what to change"]) == nil)
+    }
+
+    @Test func noDialogNoOptions() {
+        #expect(PlanDialog.find(onScreen: ["> hello", "1. Add the button", "2. Wire it up"]) == nil)
+    }
+
+    @Test func approvalAndDialogHooks() throws {
+        let approved = try HookEvent.decode(Data(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"ExitPlanMode"}"#.utf8))
+        #expect(approved.approvesPlan && approved.closesPlanDialog)
+        let subagent = try HookEvent.decode(Data(#"{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Read","agent_id":"a"}"#.utf8))
+        #expect(!subagent.closesPlanDialog)
+        let notification = try HookEvent.decode(Data(#"{"session_id":"s","hook_event_name":"Notification","notification_type":"permission_prompt"}"#.utf8))
+        #expect(!notification.closesPlanDialog)
+    }
+
+    @Test func aNewPlanIsNotYetApproved() throws {
+        func event(_ json: String) throws -> HookEvent { try HookEvent.decode(Data(json.utf8)) }
+        #expect(try event(#"{"session_id":"s","hook_event_name":"PreToolUse","permission_mode":"plan","tool_name":"ExitPlanMode","tool_input":{"plan":"p"}}"#).putsUpNewPlan)
+        #expect(try event(#"{"session_id":"s","hook_event_name":"PostToolUse","permission_mode":"plan","tool_name":"Write","tool_input":{"file_path":"/u/.claude/plans/a.md"}}"#).putsUpNewPlan)
+        // Ticking off the approved plan as the work goes.
+        #expect(try !event(#"{"session_id":"s","hook_event_name":"PostToolUse","permission_mode":"auto","tool_name":"Edit","tool_input":{"file_path":"/u/.claude/plans/a.md"}}"#).putsUpNewPlan)
+        #expect(try !event(#"{"session_id":"s","hook_event_name":"PostToolUse","permission_mode":"plan","tool_name":"ExitPlanMode"}"#).putsUpNewPlan)
+    }
+}
+
+@Suite struct RepoTests {
+    @Test func isNamedForItsFolder() {
+        #expect(Repo(path: "/code/app").name == "app")
+        #expect(Repo(path: "/code/app/").name == "app")
+    }
+
+    @Test func seedingKeepsOneOfEachInOrder() {
+        let repos = Repo.seeded(from: ["/code/b", "/code/a", "/code/b/", "/code/./a"])
+        #expect(repos.map(\.path) == ["/code/b", "/code/a"])
+    }
+
+    @Test func roundTripsThroughJSON() throws {
+        let repo = Repo(path: "/code/app")
+        let decoded = try JSONDecoder().decode(Repo.self, from: JSONEncoder().encode(repo))
+        #expect(decoded == repo)
     }
 }

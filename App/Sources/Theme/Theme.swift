@@ -26,6 +26,8 @@ enum Theme {
     static let slate500 = Color(hex: 0x62748E)
     static let slate300 = Color(hex: 0xCAD5E2)
     static let amber100 = Color(hex: 0xFEF3C6)
+    static let indigo200 = Color(hex: 0xC6D2FF)
+    static let indigo400 = Color(hex: 0x818CF8)
 
     /// Registers the bundled Geist fonts (SIL OFL) for this process.
     static func registerFonts() {
@@ -83,7 +85,7 @@ struct SectionLabel: View {
 /// A card's sub-state, as light: colour rising from every border into a dark
 /// centre. One tone per activity, as the web board's `.card-glow-*` classes.
 enum GlowTone {
-    case running, review, input, error
+    case running, review, input, waiting, error
 
     init?(_ activity: Activity) {
         switch activity {
@@ -91,16 +93,18 @@ enum GlowTone {
         case .running: self = .running
         case .needsReview: self = .review
         case .needsInput: self = .input
+        case .waiting: self = .waiting
         case .error: self = .error
         }
     }
 
-    /// The border, at 60%.
+    /// The border, at 60%; waiting's is quieter, since nothing is asked of you.
     var border: Color {
         switch self {
         case .running: Color(hex: 0x38BDF8, opacity: 0.6)
         case .review: Color(hex: 0x10B981, opacity: 0.6)
         case .input: Color(hex: 0xFBBF24, opacity: 0.6)
+        case .waiting: Theme.indigo400.opacity(0.5)
         case .error: Color(hex: 0xF87171, opacity: 0.6)
         }
     }
@@ -111,6 +115,7 @@ enum GlowTone {
         case .running: Color(hex: 0x00A6F4)
         case .review: Color(hex: 0x00BC7D)
         case .input: Color(hex: 0xFE9A00)
+        case .waiting: Color(hex: 0x615FFF)
         case .error: Color(hex: 0xFB2C36)
         }
     }
@@ -121,11 +126,16 @@ enum GlowTone {
         case .running: Color(hex: 0x38BDF8)
         case .review: Color(hex: 0x34D399)
         case .input: Color(hex: 0xFBBF24)
+        case .waiting: Theme.indigo400
         case .error: Color(hex: 0xF87171)
         }
     }
 
-    var fill: Color { glow.opacity(0.12) }
+    /// How brightly the glow burns. A card waiting on its agents holds a
+    /// dimmer light than one that wants something from you.
+    var intensity: Double { self == .waiting ? 0.7 : 1 }
+
+    var fill: Color { glow.opacity(0.12 * intensity) }
 }
 
 /// The glow as a background: the dark core, the flat tint, a radial of the
@@ -146,11 +156,11 @@ struct GlowBackground: View {
                     shape.fill(EllipticalGradient(colors: [Theme.cardCore, Theme.cardCore.opacity(0)], center: .center, startRadiusFraction: 0, endRadiusFraction: 0.8))
                         .frame(width: geo.size.width, height: geo.size.height)
                 }
-                shape.strokeBorder(tone.glow.opacity(0.35), lineWidth: 8).blur(radius: 7).clipShape(shape)
-                shape.strokeBorder(tone.glow.opacity(0.4), lineWidth: 2).blur(radius: 2).clipShape(shape)
+                shape.strokeBorder(tone.glow.opacity(0.35 * tone.intensity), lineWidth: 8).blur(radius: 7).clipShape(shape)
+                shape.strokeBorder(tone.glow.opacity(0.4 * tone.intensity), lineWidth: 2).blur(radius: 2).clipShape(shape)
                 shape.strokeBorder(tone.border, lineWidth: 1)
             }
-            .shadow(color: tone.glow.opacity(bloom ? 0.25 : 0.4), radius: bloom ? 24 : 6)
+            .shadow(color: tone.glow.opacity((bloom ? 0.25 : 0.4) * tone.intensity), radius: bloom ? 24 : 6)
         } else {
             ZStack {
                 shape.fill(Theme.panel)
@@ -166,17 +176,23 @@ struct GlowBackground: View {
 struct ActivityMark: View {
     let tone: GlowTone
     var size: CGFloat = 68
+    /// VIBES MODE's marks spin, brighter.
+    var spins = false
+    @Environment(\.vibesStill) private var still
 
     var body: some View {
         if tone != .running {
-            MarkShape(tone: tone)
-                .stroke(tone.mark, style: StrokeStyle(lineWidth: 2.5 * size / 24, lineCap: .round, lineJoin: .round))
-                .frame(width: size, height: size)
-                .shadow(color: tone.mark, radius: 1)
-                .shadow(color: tone.mark, radius: 6)
-                .opacity(0.3)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
+            TimelineView(.animation(paused: !spins || still)) { context in
+                MarkShape(tone: tone)
+                    .stroke(tone.mark, style: StrokeStyle(lineWidth: 2.5 * size / 24, lineCap: .round, lineJoin: .round))
+                    .frame(width: size, height: size)
+                    .shadow(color: tone.mark, radius: 1)
+                    .shadow(color: tone.mark, radius: 6)
+                    .rotationEffect(.degrees(spins && !still ? 360 * Vibe.phase(context.date, 2.2) : 0))
+            }
+            .opacity(spins ? 0.5 : 0.3)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
         }
     }
 }
@@ -199,6 +215,18 @@ private struct MarkShape: Shape {
             p.addLine(to: CGPoint(x: 12, y: 15))
             p.move(to: CGPoint(x: 12, y: 18.5))
             p.addLine(to: CGPoint(x: 12, y: 18.51))
+        case .waiting:
+            // An hourglass: two caps, and the glass pinched between them.
+            p.move(to: CGPoint(x: 6.5, y: 4.5))
+            p.addLine(to: CGPoint(x: 17.5, y: 4.5))
+            p.move(to: CGPoint(x: 6.5, y: 19.5))
+            p.addLine(to: CGPoint(x: 17.5, y: 19.5))
+            p.move(to: CGPoint(x: 8, y: 4.5))
+            p.addCurve(to: CGPoint(x: 12, y: 12), control1: CGPoint(x: 8, y: 8.5), control2: CGPoint(x: 12, y: 10))
+            p.addCurve(to: CGPoint(x: 8, y: 19.5), control1: CGPoint(x: 12, y: 14), control2: CGPoint(x: 8, y: 15.5))
+            p.move(to: CGPoint(x: 16, y: 4.5))
+            p.addCurve(to: CGPoint(x: 12, y: 12), control1: CGPoint(x: 16, y: 8.5), control2: CGPoint(x: 12, y: 10))
+            p.addCurve(to: CGPoint(x: 16, y: 19.5), control1: CGPoint(x: 12, y: 14), control2: CGPoint(x: 16, y: 15.5))
         case .error:
             p.move(to: CGPoint(x: 6.5, y: 6.5))
             p.addLine(to: CGPoint(x: 17.5, y: 17.5))
@@ -215,6 +243,8 @@ private struct MarkShape: Shape {
 /// The only thing on a card that animates: a light travelling along the
 /// bottom edge while Claude works.
 struct RunningRail: View {
+    /// VIBES MODE's is thicker, faster and in its colours.
+    var vibes = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var travelling = false
 
@@ -224,22 +254,28 @@ struct RunningRail: View {
             ZStack(alignment: .leading) {
                 Rectangle().fill(GlowTone.running.glow.opacity(0.12))
                 Rectangle()
-                    .fill(LinearGradient(stops: [
+                    .fill(LinearGradient(stops: vibes ? [
+                        .init(color: .clear, location: 0),
+                        .init(color: Vibe.r1, location: 0.3),
+                        .init(color: .white, location: 0.5),
+                        .init(color: Vibe.r5, location: 0.7),
+                        .init(color: .clear, location: 1),
+                    ] : [
                         .init(color: .clear, location: 0),
                         .init(color: Theme.sky400, location: 0.5),
                         .init(color: Color(hex: 0xE0F2FE), location: 0.6),
                         .init(color: .clear, location: 1),
                     ], startPoint: .leading, endPoint: .trailing))
                     .frame(width: bar)
-                    .shadow(color: Theme.sky400, radius: 4)
+                    .shadow(color: vibes ? Vibe.r1 : Theme.sky400, radius: vibes ? 5 : 4)
                     .offset(x: reduceMotion ? bar * 0.75 : (travelling ? bar * 2.5 : -bar))
             }
         }
-        .frame(height: 2)
+        .frame(height: vibes ? 3 : 2)
         .clipped()
         .onAppear {
             guard !reduceMotion else { return }
-            withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: false)) { travelling = true }
+            withAnimation(.easeInOut(duration: vibes ? 0.45 : 1.6).repeatForever(autoreverses: false)) { travelling = true }
         }
         .accessibilityHidden(true)
     }
@@ -294,8 +330,19 @@ struct Chip: View {
 /// The Reeve mark: the bar, the bowl and the diamond.
 struct Glyph: View {
     var height: CGFloat = 20
+    /// In VIBES MODE the diamond spins through the rainbow.
+    var vibes = false
+    @Environment(\.vibesStill) private var still
 
     var body: some View {
+        TimelineView(.animation(paused: !vibes || still)) { timeline in
+            mark(at: vibes && !still ? timeline.date : nil)
+        }
+        .frame(width: height * 34 / 40, height: height)
+        .accessibilityLabel("Reeve")
+    }
+
+    private func mark(at date: Date?) -> some View {
         Canvas { context, size in
             let s = size.height / 40
             context.scaleBy(x: s, y: s)
@@ -313,9 +360,14 @@ struct Glyph: View {
             diamond.addLine(to: CGPoint(x: 26, y: 40))
             diamond.addLine(to: CGPoint(x: 18, y: 32))
             diamond.closeSubpath()
-            context.fill(diamond, with: .color(Theme.sky500))
+            if let date {
+                let spin = CGAffineTransform(translationX: 26, y: 32)
+                    .rotated(by: 2 * .pi * Vibe.phase(date, 1))
+                    .translatedBy(x: -26, y: -32)
+                context.fill(diamond.applying(spin), with: .color(Vibe.cycle(Vibe.phase(date, 1.5))))
+            } else {
+                context.fill(diamond, with: .color(Theme.sky500))
+            }
         }
-        .frame(width: height * 34 / 40, height: height)
-        .accessibilityLabel("Reeve")
     }
 }

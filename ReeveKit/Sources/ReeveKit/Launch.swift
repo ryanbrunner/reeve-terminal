@@ -3,27 +3,38 @@ import Foundation
 /// How a card's terminal starts Claude Code.
 public enum Launch {
     /// The events whose hooks report back to Reeve.
-    public static let hookedEvents = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "Stop", "SessionEnd"]
+    public static let hookedEvents = ["UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Notification", "Stop", "SessionEnd"]
 
     /// Settings layered over the person's own with `--settings`: one hook per
     /// event, posting its payload to Reeve. The port and card come from the
     /// environment, so the settings never change and a resumed session posts
     /// to whichever Reeve started it. The card rides in the URL rather than
     /// being looked up by session, because `/clear` starts a new session in
-    /// the same terminal. `-m 1` and `|| true` keep a Reeve that has gone away
-    /// from holding Claude up or showing it an error.
-    public static func hookSettings() -> String {
+    /// the same terminal. Reeve's answer is the hook's output: empty, except
+    /// where VIBES MODE answers a question for nobody. `-m 5` and `|| true`
+    /// keep a Reeve that has gone away from holding Claude up or showing it an
+    /// error.
+    ///
+    /// Claude may read and write the review files in `reviewsDir` without
+    /// asking, since that is how it answers a person's review comments.
+    public static func hookSettings(reviewsDir: String? = nil) -> String {
         let hook: [String: Any] = [
             "type": "command",
-            "command": "[ -n \"$REEVE_HOOK_PORT\" ] && curl -s -m 1 --data-binary @- \"http://127.0.0.1:$REEVE_HOOK_PORT/hook/$REEVE_CARD_ID\" >/dev/null 2>&1 || true",
+            "command": "[ -n \"$REEVE_HOOK_PORT\" ] && curl -s -m 5 --data-binary @- \"http://127.0.0.1:$REEVE_HOOK_PORT/hook/$REEVE_CARD_ID\" 2>/dev/null || true",
         ]
         var hooks: [String: Any] = [:]
         for event in hookedEvents {
             var matcher: [String: Any] = ["hooks": [hook]]
-            if event == "PreToolUse" || event == "PostToolUse" { matcher["matcher"] = "*" }
+            if ["PreToolUse", "PermissionRequest", "PostToolUse"].contains(event) { matcher["matcher"] = "*" }
             hooks[event] = [matcher]
         }
-        let data = try! JSONSerialization.data(withJSONObject: ["hooks": hooks], options: [.sortedKeys])
+        var settings: [String: Any] = ["hooks": hooks]
+        if let reviewsDir {
+            // `//` makes a rule's path absolute.
+            let files = "/" + (reviewsDir.hasSuffix("/") ? reviewsDir : reviewsDir + "/") + "*.json"
+            settings["permissions"] = ["allow": ["Read(\(files))", "Edit(\(files))"]]
+        }
+        let data = try! JSONSerialization.data(withJSONObject: settings, options: [.sortedKeys, .withoutEscapingSlashes])
         return String(decoding: data, as: UTF8.self)
     }
 
@@ -35,12 +46,13 @@ public enum Launch {
     /// `claude`'s arguments for a card: a new session under the card's id, in
     /// the mode the card was started in, or the card's session picked up again.
     /// The card's model and effort come along on a resume too, so a card woken
-    /// after a restart keeps them.
-    public static func claudeArguments(for card: Card, prompt: String? = nil) -> [String] {
+    /// after a restart keeps them. A prompt goes in either way: a resumed
+    /// session takes it as its next turn.
+    public static func claudeArguments(for card: Card, prompt: String? = nil, reviewsDir: String? = nil) -> [String] {
         var args = card.hasConversation
             ? ["--resume", card.sessionId.uuidString.lowercased()]
             : ["--session-id", card.sessionId.uuidString.lowercased()]
-        args += ["--settings", hookSettings()]
+        args += ["--settings", hookSettings(reviewsDir: reviewsDir)]
         if let model = card.model { args += ["--model", model] }
         if let effort = card.effort { args += ["--effort", effort] }
         // Only a fresh session: a resumed one is wherever the person left it,
@@ -48,7 +60,7 @@ public enum Launch {
         if let mode = card.startMode, !card.hasConversation {
             args += ["--permission-mode", mode.permissionMode]
         }
-        if let prompt, !prompt.isEmpty, !card.hasConversation {
+        if let prompt, !prompt.isEmpty {
             args.append(prompt)
         }
         return args
@@ -59,6 +71,16 @@ public enum Launch {
         ([executable] + args).map(shellQuote).joined(separator: " ")
     }
 
+    /// What a card's login shell runs: `claude`, with `cliDirectory` (where the
+    /// app keeps `reeve`) put first on PATH. Done here rather than in the
+    /// environment, so the person's profile, which runs first, can't put
+    /// another `reeve` ahead of it.
+    public static func shellCommand(_ claude: String, _ args: [String], cliDirectory: String?) -> String {
+        let exec = "exec " + commandLine(claude, args)
+        guard let cliDirectory else { return exec }
+        return "export PATH=\(shellQuote(cliDirectory)):\"$PATH\"; " + exec
+    }
+
     public static func shellQuote(_ s: String) -> String {
         if !s.isEmpty, s.allSatisfy({ $0.isLetter || $0.isNumber || "-_./=:@%+".contains($0) }) { return s }
         return "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
@@ -66,7 +88,8 @@ public enum Launch {
 
     /// The environment a card's shell starts with: Reeve's own, minus what
     /// would make `claude` think it is running inside another Claude Code
-    /// session, plus what the hooks need.
+    /// session, plus what the hooks need, and `GLOSS_HOST`, so a `gloss open`
+    /// in the card shows the page in its Preview tab rather than a window.
     public static func environment(base: [String: String], hookPort: UInt16, cardId: UUID) -> [String: String] {
         var env = base.filter { key, _ in
             !(key == "CLAUDECODE" || key.hasPrefix("CLAUDE_CODE_") || key == "CLAUDE_PID" || key == "CLAUDE_EFFORT")
@@ -77,6 +100,7 @@ public enum Launch {
         env["LANG"] = env["LANG"] ?? "en_US.UTF-8"
         env["REEVE_HOOK_PORT"] = String(hookPort)
         env["REEVE_CARD_ID"] = cardId.uuidString
+        env["GLOSS_HOST"] = Gloss.hostURL(port: hookPort, cardId: cardId)
         return env
     }
 }
