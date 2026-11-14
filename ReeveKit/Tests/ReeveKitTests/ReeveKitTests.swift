@@ -259,6 +259,13 @@ import Testing
         #expect(Launch.claudeArguments(for: card, prompt: "go").last == "go")
     }
 
+    @Test func theCLIGoesFirstOnPathAfterTheProfile() {
+        #expect(Launch.shellCommand("/bin/claude", ["--resume", "x"], cliDirectory: nil) == "exec /bin/claude --resume x")
+        #expect(Launch.shellCommand("/bin/claude", [], cliDirectory: "/Apps/Reeve.app/Contents/Helpers")
+            == #"export PATH=/Apps/Reeve.app/Contents/Helpers:"$PATH"; exec /bin/claude"#)
+        #expect(Launch.shellCommand("claude", [], cliDirectory: "/My Apps/bin").hasPrefix("export PATH='/My Apps/bin':"))
+    }
+
     @Test func newSessionsStartInTheCardsModeAndResumedOnesDont() {
         var card = Card(cwd: "/tmp")
         #expect(!Launch.claudeArguments(for: card).contains("--permission-mode"))
@@ -699,6 +706,194 @@ import Testing
     }
 }
 
+@Suite struct StageNameTests {
+    @Test func acceptsWhatPeopleType() {
+        #expect(StageName.parse("backlog") == .backlog)
+        #expect(StageName.parse("in-progress") == .inProgress)
+        #expect(StageName.parse("in_progress") == .inProgress)
+        #expect(StageName.parse("In Progress") == .inProgress)
+        #expect(StageName.parse("Testing") == .testing)
+        #expect(StageName.parse("done") == .release)
+        #expect(StageName.parse("shipped") == nil)
+        #expect(StageName.name(.inProgress) == "in-progress")
+    }
+}
+
+@Suite struct CardRefTests {
+    private let a = Card(id: UUID(uuidString: "5B701C1D-0000-4000-8000-000000000001")!, title: "Login form", cwd: "/r")
+    private let b = Card(id: UUID(uuidString: "5B70AAAA-0000-4000-8000-000000000002")!, title: "Fix tests", cwd: "/r")
+    private var cards: [Card] { [a, b] }
+
+    @Test func byIdPrefixOrTitle() throws {
+        #expect(try CardRef.resolve("5b701c1d", in: cards).id == a.id)
+        #expect(try CardRef.resolve(a.id.uuidString.lowercased(), in: cards).id == a.id)
+        #expect(try CardRef.resolve("5B70AA", in: cards).id == b.id)
+        #expect(try CardRef.resolve("fix TESTS", in: cards).id == b.id)
+    }
+
+    @Test func refusesWhatIsAmbiguousOrMissing() {
+        #expect(throws: CardRef.Failure.ambiguous("5b70", [a.id, b.id])) { try CardRef.resolve("5b70", in: cards) }
+        #expect(throws: CardRef.Failure.notFound("nope")) { try CardRef.resolve("nope", in: cards) }
+        // Too short to be taken for an id.
+        #expect(throws: CardRef.Failure.notFound("5b7")) { try CardRef.resolve("5b7", in: cards) }
+    }
+
+    @Test func defaultsToTheCardsOwnTerminal() throws {
+        let found = try CardRef.current(in: cards, cwd: "/elsewhere", environment: ["REEVE_CARD_ID": b.id.uuidString], realpath: { $0 })
+        #expect(found.id == b.id)
+    }
+
+    @Test func defaultsToTheDeepestWorktreeHoldingTheFolder() throws {
+        var outer = a, inner = b
+        outer.worktreePath = "/private/tmp/repo"
+        inner.worktreePath = "/private/tmp/repo/.claude/worktrees/reeve-5b70aaaa"
+        let realpath = { (p: String) in p.hasPrefix("/tmp") ? "/private" + p : p }
+        #expect(try CardRef.current(in: [outer, inner], cwd: "/tmp/repo/.claude/worktrees/reeve-5b70aaaa/src", environment: [:], realpath: realpath).id == b.id)
+        #expect(try CardRef.current(in: [outer, inner], cwd: "/tmp/repo/src", environment: [:], realpath: realpath).id == a.id)
+        // A sibling folder that only starts with the same name isn't inside it.
+        #expect(throws: CardRef.Failure.noDefault) {
+            try CardRef.current(in: [outer], cwd: "/private/tmp/repo-2", environment: [:], realpath: realpath)
+        }
+    }
+
+    @Test func aNamedCardWinsOverTheDefault() throws {
+        let found = try CardRef.resolve("login form", in: cards, cwd: "/", environment: ["REEVE_CARD_ID": b.id.uuidString], realpath: { $0 })
+        #expect(found.id == a.id)
+    }
+}
+
+@Suite struct ArgumentsTests {
+    @Test func splitsPositionalsOptionsAndFlags() throws {
+        let args = try Arguments(["fix", "the", "--title", "New", "--json", "-f", "--model=opus", "--", "--literal"],
+                                 valued: ["title", "model"], flags: ["json", "follow"], short: ["f": "follow"])
+        #expect(args.positionals == ["fix", "the", "--literal"])
+        #expect(args.value("title") == "New")
+        #expect(args.value("model") == "opus")
+        #expect(args.has("json"))
+        #expect(args.has("follow"))
+    }
+
+    @Test func refusesWhatItDoesntKnow() {
+        #expect(throws: UsageError("unknown option --nope")) { try Arguments(["--nope"], valued: [], flags: []) }
+        #expect(throws: UsageError("--title needs a value")) { try Arguments(["--title"], valued: ["title"], flags: []) }
+        #expect(throws: UsageError("--json doesn't take a value")) { try Arguments(["--json=1"], valued: [], flags: ["json"]) }
+    }
+
+    @Test func aDashAloneIsStdin() throws {
+        #expect(try Arguments(["-"], valued: [], flags: []).positionals == ["-"])
+    }
+}
+
+@Suite struct TableTests {
+    @Test func padsAllButTheLastColumn() {
+        let text = Table.format([["a", "stage", "title one"], ["bbb", "x", "t"]], indent: "  ")
+        #expect(text == "  a    stage  title one\n  bbb  x      t")
+    }
+}
+
+@Suite struct WaitOutcomeTests {
+    private func card(_ activity: Activity, live: Bool = true, starting: Bool = false) -> APICard {
+        APICard(card: Card(cwd: "/r", activity: activity), live: live, starting: starting, dialogOpen: false, displayTitle: "t")
+    }
+
+    @Test func endsTheWayReeveBoardsDoes() {
+        #expect(WaitOutcome.of(card(.running)) == nil)
+        #expect(WaitOutcome.of(card(.waiting)) == nil)
+        #expect(WaitOutcome.of(card(.idle, starting: true)) == nil)
+        #expect(WaitOutcome.of(card(.needsReview)) == .ok)
+        #expect(WaitOutcome.of(card(.needsInput)) == .needsInput)
+        #expect(WaitOutcome.of(card(.error)) == .failed)
+        #expect(WaitOutcome.of(card(.idle)) == .idle)
+        // Left running by a session that is gone: nothing to wait for.
+        #expect(WaitOutcome.of(card(.running, live: false)) == .idle)
+    }
+}
+
+@Suite struct APITests {
+    @Test func aCardIsFlatWithWhatTheAppKnows() throws {
+        var card = Card(title: "Login", cwd: "/r", stage: .inProgress, activity: .running)
+        card.pullRequest = PullRequest(number: 4, state: .open, url: "https://x/4")
+        let api = APICard(card: card, live: true, starting: false, dialogOpen: true, displayTitle: "Login")
+        let data = try API.encoder().encode(api)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        #expect(json["stage"] as? String == "in_progress")
+        #expect(json["live"] as? Bool == true)
+        #expect(json["dialogOpen"] as? Bool == true)
+        #expect(json["displayTitle"] as? String == "Login")
+        let back = try API.decoder().decode(APICard.self, from: data)
+        #expect(back.card.id == card.id)
+        #expect(back.card.pullRequest == card.pullRequest)
+        #expect(back.live && back.dialogOpen && !back.starting)
+    }
+
+    @Test func serverInfoIsPrivateToThePerson() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let info = ServerInfo(port: 5000, pid: 42, token: ServerInfo.newToken())
+        try info.write(dataDir: dir)
+        #expect(ServerInfo.read(dataDir: dir) == info)
+        let mode = try FileManager.default.attributesOfItem(atPath: ServerInfo.url(in: dir).path)[.posixPermissions] as? Int
+        #expect(mode == 0o600)
+        ServerInfo.remove(dataDir: dir, pid: 7)
+        #expect(ServerInfo.read(dataDir: dir) != nil)
+        ServerInfo.remove(dataDir: dir, pid: 42)
+        #expect(ServerInfo.read(dataDir: dir) == nil)
+    }
+
+    @Test func dataDirectoryFollowsTheEnvironment() {
+        #expect(DataDirectory.url(environment: ["REEVE_DATA_DIR": "/tmp/r"]).path == "/tmp/r")
+        #expect(DataDirectory.url(environment: [:]).path.hasSuffix("Application Support/Reeve Terminal"))
+    }
+}
+
+@Suite struct DiffRenderTests {
+    @Test func rendersWhatItParses() {
+        let text = """
+        diff --git a/README.md b/README.md
+        --- a/README.md
+        +++ b/README.md
+        @@ -1,3 +1,3 @@
+         # Reeve
+        -old line
+        +new line
+         end
+        \\ No newline at end of file
+        diff --git a/new.txt b/new.txt
+        new file mode 100644
+        --- /dev/null
+        +++ b/new.txt
+        @@ -0,0 +1 @@
+        +hello
+        diff --git a/gone.txt b/gone.txt
+        deleted file mode 100644
+        --- a/gone.txt
+        +++ /dev/null
+        @@ -1 +0,0 @@
+        -bye
+        diff --git a/old.txt b/moved.txt
+        rename from old.txt
+        rename to moved.txt
+        diff --git a/run.sh b/run.sh
+        old mode 100644
+        new mode 100755
+        diff --git a/logo.png b/logo.png
+        Binary files a/logo.png and b/logo.png differ
+
+        """
+        let files = DiffParser.parse(text)
+        #expect(files.count == 6)
+        #expect(DiffParser.parse(DiffParser.render(files)) == files)
+    }
+
+    @Test func survivesJSON() throws {
+        let files = DiffParser.parse("diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-x\n+y\n")
+        let changes = ChangesResponse(files: files, base: "abc1234", untrackedLeftOut: 0, truncated: false)
+        let back = try API.decoder().decode(ChangesResponse.self, from: API.encoder().encode(changes))
+        #expect(back == changes)
+    }
+}
+
 @Suite struct ReviewTests {
     private let diff = DiffParser.parse("""
     diff --git a/app.swift b/app.swift
@@ -851,5 +1046,23 @@ import Testing
         // Ticking off the approved plan as the work goes.
         #expect(try !event(#"{"session_id":"s","hook_event_name":"PostToolUse","permission_mode":"auto","tool_name":"Edit","tool_input":{"file_path":"/u/.claude/plans/a.md"}}"#).putsUpNewPlan)
         #expect(try !event(#"{"session_id":"s","hook_event_name":"PostToolUse","permission_mode":"plan","tool_name":"ExitPlanMode"}"#).putsUpNewPlan)
+    }
+}
+
+@Suite struct RepoTests {
+    @Test func isNamedForItsFolder() {
+        #expect(Repo(path: "/code/app").name == "app")
+        #expect(Repo(path: "/code/app/").name == "app")
+    }
+
+    @Test func seedingKeepsOneOfEachInOrder() {
+        let repos = Repo.seeded(from: ["/code/b", "/code/a", "/code/b/", "/code/./a"])
+        #expect(repos.map(\.path) == ["/code/b", "/code/a"])
+    }
+
+    @Test func roundTripsThroughJSON() throws {
+        let repo = Repo(path: "/code/app")
+        let decoded = try JSONDecoder().decode(Repo.self, from: JSONEncoder().encode(repo))
+        #expect(decoded == repo)
     }
 }

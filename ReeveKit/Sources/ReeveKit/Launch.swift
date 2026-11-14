@@ -71,6 +71,16 @@ public enum Launch {
         ([executable] + args).map(shellQuote).joined(separator: " ")
     }
 
+    /// What a card's login shell runs: `claude`, with `cliDirectory` (where the
+    /// app keeps `reeve`) put first on PATH. Done here rather than in the
+    /// environment, so the person's profile, which runs first, can't put
+    /// another `reeve` ahead of it.
+    public static func shellCommand(_ claude: String, _ args: [String], cliDirectory: String?) -> String {
+        let exec = "exec " + commandLine(claude, args)
+        guard let cliDirectory else { return exec }
+        return "export PATH=\(shellQuote(cliDirectory)):\"$PATH\"; " + exec
+    }
+
     public static func shellQuote(_ s: String) -> String {
         if !s.isEmpty, s.allSatisfy({ $0.isLetter || $0.isNumber || "-_./=:@%+".contains($0) }) { return s }
         return "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
