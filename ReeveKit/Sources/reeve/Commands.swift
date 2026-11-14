@@ -494,6 +494,7 @@ let waitVerb = Verb(
     reeve card wait [<card>] [--timeout SECONDS] [--json]
 
     Waits while the card's Claude works, then exits with what it is doing:
+    Background work Claude started (subagents, workflows) is waited for too.
       0  finished its turn; ready for review
       3  waiting on you: a question, a permission, a plan to approve
       4  its session failed

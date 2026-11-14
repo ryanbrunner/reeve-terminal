@@ -4,6 +4,10 @@ import SwiftUI
 /// Everything the card has changed in its worktree: its commits and what
 /// isn't committed yet, new files included, against where the card started.
 /// Read again when the tab shows and as Claude works while it does.
+///
+/// A line can take a comment, as on a GitHub review: sent to Claude at once,
+/// or kept with others and sent together. Claude's replies come back under
+/// them.
 struct ChangesView: View {
     @EnvironmentObject var board: Board
     let card: Card
@@ -16,18 +20,32 @@ struct ChangesView: View {
     @State private var revision = 0
     /// Files a person opened or closed, over the size-based default.
     @State private var expanded: [String: Bool] = [:]
-
+    /// The comment or reply being written, if any.
+    @State private var editing: Editing?
+    /// What's been typed in composers, kept here because diff rows come and
+    /// go with every read.
+    @StateObject private var drafts = Drafts()
 
     var body: some View {
         VStack(spacing: 0) {
             if notGit {
                 TabEmptyState(title: "Not a git repository", detail: "This card works in a folder outside git, so there are no changes to show.")
             } else if let changes {
-                SummaryBar(changes: changes, loading: loading, reload: { reloads += 1 })
-                if changes.files.isEmpty {
+                let threads = card.review ?? []
+                let blocker = board.reviewBlocker(card.id)
+                SummaryBar(
+                    changes: changes, loading: loading,
+                    pending: threads.filter(\.hasPending).count, blocker: blocker,
+                    submit: { board.submitReview(card.id) },
+                    reload: { reloads += 1 }
+                )
+                if changes.files.isEmpty, threads.isEmpty {
                     TabEmptyState(title: "No changes yet", detail: changes.base == nil ? "Nothing here differs from HEAD." : "Nothing here differs from where the card started.")
                 } else {
-                    DiffList(changes: changes, revision: revision, expanded: expanded) { id, open in
+                    DiffList(
+                        changes: changes, revision: revision, expanded: expanded,
+                        review: ReviewContext(threads: threads, editing: editing, blocker: blocker, working: card.activity == .running, drafts: drafts, actions: actions)
+                    ) { id, open in
                         expanded[id] = !open
                     }
                     .equatable()
@@ -46,6 +64,28 @@ struct ChangesView: View {
             guard !Task.isCancelled else { return }
             await load()
         }
+    }
+
+    private var actions: ReviewActions {
+        let id = card.id
+        return ReviewActions(
+            edit: { editing = $0 },
+            post: { text, send in
+                switch editing {
+                case let .line(anchor):
+                    board.comment(on: anchor, text, in: id, send: send)
+                case let .reply(thread):
+                    board.reply(to: thread, text, in: id, send: send)
+                case nil:
+                    return
+                }
+                if let key = editing?.draftKey { drafts.texts[key] = nil }
+                editing = nil
+            },
+            send: { board.submitReview(id, only: $0) },
+            discard: { board.discardDrafts($0, in: id) },
+            resolve: { board.resolve($0, $1, in: id) }
+        )
     }
 
     private func load() async {
@@ -73,6 +113,7 @@ private struct DiffList: View, Equatable {
     let changes: Worktrees.Changes
     let revision: Int
     let expanded: [String: Bool]
+    let review: ReviewContext
     let toggle: (_ id: String, _ open: Bool) -> Void
 
     /// Past this many lines a file starts closed; a lockfile would otherwise
@@ -80,14 +121,14 @@ private struct DiffList: View, Equatable {
     private static let openLimit = 300
 
     static func == (a: DiffList, b: DiffList) -> Bool {
-        a.revision == b.revision && a.expanded == b.expanded
+        a.revision == b.revision && a.expanded == b.expanded && a.review == b.review
     }
 
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(rows(changes.files)) { row in
-                    RowView(row: row) { file in toggle(file.id, isOpen(file)) }
+                    RowView(row: row, review: review) { file in toggle(file.id, isOpen(file)) }
                 }
                 notes(changes)
             }
@@ -100,12 +141,21 @@ private struct DiffList: View, Equatable {
     }
 
     /// The diff as one flat list, so only the rows on screen are laid out.
+    /// Comments follow the line they're on, or sit under the file's header
+    /// once the line has changed, or at the end once the file has left the diff.
     private func rows(_ files: [FileDiff]) -> [Row] {
+        let placed = ReviewPlacement(review.threads, in: files)
+        let composing: ReviewAnchor? = if case let .line(anchor) = review.editing { anchor } else { nil }
+        func threads(_ threads: [ReviewThread], outdated: Bool) -> [Row] {
+            threads.map { Row(id: "t.\($0.id)", kind: .thread($0, outdated: outdated)) }
+        }
         var rows: [Row] = []
         for (f, file) in files.enumerated() {
             let open = isOpen(file)
-            rows.append(Row(id: "\(f)", kind: .file(file, open: open)))
+            let comments = review.threads.filter { $0.path == file.path }.count
+            rows.append(Row(id: "\(f)", kind: .file(file, open: open, comments: comments)))
             guard open else { continue }
+            rows += threads(placed.outdated[file.path] ?? [], outdated: true)
             if file.isBinary {
                 rows.append(Row(id: "\(f).b", kind: .notice("Binary file")))
             } else if let mode = file.modeChange, file.hunks.isEmpty {
@@ -116,9 +166,19 @@ private struct DiffList: View, Equatable {
             for (h, hunk) in file.hunks.enumerated() {
                 rows.append(Row(id: "\(f).\(h)", kind: .hunk(hunk.header)))
                 for (l, line) in hunk.lines.enumerated() {
-                    rows.append(Row(id: "\(f).\(h).\(l)", kind: .line(line)))
+                    let anchor = ReviewAnchor(file: file, line: line)
+                    rows.append(Row(id: "\(f).\(h).\(l)", kind: .line(line, anchor: anchor)))
+                    guard let anchor else { continue }
+                    rows += threads(placed.byLine[anchor.key] ?? [], outdated: false)
+                    if composing == anchor {
+                        rows.append(Row(id: "c.\(anchor.key)", kind: .composer(anchor)))
+                    }
                 }
             }
+        }
+        if !placed.orphaned.isEmpty {
+            rows.append(Row(id: "orphaned", kind: .notice("Comments on files that no longer have changes")))
+            rows += threads(placed.orphaned, outdated: true)
         }
         return rows
     }
@@ -137,10 +197,13 @@ private struct DiffList: View, Equatable {
 
 private struct Row: Identifiable {
     enum Kind {
-        case file(FileDiff, open: Bool)
+        case file(FileDiff, open: Bool, comments: Int)
         case hunk(String)
-        case line(DiffLine)
+        /// The anchor is nil for a line that can't take a comment.
+        case line(DiffLine, anchor: ReviewAnchor?)
         case notice(String)
+        case thread(ReviewThread, outdated: Bool)
+        case composer(ReviewAnchor)
     }
 
     let id: String
@@ -149,12 +212,13 @@ private struct Row: Identifiable {
 
 private struct RowView: View {
     let row: Row
+    let review: ReviewContext
     let toggle: (FileDiff) -> Void
 
     var body: some View {
         switch row.kind {
-        case let .file(file, open):
-            FileHeader(file: file, open: open) { toggle(file) }
+        case let .file(file, open, comments):
+            FileHeader(file: file, open: open, comments: comments) { toggle(file) }
         case let .hunk(header):
             Text(header)
                 .font(.mono(11))
@@ -163,14 +227,19 @@ private struct RowView: View {
                 .padding(.horizontal, 14)
                 .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
                 .background(Theme.sky950.opacity(0.35))
-        case let .line(line):
-            LineView(line: line)
+        case let .line(line, anchor):
+            LineView(line: line, comment: anchor.map { anchor in { review.actions.edit(.line(anchor)) } })
         case let .notice(text):
             Text(text)
                 .font(.geist(12))
                 .foregroundStyle(Theme.muted)
                 .padding(.horizontal, 14)
                 .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+        case let .thread(thread, outdated):
+            ThreadView(thread: thread, outdated: outdated, review: review)
+        case let .composer(anchor):
+            Composer(draftKey: Editing.line(anchor).draftKey, drafts: review.drafts, placeholder: "Leave a comment for Claude", sendLabel: "Comment now", blocker: review.blocker, post: review.actions.post, cancel: { review.actions.edit(nil) })
+                .modifier(ReviewInset())
         }
     }
 }
@@ -178,6 +247,7 @@ private struct RowView: View {
 private struct FileHeader: View {
     let file: FileDiff
     let open: Bool
+    let comments: Int
     let toggle: () -> Void
 
     var body: some View {
@@ -198,6 +268,12 @@ private struct FileHeader: View {
                     .lineLimit(1)
                     .truncationMode(.head)
                 Spacer(minLength: 8)
+                if comments > 0 {
+                    Label("\(comments)", systemImage: "text.bubble")
+                        .font(.geist(11))
+                        .foregroundStyle(Theme.muted)
+                        .help(comments == 1 ? "1 comment" : "\(comments) comments")
+                }
                 if file.additions > 0 {
                     Text("+\(file.additions)").font(.mono(11)).foregroundStyle(DiffColors.addedText)
                 }
@@ -232,6 +308,9 @@ private struct FileHeader: View {
 
 private struct LineView: View {
     let line: DiffLine
+    /// Opens a comment on the line; nil for a line that can't take one.
+    let comment: (() -> Void)?
+    @State private var hovering = false
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 0) {
@@ -240,6 +319,19 @@ private struct LineView: View {
             Text(sign)
                 .foregroundStyle(signColor)
                 .frame(width: 20)
+                .overlay {
+                    if hovering, let comment {
+                        Button(action: comment) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(Theme.text)
+                                .frame(width: 18, height: 18)
+                                .background(RoundedRectangle(cornerRadius: 4).fill(Theme.sky600))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Comment on this line")
+                    }
+                }
             // A blank line still takes a line's height.
             Text(line.text.isEmpty ? " " : line.text.replacingOccurrences(of: "\t", with: "    "))
                 .foregroundStyle(line.kind == .note ? Theme.muted : Theme.textSoft)
@@ -250,6 +342,7 @@ private struct LineView: View {
         .padding(.vertical, 1)
         .padding(.trailing, 14)
         .background(background)
+        .onHover { hovering = $0 }
     }
 
     private func number(_ n: Int?) -> some View {
@@ -280,10 +373,15 @@ private struct LineView: View {
     }
 }
 
-/// The count of files and lines, what they're against, and a way to read again.
+/// The count of files and lines, what they're against, the review waiting
+/// to go, and a way to read again.
 private struct SummaryBar: View {
     let changes: Worktrees.Changes
     let loading: Bool
+    /// Threads with a draft not yet sent.
+    let pending: Int
+    let blocker: String?
+    let submit: () -> Void
     let reload: () -> Void
 
     var body: some View {
@@ -303,6 +401,13 @@ private struct SummaryBar: View {
                     : "Commits and uncommitted changes since the card's worktree was made.")
             Spacer()
             if loading { ProgressView().controlSize(.mini) }
+            if pending > 0 {
+                Button("Submit review (\(pending))", action: submit)
+                    .buttonStyle(PrimaryButtonStyle(height: 24))
+                    .disabled(blocker != nil)
+                    .opacity(blocker == nil ? 1 : 0.5)
+                    .help(blocker ?? "Send your comments to Claude")
+            }
             Button(action: reload) {
                 Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .semibold))
             }
@@ -322,4 +427,234 @@ private enum DiffColors {
     static let removed = Color(hex: 0xF85149, opacity: 0.15)
     static let addedText = Color(hex: 0x3FB950)
     static let removedText = Color(hex: 0xFF7B72)
+}
+
+// MARK: Review
+
+/// What's being written: a new comment on a line, or a reply to a thread.
+private enum Editing: Equatable {
+    case line(ReviewAnchor)
+    case reply(UUID)
+
+    var draftKey: String {
+        switch self {
+        case let .line(anchor): "line:" + anchor.key
+        case let .reply(id): "reply:" + id.uuidString
+        }
+    }
+}
+
+/// Composer text by `Editing.draftKey`. Not published: typing redraws only
+/// the composer, not the diff.
+private final class Drafts: ObservableObject {
+    var texts: [String: String] = [:]
+}
+
+private struct ReviewActions {
+    /// Opens a composer, or closes it with nil.
+    let edit: (Editing?) -> Void
+    /// Posts what the open composer holds: sent now, or kept for the review.
+    let post: (_ text: String, _ send: Bool) -> Void
+    /// Sends one thread's drafts.
+    let send: (UUID) -> Void
+    let discard: (UUID) -> Void
+    let resolve: (UUID, Bool) -> Void
+}
+
+/// Everything the diff's comments need. Equal when what they show is.
+private struct ReviewContext: Equatable {
+    let threads: [ReviewThread]
+    let editing: Editing?
+    let blocker: String?
+    /// Claude is in a turn, so a reply may still come in it.
+    let working: Bool
+    let drafts: Drafts
+    let actions: ReviewActions
+
+    static func == (a: ReviewContext, b: ReviewContext) -> Bool {
+        a.threads == b.threads && a.editing == b.editing && a.blocker == b.blocker && a.working == b.working
+    }
+}
+
+/// Lines a comment up under the code, past the line numbers.
+private struct ReviewInset: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .padding(12)
+            .frame(maxWidth: 760, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Theme.panel))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.edge))
+            .padding(.leading, 120)
+            .padding(.trailing, 14)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// A comment and the conversation under it.
+private struct ThreadView: View {
+    let thread: ReviewThread
+    /// Its line has changed or gone, so it shows where the line was.
+    let outdated: Bool
+    let review: ReviewContext
+    @State private var showResolved = false
+
+    var body: some View {
+        Group {
+            if thread.resolved, !showResolved {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle").foregroundStyle(DiffColors.addedText)
+                    Text("Resolved").font(.geist(12, .medium)).foregroundStyle(Theme.textSoft)
+                    Text(thread.messages.first?.body ?? "").font(.geist(12)).foregroundStyle(Theme.muted).lineLimit(1)
+                    Spacer(minLength: 8)
+                    Button("Show") { showResolved = true }.buttonStyle(.plain).font(.geist(12)).foregroundStyle(Theme.sky300)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    if outdated { lineItWasOn }
+                    ForEach(Array(thread.messages.enumerated()), id: \.offset) { _, message in
+                        MessageView(message: message)
+                    }
+                    if thread.awaitingReply, !thread.resolved {
+                        // A turn that ended without one (interrupted, or
+                        // answered only in the terminal) isn't still coming.
+                        HStack(spacing: 6) {
+                            if review.working { ProgressView().controlSize(.mini) }
+                            Text(review.working ? "Waiting for Claude's reply" : "No reply yet")
+                                .font(.geist(12))
+                                .foregroundStyle(Theme.muted)
+                        }
+                    }
+                    footer
+                }
+            }
+        }
+        .modifier(ReviewInset())
+    }
+
+    /// The line it was left on, for a thread that's no longer beside it.
+    private var lineItWasOn: some View {
+        HStack(spacing: 8) {
+            Chip(text: "Outdated", color: Theme.amber100, fill: Color(hex: 0xD29922, opacity: 0.15))
+            Text("\(thread.path):\(thread.line)").font(.mono(11)).foregroundStyle(Theme.muted).lineLimit(1).truncationMode(.head)
+            Text(thread.code.trimmingCharacters(in: .whitespaces)).font(.mono(11)).foregroundStyle(Theme.muted.opacity(0.7)).lineLimit(1)
+        }
+    }
+
+    @ViewBuilder
+    private var footer: some View {
+        if review.editing == .reply(thread.id) {
+            Composer(draftKey: Editing.reply(thread.id).draftKey, drafts: review.drafts, placeholder: "Reply", sendLabel: "Reply now", blocker: review.blocker, post: review.actions.post, cancel: { review.actions.edit(nil) })
+        } else {
+            HStack(spacing: 8) {
+                if thread.hasPending {
+                    Button("Send now") { review.actions.send(thread.id) }
+                        .buttonStyle(PrimaryButtonStyle(height: 24))
+                        .disabled(review.blocker != nil)
+                        .opacity(review.blocker == nil ? 1 : 0.5)
+                        .help(review.blocker ?? "Send this comment to Claude now, without the rest of the review")
+                    Button("Discard draft") { review.actions.discard(thread.id) }
+                        .buttonStyle(SecondaryButtonStyle(height: 24))
+                }
+                Button("Reply") { review.actions.edit(.reply(thread.id)) }
+                    .buttonStyle(SecondaryButtonStyle(height: 24))
+                Spacer()
+                Button(thread.resolved ? "Unresolve" : "Resolve") {
+                    showResolved = false
+                    review.actions.resolve(thread.id, !thread.resolved)
+                }
+                .buttonStyle(SecondaryButtonStyle(height: 24))
+            }
+        }
+    }
+}
+
+private struct MessageView: View {
+    let message: ReviewMessage
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text(message.author == .person ? "You" : "Claude")
+                    .font(.geist(12, .medium))
+                    .foregroundStyle(message.author == .person ? Theme.text : Theme.sky300)
+                if message.pending { Chip(text: "Pending") }
+            }
+            Text(rendered(message.body))
+                .font(.geist(13))
+                .foregroundStyle(Theme.textSoft)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Claude writes Markdown; inline styles and code spans read better rendered.
+    private func rendered(_ text: String) -> AttributedString {
+        (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
+    }
+}
+
+/// Where a comment or reply is written. Keeps its own text, saved to
+/// `drafts` as it changes, so a diff read mid-sentence loses nothing.
+private struct Composer: View {
+    let draftKey: String
+    let drafts: Drafts
+    let placeholder: String
+    let sendLabel: String
+    let blocker: String?
+    let post: (_ text: String, _ send: Bool) -> Void
+    let cancel: () -> Void
+    @State private var text: String
+    @FocusState private var focused: Bool
+
+    init(draftKey: String, drafts: Drafts, placeholder: String, sendLabel: String, blocker: String?, post: @escaping (String, Bool) -> Void, cancel: @escaping () -> Void) {
+        self.draftKey = draftKey
+        self.drafts = drafts
+        self.placeholder = placeholder
+        self.sendLabel = sendLabel
+        self.blocker = blocker
+        self.post = post
+        self.cancel = cancel
+        _text = State(initialValue: drafts.texts[draftKey] ?? "")
+    }
+
+    private var trimmed: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextEditor(text: $text)
+                .font(.geist(13))
+                .scrollContentBackground(.hidden)
+                .padding(6)
+                .frame(height: 80)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Theme.ink))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(focused ? Theme.sky700 : Theme.edge))
+                .overlay(alignment: .topLeading) {
+                    if text.isEmpty {
+                        Text(placeholder).font(.geist(13)).foregroundStyle(Theme.muted.opacity(0.6)).padding(.horizontal, 11).padding(.vertical, 6).allowsHitTesting(false)
+                    }
+                }
+                .focused($focused)
+                .onChange(of: text) { _, new in drafts.texts[draftKey] = new }
+            HStack(spacing: 8) {
+                if let blocker {
+                    Text(blocker).font(.geist(11)).foregroundStyle(Theme.amber100.opacity(0.85)).lineLimit(2)
+                }
+                Spacer(minLength: 8)
+                Button("Cancel", action: cancel)
+                    .buttonStyle(SecondaryButtonStyle(height: 26))
+                    .keyboardShortcut(.cancelAction)
+                Button("Add to review") { post(trimmed, false) }
+                    .buttonStyle(SecondaryButtonStyle(height: 26))
+                    .disabled(trimmed.isEmpty)
+                    .help("Keep it with your other comments, and send them together")
+                Button(sendLabel) { post(trimmed, true) }
+                    .buttonStyle(PrimaryButtonStyle(height: 26))
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(trimmed.isEmpty || blocker != nil)
+                    .opacity(trimmed.isEmpty || blocker != nil ? 0.5 : 1)
+                    .help(blocker ?? "Send to Claude now (⌘↩)")
+            }
+        }
+        .onAppear { focused = true }
+    }
 }

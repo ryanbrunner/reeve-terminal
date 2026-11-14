@@ -198,11 +198,11 @@ public enum Table {
 /// How `card wait` ends for a card in a given state.
 public enum WaitOutcome {
     /// Nil while there is still something to wait for: the session is
-    /// starting or Claude is working.
+    /// starting, Claude is working, or background work it started will wake it.
     public static func of(_ card: APICard) -> ExitCode? {
         if card.starting { return nil }
         switch card.card.activity {
-        case .running: return card.live ? nil : .idle
+        case .running, .waiting: return card.live ? nil : .idle
         case .needsReview: return .ok
         case .needsInput: return .needsInput
         case .error: return .failed

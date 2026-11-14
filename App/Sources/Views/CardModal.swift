@@ -1,10 +1,10 @@
 import ReeveKit
 import SwiftUI
 
-/// What an open card shows: the session itself, the plan it made, or what
-/// it has changed.
+/// What an open card shows: the session itself, the plan it made, what it
+/// has changed, or the app it is building, under review in Gloss.
 enum CardTab: String, CaseIterable, Identifiable {
-    case terminal, plan, changes
+    case terminal, plan, changes, preview
 
     var id: String { rawValue }
 
@@ -13,12 +13,13 @@ enum CardTab: String, CaseIterable, Identifiable {
         case .terminal: "Terminal"
         case .plan: "Plan"
         case .changes: "Changes"
+        case .preview: "Preview"
         }
     }
 }
 
 /// The open card, over the board: the real Claude Code, where the work
-/// happens, with its plan and its changes a tab away.
+/// happens, with its plan, its changes and its preview a tab away.
 ///
 /// Esc belongs to Claude Code (it interrupts a turn), so nothing here takes it.
 /// The close button, ⌘B or a click outside goes back to the board.
@@ -55,12 +56,23 @@ struct CardModal: View {
                         PlanView(card: card).id(card.id)
                     case .changes:
                         ChangesView(card: card).id(card.id)
+                    case .preview:
+                        PreviewView(card: card, preview: board.previews.preview(for: card.id)).id(card.id)
                     }
                 }
             }
             .background(Theme.ink)
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.edgeStrong))
+            // A card that is going to ship itself wears the rainbow open too.
+            // An overlay, so the terminal's frame is untouched.
+            .overlay {
+                if board.inVibes(card) {
+                    FlowingRainbow(period: 2.4)
+                        .mask(RoundedRectangle(cornerRadius: 10).strokeBorder(lineWidth: 2))
+                        .allowsHitTesting(false)
+                }
+            }
             .shadow(color: .black.opacity(0.5), radius: 24, y: 8)
             .padding(28)
         }
@@ -84,12 +96,22 @@ private struct TerminalHeader: View {
                 .foregroundStyle(Theme.text)
                 .lineLimit(1)
             SectionLabel(text: card.stage.label)
-            if let waiting = card.waitingOn {
+            if let line = card.backgroundLine {
+                Text(line).font(.geist(12)).foregroundStyle(Theme.indigo200.opacity(0.85)).lineLimit(1)
+            } else if let waiting = card.waitingOn {
                 Text(waiting).font(.geist(12)).foregroundStyle(Theme.amber100.opacity(0.85)).lineLimit(1)
             } else if let summary = card.summary {
                 Text(summary).font(.mono(11)).foregroundStyle(Theme.muted).lineLimit(1)
             }
             Spacer(minLength: 8)
+            VibesSwitch(
+                on: board.vibes != nil || card.vibes == true,
+                label: "Vibes",
+                help: board.vibes != nil ? "The whole board is in VIBES MODE"
+                    : card.vibes == true ? "Put a person back in this card's loop"
+                    : "Let Claude approve, answer and ship this card without you"
+            ) { board.setVibes(card.id, card.vibes != true) }
+            .disabled(board.vibes != nil)
             Text(abbreviate(card.cwd))
                 .font(.mono(11))
                 .foregroundStyle(Theme.muted.opacity(0.8))
@@ -215,7 +237,7 @@ struct EmptyState: View {
 /// switching cards only swaps which one is mounted here.
 ///
 /// The terminal takes the keyboard only while its tab is showing; under the
-/// Plan or Changes tab, keys typed would otherwise go to `claude` unseen.
+/// Plan, Changes or Preview tab, keys typed would otherwise go to `claude` unseen.
 struct TerminalHost: NSViewRepresentable {
     @EnvironmentObject var board: Board
     let cardId: UUID

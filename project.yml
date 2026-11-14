@@ -23,6 +23,13 @@ targets:
       - path: App/Sources
       - path: App/Resources
         buildPhase: resources
+    # The Preview tab shows dev servers, often plain http on a name other than
+    # localhost, which App Transport Security would refuse.
+    info:
+      path: App/Info.plist
+      properties:
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoadsInWebContent: true
     dependencies:
       - package: ReeveKit
         product: ReeveKit
@@ -42,6 +49,7 @@ targets:
         PRODUCT_NAME: Reeve
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Reeve
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
         INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 Ryan Brunner"
         # Each card runs a login shell and `claude` in it, which the App

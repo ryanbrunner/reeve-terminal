@@ -10,7 +10,7 @@ import Testing
     @Test func promptStartsARun() throws {
         let e = try event(#"{"session_id":"s","hook_event_name":"UserPromptSubmit","prompt":"hi","transcript_path":"/t.jsonl"}"#)
         #expect(e.transcriptPath == "/t.jsonl")
-        #expect(e.effect == HookEffect(activity: .running, waitingOn: .some(nil), startsConversation: true, unpinsStage: true, working: true))
+        #expect(e.effect == HookEffect(activity: .running, waitingOn: .some(nil), startsConversation: true, unpinsStage: true, working: true, background: []))
     }
 
     @Test func askingAQuestionNeedsInput() throws {
@@ -73,6 +73,85 @@ import Testing
         let e = try event(#"{"session_id":"s","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Done."}"#)
         #expect(e.effect.activity == .needsReview)
         #expect(e.effect.classify)
+        #expect(e.effect.background == [])
+    }
+
+    @Test func stopWithBackgroundAgentsIsWaiting() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"Stop","last_assistant_message":"I'll report back.","background_tasks":[{"id":"a1","type":"subagent","status":"running","description":"Explore hooks","agent_type":"Explore"},{"id":"b1","type":"shell","status":"running","description":"npm run dev","command":"npm run dev"}]}"#)
+        #expect(e.effect.activity == .waiting)
+        #expect(e.effect.classify)
+        #expect(e.effect.waitingOn == .some(nil))
+        #expect(e.effect.background == [BackgroundWork(id: "a1", type: "subagent", description: "Explore hooks", agentType: "Explore")])
+    }
+
+    @Test func stopWithOnlyShellsAndMonitorsIsReview() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"Stop","background_tasks":[{"id":"b1","type":"shell","status":"running","description":"npm run dev"},{"id":"m1","type":"monitor","status":"running","description":"watch logs"}]}"#)
+        #expect(e.effect.activity == .needsReview)
+    }
+
+    @Test func subagentToolsLeaveTheActivityAlone() throws {
+        let pre = try event(#"{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Bash","agent_id":"a1","agent_type":"Explore"}"#)
+        #expect(pre.effect.activity == nil)
+        #expect(pre.effect.waitingOn == nil)
+        #expect(pre.effect.background == nil)
+        let post = try event(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Edit","agent_id":"a1","tool_input":{"file_path":"/a"}}"#)
+        #expect(post.effect.activity == nil)
+        #expect(post.effect.editsFiles)
+    }
+
+    @Test func subagentWorkClearsAnAnsweredPrompt() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Bash","agent_id":"a1"}"#)
+        #expect(e.effect.bySubagent)
+        #expect(HookEvent.activityAfterSubagentWork(.needsInput, askedByNotification: true, waitingOnBackground: true) == .waiting)
+        #expect(HookEvent.activityAfterSubagentWork(.needsInput, askedByNotification: true, waitingOnBackground: false) == .running)
+        // Claude's own question stands until Claude moves on.
+        #expect(HookEvent.activityAfterSubagentWork(.needsInput, askedByNotification: false, waitingOnBackground: true) == nil)
+        #expect(HookEvent.activityAfterSubagentWork(.waiting, askedByNotification: true, waitingOnBackground: true) == nil)
+    }
+
+    @Test func aSubagentAskingStillNeedsInput() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","agent_id":"a1","tool_input":{"questions":[{"question":"Which one?"}]}}"#)
+        #expect(e.effect.activity == .needsInput)
+    }
+
+    @Test func onlyBlockingNotificationsNeedInput() throws {
+        for type in ["agent_needs_input", "elicitation_dialog", "worker_permission_prompt"] {
+            let e = try event(#"{"session_id":"s","hook_event_name":"Notification","message":"m","notification_type":"\#(type)"}"#)
+            #expect(e.effect.activity == .needsInput, "\(type)")
+        }
+        for type in ["agent_completed", "auth_success", "quota_auto_resume_fired"] {
+            let e = try event(#"{"session_id":"s","hook_event_name":"Notification","message":"Explore finished","notification_type":"\#(type)"}"#)
+            #expect(e.effect == HookEffect(), "\(type)")
+        }
+    }
+
+    @Test func untypedNotificationsAreToldByTheirWords() throws {
+        let idle = try event(#"{"session_id":"s","hook_event_name":"Notification","message":"Claude is waiting for your input"}"#)
+        #expect(idle.effect == HookEffect())
+        let permission = try event(#"{"session_id":"s","hook_event_name":"Notification","message":"Claude needs your permission to use Bash"}"#)
+        #expect(permission.effect.activity == .needsInput)
+    }
+
+    @Test func aWaitingCardSaysWhatItWaitsOn() {
+        var card = Card(cwd: "/tmp", activity: .waiting)
+        card.background = [BackgroundWork(id: "a", type: "subagent"), BackgroundWork(id: "b", type: "subagent")]
+        #expect(card.backgroundLine == "Waiting on 2 subagents")
+        card.background = [BackgroundWork(id: "w", type: "workflow")]
+        #expect(card.backgroundLine == "Waiting on 1 workflow")
+        card.background = [BackgroundWork(id: "a", type: "subagent"), BackgroundWork(id: "w", type: "workflow")]
+        #expect(card.backgroundLine == "Waiting on 2 tasks")
+        card.activity = .running
+        #expect(card.backgroundLine == nil)
+    }
+
+    @Test func aCardSavedBeforeBackgroundDecodes() throws {
+        var card = Card(cwd: "/tmp")
+        card.background = [BackgroundWork(id: "a1", type: "subagent")]
+        let encoder = JSONEncoder()
+        var json = try JSONSerialization.jsonObject(with: encoder.encode(card)) as! [String: Any]
+        json["background"] = nil
+        let decoded = try JSONDecoder().decode(Card.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(decoded.background == nil)
     }
 }
 
@@ -153,6 +232,11 @@ import Testing
         #expect(c.waitingOn == nil)
     }
 
+    @Test func waitingOnThatIsNoQuestionIsDropped() throws {
+        let out = #"{"type":"result","is_error":false,"result":"","structured_output":{"title":"X","summary":"Y","waiting_on":"Both background agents to finish"}}"#
+        #expect(try Classifier.parse(Data(out.utf8)).waitingOn == nil)
+    }
+
     @Test func reportsErrors() {
         let out = #"{"type":"result","is_error":true,"result":"Not logged in"}"#
         #expect(throws: ClassifierError.self) { try Classifier.parse(Data(out.utf8)) }
@@ -169,11 +253,10 @@ import Testing
         #expect(Launch.claudeArguments(for: card, prompt: "go").prefix(2) == ["--session-id", card.sessionId.uuidString.lowercased()])
         #expect(Launch.claudeArguments(for: card, prompt: "go").last == "go")
         card.hasConversation = true
-        let resumed = Launch.claudeArguments(for: card, prompt: "go")
+        let resumed = Launch.claudeArguments(for: card)
         #expect(resumed.prefix(2) == ["--resume", card.sessionId.uuidString.lowercased()])
-        // A reply to a card whose session had ended is its next message.
-        #expect(resumed.last == "go")
-        #expect(Launch.claudeArguments(for: card).last != "go")
+        // A resumed session takes a prompt as its next turn: how a review wakes it.
+        #expect(Launch.claudeArguments(for: card, prompt: "go").last == "go")
     }
 
     @Test func theCLIGoesFirstOnPathAfterTheProfile() {
@@ -229,6 +312,15 @@ import Testing
         #expect(Set(hooks.keys) == Set(Launch.hookedEvents))
     }
 
+    @Test func reviewFilesNeedNoPermission() throws {
+        let settings = try JSONSerialization.jsonObject(with: Data(Launch.hookSettings(reviewsDir: "/Users/a/Library/Application Support/Reeve/reviews").utf8)) as! [String: Any]
+        let allow = (settings["permissions"] as! [String: Any])["allow"] as! [String]
+        #expect(allow == ["Read(//Users/a/Library/Application Support/Reeve/reviews/*.json)", "Edit(//Users/a/Library/Application Support/Reeve/reviews/*.json)"])
+        #expect(settings["hooks"] != nil)
+        let plain = try JSONSerialization.jsonObject(with: Data(Launch.hookSettings().utf8)) as! [String: Any]
+        #expect(plain["permissions"] == nil)
+    }
+
     @Test func quoting() {
         #expect(Launch.shellQuote("plain-arg") == "plain-arg")
         #expect(Launch.shellQuote("it's") == #"'it'\''s'"#)
@@ -241,6 +333,67 @@ import Testing
         #expect(env["CLAUDE_CODE_ENTRYPOINT"] == nil)
         #expect(env["PATH"] == "/bin")
         #expect(env["REEVE_HOOK_PORT"] == "4000")
+    }
+
+    @Test func environmentPointsGlossAtThePreview() {
+        let id = UUID(uuidString: "1A2B3C4D-0000-0000-0000-000000000000")!
+        let env = Launch.environment(base: [:], hookPort: 4000, cardId: id)
+        #expect(env["GLOSS_HOST"] == "http://127.0.0.1:4000/gloss/1A2B3C4D-0000-0000-0000-000000000000")
+    }
+}
+
+@Suite struct GlossTests {
+    private func parse(_ json: String) -> Gloss.Message? {
+        Gloss.parse(Data(json.utf8))
+    }
+
+    @Test func hello() {
+        #expect(parse(#"{"type":"hello","script":"x()","binding":"__glossRpc","deliver":"__glossDeliver"}"#)
+            == .hello(script: "x()", binding: "__glossRpc", deliver: "__glossDeliver"))
+    }
+
+    @Test func helloRefusesNamesThatArentPlain() {
+        #expect(parse(#"{"type":"hello","script":"x()","binding":"a;alert(1)","deliver":"d"}"#) == nil)
+    }
+
+    @Test func deliverKeepsTheDelivery() throws {
+        guard case let .deliver(json) = parse(#"{"type":"deliver","delivery":{"id":3,"state":{"round":1}}}"#) else {
+            Issue.record("not a delivery")
+            return
+        }
+        let object = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+        #expect(object?["id"] as? Int == 3)
+    }
+
+    @Test func requests() {
+        #expect(parse(#"{"type":"request","id":1,"method":"navigate","url":"http://localhost:3000/"}"#)
+            == .request(id: 1, .navigate(URL(string: "http://localhost:3000/")!)))
+        #expect(parse(#"{"type":"request","id":2,"method":"reload"}"#) == .request(id: 2, .reload))
+        #expect(parse(#"{"type":"request","id":3,"method":"view"}"#) == .request(id: 3, .view))
+        #expect(parse(#"{"type":"request","id":4,"method":"snapshot","clip":{"x":1,"y":2.5,"width":3,"height":4},"path":"/s/p.png"}"#)
+            == .request(id: 4, .snapshot(clip: CGRect(x: 1, y: 2.5, width: 3, height: 4), path: "/s/p.png")))
+        #expect(parse(#"{"type":"request","id":5,"method":"dance"}"#) == nil)
+    }
+
+    @Test func readyAndNoise() {
+        #expect(parse(#"{"type":"ready","id":"abc","port":1}"#) == .ready)
+        #expect(parse("Debugger attached.") == nil)
+    }
+
+    @Test func linesToGloss() throws {
+        let rpc = Gloss.rpc(payload: #"{"id":1}"#, url: "http://localhost/", topFrame: true)
+        #expect(rpc.last == 0x0A)
+        let object = try JSONSerialization.jsonObject(with: rpc) as? [String: Any]
+        #expect(object?["type"] as? String == "rpc")
+        #expect(object?["topFrame"] as? Bool == true)
+        let failed = try JSONSerialization.jsonObject(with: Gloss.reply(id: 2, error: "no page")) as? [String: Any]
+        #expect(failed?["error"] as? String == "no page")
+        #expect(failed?["result"] == nil)
+    }
+
+    @Test func sessionArguments() {
+        #expect(Gloss.sessionArguments(cwd: "/w", url: "http://localhost/", live: true)
+            == ["__session", "--host", "--cwd", "/w", "--url", "http://localhost/", "--live"])
     }
 }
 
@@ -276,7 +429,109 @@ import Testing
         #expect(card.startMode == nil)
         #expect(card.baseCommit == nil)
         #expect(card.plan == nil)
+        #expect(card.review == nil)
         #expect(card.folderName == "app")
+    }
+}
+
+@Suite struct VibesTests {
+    private func event(_ json: String) throws -> HookEvent {
+        try HookEvent.decode(Data(json.utf8))
+    }
+
+    @Test func knowsWhenThePlanDialogIsUp() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"PermissionRequest","tool_name":"ExitPlanMode","tool_input":{"plan":"x"}}"#)
+        #expect(Vibes.showsPlanDialog(e))
+        // No hook answer gets past the dialog, so none is given.
+        #expect(Vibes.reply(to: e) == nil)
+        let pre = try event(#"{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"ExitPlanMode"}"#)
+        #expect(!Vibes.showsPlanDialog(pre))
+    }
+
+    @Test func answersQuestionsByRefusingThem() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which database?"}]}}"#)
+        #expect(Vibes.reply(to: e) == VibesReply(question: "Which database?"))
+        let out = try JSONSerialization.jsonObject(with: VibesReply(question: nil).json) as! [String: Any]
+        let specific = out["hookSpecificOutput"] as! [String: Any]
+        #expect(specific["permissionDecision"] as? String == "deny")
+        #expect(specific["permissionDecisionReason"] as? String == Vibes.noOneHome)
+    }
+
+    @Test func leavesToolPermissionsToAPerson() throws {
+        let bash = try event(#"{"session_id":"s","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"rm -rf x"}}"#)
+        #expect(Vibes.reply(to: bash) == nil)
+        let plan = try event(#"{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"ExitPlanMode"}"#)
+        #expect(Vibes.reply(to: plan) == nil)
+    }
+
+    @Test func walksACardToShipping() {
+        let options = VibesOptions()
+        guard case .nudge(_, .build) = Vibes.next(stage: .inProgress, waitingOn: nil, nudges: nil, options: options) else {
+            Issue.record("nothing changed yet: build it"); return
+        }
+        guard case .nudge(let test, .test) = Vibes.next(stage: .testing, waitingOn: nil, nudges: nil, options: options) else {
+            Issue.record("changes made: test them"); return
+        }
+        #expect(test.contains("test"))
+        let tested = VibesNudges(stage: .testing).adding(from: .testing, step: .test)
+        guard case .nudge(let ship, .ship) = Vibes.next(stage: .testing, waitingOn: nil, nudges: tested, options: options) else {
+            Issue.record("tested: ship it"); return
+        }
+        #expect(ship.contains("merge it into main"))
+        #expect(!ship.contains("\n"))
+        // Wherever its column ends up, a card told to ship is checked.
+        let asked = tested.adding(from: .testing, step: .ship)
+        #expect(Vibes.next(stage: .testing, waitingOn: nil, nudges: asked, options: options) == .checkShipped)
+        #expect(Vibes.next(stage: .release, waitingOn: nil, nudges: asked, options: options) == .checkShipped)
+    }
+
+    @Test func skippingTestingShipsStraightFromChanges() {
+        let options = VibesOptions(skipPlanning: false, skipTesting: true, autoMerge: false)
+        guard case .nudge(let ship, .ship) = Vibes.next(stage: .testing, waitingOn: nil, nudges: nil, options: options) else {
+            Issue.record("expected a nudge to ship"); return
+        }
+        #expect(ship.contains("Leave it open"))
+        #expect(options.skips(.testing))
+        #expect(!options.skips(.planning))
+    }
+
+    @Test func answersAQuestionLeftInTheMessage() {
+        #expect(Vibes.next(stage: .planning, waitingOn: "Go ahead?", nudges: nil, options: VibesOptions()) == .answer("Go ahead?"))
+    }
+
+    @Test func answersDontUseUpThePushes() {
+        var nudges = VibesNudges(stage: .testing)
+        for _ in 0..<Vibes.maxNudges { nudges = nudges.answering(in: .testing) }
+        #expect(Vibes.next(stage: .testing, waitingOn: "More?", nudges: nudges, options: VibesOptions()) == .giveUp)
+        if case .nudge = Vibes.next(stage: .testing, waitingOn: nil, nudges: nudges, options: VibesOptions()) {} else {
+            Issue.record("answers shouldn't stop the pushes")
+        }
+    }
+
+    @Test func givesUpGoingRoundInCircles() {
+        var nudges = VibesNudges(stage: .inProgress)
+        for _ in 0..<Vibes.maxNudges { nudges = nudges.adding(from: .inProgress, step: .build) }
+        #expect(Vibes.next(stage: .inProgress, waitingOn: nil, nudges: nudges, options: VibesOptions()) == .giveUp)
+        // A new column starts the count again.
+        #expect(nudges.adding(from: .testing, step: .test).count == 1)
+        if case .nudge = Vibes.next(stage: .testing, waitingOn: nil, nudges: nudges, options: VibesOptions()) {} else {
+            Issue.record("a new column should be pushed again")
+        }
+    }
+
+    @Test func ledgerKeepsFourLines() {
+        var ledger = VibesLedger()
+        for n in 1...6 { ledger.note("line \(n)") }
+        #expect(ledger.log == ["line 6", "line 5", "line 4", "line 3"])
+    }
+
+    @Test func cardsSavedBeforeVibesStillLoad() throws {
+        let json = #"{"id":"1A2B3C4D-0000-0000-0000-000000000000","sessionId":"1A2B3C4D-0000-0000-0000-000000000001","title":"","titledByPerson":false,"cwd":"/code/app","stage":"backlog","activity":"idle","stagePinned":false,"hasConversation":false,"createdAt":"2026-11-01T00:00:00Z","updatedAt":"2026-11-01T00:00:00Z"}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let card = try decoder.decode(Card.self, from: Data(json.utf8))
+        #expect(card.vibes == nil)
+        #expect(card.shippedAt == nil)
     }
 }
 
@@ -543,6 +798,7 @@ import Testing
 
     @Test func endsTheWayReeveBoardsDoes() {
         #expect(WaitOutcome.of(card(.running)) == nil)
+        #expect(WaitOutcome.of(card(.waiting)) == nil)
         #expect(WaitOutcome.of(card(.idle, starting: true)) == nil)
         #expect(WaitOutcome.of(card(.needsReview)) == .ok)
         #expect(WaitOutcome.of(card(.needsInput)) == .needsInput)
@@ -635,5 +891,77 @@ import Testing
         let changes = ChangesResponse(files: files, base: "abc1234", untrackedLeftOut: 0, truncated: false)
         let back = try API.decoder().decode(ChangesResponse.self, from: API.encoder().encode(changes))
         #expect(back == changes)
+    }
+}
+
+@Suite struct ReviewTests {
+    private let diff = DiffParser.parse("""
+    diff --git a/app.swift b/app.swift
+    --- a/app.swift
+    +++ b/app.swift
+    @@ -1,3 +1,3 @@
+     let a = 1
+    -let b = 2
+    +let b = 3
+     let c = 4
+    """)
+
+    private func comment(_ path: String = "app.swift", _ side: ReviewThread.Side = .new, _ line: Int, _ code: String, pending: Bool = false) -> ReviewThread {
+        ReviewThread(anchor: ReviewAnchor(path: path, side: side, line: line, code: code), messages: [ReviewMessage(author: .person, body: "why?", pending: pending)])
+    }
+
+    private func comment(_ side: ReviewThread.Side, _ line: Int, _ code: String) -> ReviewThread {
+        comment("app.swift", side, line, code)
+    }
+
+    @Test func linesAnchorOnTheirSide() {
+        let lines = diff[0].hunks[0].lines
+        #expect(ReviewAnchor(file: diff[0], line: lines[1]) == ReviewAnchor(path: "app.swift", side: .old, line: 2, code: "let b = 2"))
+        #expect(ReviewAnchor(file: diff[0], line: lines[2]) == ReviewAnchor(path: "app.swift", side: .new, line: 2, code: "let b = 3"))
+        #expect(ReviewAnchor(file: diff[0], line: lines[3]) == ReviewAnchor(path: "app.swift", side: .new, line: 3, code: "let c = 4"))
+    }
+
+    @Test func threadsFollowTheirLineOrSayItChanged() {
+        let onAdded = comment(.new, 2, "let b = 3")
+        let onRemoved = comment(.old, 2, "let b = 2")
+        let changed = comment(.new, 2, "let b = 9")
+        let gone = comment(.new, 40, "let z = 0")
+        let elsewhere = comment("other.swift", .new, 1, "x")
+        let placed = ReviewPlacement([onAdded, onRemoved, changed, gone, elsewhere], in: diff)
+        #expect(placed.byLine[onAdded.anchor.key] == [onAdded])
+        #expect(placed.byLine[onRemoved.anchor.key] == [onRemoved])
+        #expect(placed.outdated["app.swift"] == [changed, gone])
+        #expect(placed.orphaned == [elsewhere])
+    }
+
+    @Test func theFileHoldsEveryThreadWaitingOnClaude() throws {
+        let sent = comment(.new, 2, "let b = 3")
+        var answered = comment(.new, 3, "let c = 4")
+        answered.messages.append(ReviewMessage(author: .claude, body: "done"))
+        let draft = comment("app.swift", .new, 1, "let a = 1", pending: true)
+        var resolved = comment(.old, 2, "let b = 2")
+        resolved.resolved = true
+        let doc = try JSONSerialization.jsonObject(with: ReviewFile.encode([sent, answered, draft, resolved])) as! [String: Any]
+        let comments = doc["comments"] as! [[String: Any]]
+        #expect(comments.map { $0["id"] as! String } == [sent.id.uuidString])
+        #expect(comments[0]["reply"] is NSNull)
+        #expect(comments[0]["line"] as? Int == 2)
+    }
+
+    @Test func repliesComeBackOnce() {
+        let a = comment(.new, 2, "let b = 3")
+        let b = comment(.new, 3, "let c = 4")
+        let file = Data(#"{"comments":[{"id":"\#(a.id.uuidString)","reply":"Fixed it."},{"id":"\#(b.id.uuidString)","reply":null},{"id":"\#(UUID().uuidString)","reply":"?"}]}"#.utf8)
+        let merged = ReviewFile.merge(file, into: [a, b])
+        #expect(merged[0].messages.last?.author == .claude)
+        #expect(merged[0].messages.last?.body == "Fixed it.")
+        #expect(!merged[0].awaitingReply)
+        #expect(merged[1] == b)
+        #expect(ReviewFile.merge(file, into: merged) == merged)
+    }
+
+    @Test func aBrokenFileChangesNothing() {
+        let a = comment(.new, 2, "let b = 3")
+        #expect(ReviewFile.merge(Data("{not json".utf8), into: [a]) == [a])
     }
 }

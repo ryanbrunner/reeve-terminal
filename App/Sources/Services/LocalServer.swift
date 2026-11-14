@@ -2,12 +2,21 @@ import Foundation
 import Network
 import ReeveKit
 
-/// A tiny HTTP server on 127.0.0.1, for the cards' Claude Code hooks and for
-/// `reeve`, the command line.
+/// A tiny HTTP server on 127.0.0.1, for the cards' Claude Code hooks, their
+/// `gloss open`, and `reeve`, the command line.
 ///
 /// Each hook runs `curl --data-binary @- http://127.0.0.1:<port>/hook/<card>`
-/// with its payload on stdin. It is answered 204 at once, and the card id and
-/// body go to `onEvent` on the main queue.
+/// with its payload on stdin. It is answered at once, and the card id, body
+/// and answer go to `onEvent` on the main queue.
+///
+/// The answer is the hook's output. It is empty (204) unless the card is in
+/// VIBES MODE and Claude is asking something VIBES MODE answers; then it is the
+/// JSON that answers it. Decided here, on the server's own queue, from
+/// `vibesCards`: a hook waits on this reply, and the main thread may be busy.
+///
+/// A card's `gloss open` posts to `/gloss/<card>` (its `GLOSS_HOST`) to have
+/// the page shown in the card's Preview tab. That one waits for `onGloss` to
+/// answer, once the session is up, since `gloss open` reports it right after.
 ///
 /// `/api/` requests go to `onRequest` on the main actor, and their answer is
 /// sent back when it is ready. They must carry the token from `server.json`,
@@ -19,7 +28,11 @@ final class LocalServer {
     let token = ServerInfo.newToken()
     private(set) var port: UInt16?
     var onReady: ((UInt16) -> Void)?
-    var onEvent: ((_ cardId: UUID, _ body: Data) -> Void)?
+    var onEvent: ((_ cardId: UUID, _ body: Data, _ reply: VibesReply?) -> Void)?
+    /// The cards VIBES MODE answers for. The board keeps it up to date.
+    let vibesCards = LockedSet()
+    /// Answers with an error to say why not, or nil once the session is up.
+    var onGloss: ((_ cardId: UUID, _ body: Data, _ respond: @escaping (_ error: String?) -> Void) -> Void)?
     var onRequest: (@MainActor (HTTPRequest) async -> HTTPResponse)?
 
     init() throws {
@@ -81,11 +94,19 @@ final class LocalServer {
 
     private func respond(to request: HTTPRequest, on connection: NWConnection) {
         if request.method == "POST", request.path.hasPrefix("/hook/") {
-            send(HTTPResponse(status: 204), on: connection)
-            if let id = UUID(uuidString: String(request.path.dropFirst("/hook/".count))) {
-                let body = request.body
-                DispatchQueue.main.async { self.onEvent?(id, body) }
+            let id = UUID(uuidString: String(request.path.dropFirst("/hook/".count)))
+            let body = request.body
+            let reply = id.flatMap { id in
+                self.vibesCards.contains(id) ? (try? HookEvent.decode(body)).flatMap(Vibes.reply(to:)) : nil
             }
+            send(reply.map { HTTPResponse(status: 200, body: $0.json) } ?? HTTPResponse(status: 204), on: connection)
+            if let id {
+                DispatchQueue.main.async { self.onEvent?(id, body, reply) }
+            }
+            return
+        }
+        if request.method == "POST", request.path.hasPrefix("/gloss/") {
+            answerGloss(connection, request)
             return
         }
         guard request.path.hasPrefix("/api/") else {
@@ -107,6 +128,32 @@ final class LocalServer {
         Task { @MainActor in
             let response = await onRequest(request)
             self.send(response, on: connection)
+        }
+    }
+
+    private func answerGloss(_ connection: NWConnection, _ request: HTTPRequest) {
+        let queue = queue
+        let respond: (String?) -> Void = { error in
+            let body = Data((error ?? "").utf8)
+            let status = error == nil ? "200 OK" : "409 Conflict"
+            var response = Data("HTTP/1.1 \(status)\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8)
+            response.append(body)
+            queue.async { connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() }) }
+        }
+        guard let id = UUID(uuidString: String(request.path.dropFirst("/gloss/".count))) else {
+            respond("no such card")
+            return
+        }
+        let body = request.body
+        DispatchQueue.main.async {
+            guard let onGloss = self.onGloss else { return respond("Reeve has no preview to show it in") }
+            // Answered once, however the preview gets there.
+            var answered = false
+            onGloss(id, body) { error in
+                guard !answered else { return }
+                answered = true
+                respond(error)
+            }
         }
     }
 
@@ -183,4 +230,13 @@ struct HTTPResponse {
         head += "Content-Length: \(body.count)\r\nConnection: close\r\n\r\n"
         return Data(head.utf8) + body
     }
+}
+
+/// A set of card ids the main thread writes and the hook queue reads.
+final class LockedSet: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ids: Set<UUID> = []
+
+    func set(_ ids: Set<UUID>) { lock.withLock { self.ids = ids } }
+    func contains(_ id: UUID) -> Bool { lock.withLock { ids.contains(id) } }
 }

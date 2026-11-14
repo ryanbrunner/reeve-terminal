@@ -30,6 +30,7 @@ extension Activity {
         case .running: "running"
         case .needsReview: "needs review"
         case .needsInput: "needs input"
+        case .waiting: "waiting on background work"
         case .error: "error"
         }
     }

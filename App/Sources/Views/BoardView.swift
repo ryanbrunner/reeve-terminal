@@ -8,14 +8,18 @@ struct BoardView: View {
     @EnvironmentObject var board: Board
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            ForEach(Stage.allCases) { stage in
-                ColumnView(stage: stage)
+        if board.vibes != nil {
+            VibesBoardView()
+        } else {
+            HStack(alignment: .top, spacing: 10) {
+                ForEach(Stage.allCases) { stage in
+                    ColumnView(stage: stage)
+                }
             }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .animation(.spring(duration: 0.35, bounce: 0.15), value: board.cards.map { "\($0.id)\($0.stage.rawValue)" })
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .animation(.spring(duration: 0.35, bounce: 0.15), value: board.cards.map { "\($0.id)\($0.stage.rawValue)" })
     }
 }
 
@@ -93,6 +97,8 @@ struct CardMenu: View {
         Button("Sort Now") { board.classifyNow(card.id) }
             .disabled(card.transcriptPath == nil)
         Divider()
+        VibesToggle(card: card)
+        Divider()
         Button(board.live.contains(card.id) ? "Restart Session" : "Resume Session") { board.restart(card.id) }
         Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: card.cwd)]) }
         if let pr = card.pullRequest, let url = URL(string: pr.url) {
@@ -158,5 +164,21 @@ enum CloseCard {
         if live { lines.append("This ends its Claude Code session.") }
         lines.append("The worktree is deleted. Anything committed on \(card.branch ?? "its branch") stays in the repo.")
         return lines.joined(separator: " ")
+    }
+}
+
+/// A card in VIBES MODE on its own, from a menu. While the whole board is in
+/// it, every card is, and this says so rather than offering a switch that
+/// does nothing.
+struct VibesToggle: View {
+    @EnvironmentObject var board: Board
+    let card: Card
+
+    var body: some View {
+        Toggle("Vibes Mode", isOn: Binding(
+            get: { board.vibes != nil || card.vibes == true },
+            set: { board.setVibes(card.id, $0) }
+        ))
+        .disabled(board.vibes != nil)
     }
 }
