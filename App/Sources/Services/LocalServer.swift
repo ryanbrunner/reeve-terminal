@@ -2,12 +2,12 @@ import Foundation
 import Network
 import ReeveKit
 
-/// A tiny HTTP server on 127.0.0.1 that the cards' Claude Code hooks post to.
+/// A tiny HTTP server on 127.0.0.1, for the cards' Claude Code hooks, their
+/// `gloss open`, and `reeve`, the command line.
 ///
 /// Each hook runs `curl --data-binary @- http://127.0.0.1:<port>/hook/<card>`
-/// with its payload on stdin, so all this has to understand is one POST with a
-/// Content-Length. It answers and closes, and hands the card id, body and its
-/// answer to `onEvent` on the main queue.
+/// with its payload on stdin. It is answered at once, and the card id, body
+/// and answer go to `onEvent` on the main queue.
 ///
 /// The answer is the hook's output. It is empty (204) unless the card is in
 /// VIBES MODE and Claude is asking something VIBES MODE answers; then it is the
@@ -17,9 +17,15 @@ import ReeveKit
 /// A card's `gloss open` posts to `/gloss/<card>` (its `GLOSS_HOST`) to have
 /// the page shown in the card's Preview tab. That one waits for `onGloss` to
 /// answer, once the session is up, since `gloss open` reports it right after.
-final class HookServer {
+///
+/// `/api/` requests go to `onRequest` on the main actor, and their answer is
+/// sent back when it is ready. They must carry the token from `server.json`,
+/// which only the person can read, and no `Origin`: a web page can reach
+/// 127.0.0.1 too, and a card started with its prompt would run it.
+final class LocalServer {
     private let listener: NWListener
-    private let queue = DispatchQueue(label: "reeve.hooks")
+    private let queue = DispatchQueue(label: "reeve.server")
+    let token = ServerInfo.newToken()
     private(set) var port: UInt16?
     var onReady: ((UInt16) -> Void)?
     var onEvent: ((_ cardId: UUID, _ body: Data, _ reply: VibesReply?) -> Void)?
@@ -27,6 +33,7 @@ final class HookServer {
     let vibesCards = LockedSet()
     /// Answers with an error to say why not, or nil once the session is up.
     var onGloss: ((_ cardId: UUID, _ body: Data, _ respond: @escaping (_ error: String?) -> Void) -> Void)?
+    var onRequest: (@MainActor (HTTPRequest) async -> HTTPResponse)?
 
     init() throws {
         let params = NWParameters.tcp
@@ -81,30 +88,46 @@ final class HookServer {
                 self.read(connection, buffer: buffer, continued: continued)
                 return
             }
-            if request.method == "POST", request.path.hasPrefix("/gloss/") {
-                self.answerGloss(connection, request)
-                return
-            }
-            let id = request.method == "POST" && request.path.hasPrefix("/hook/")
-                ? UUID(uuidString: String(request.path.dropFirst("/hook/".count))) : nil
+            self.respond(to: request, on: connection)
+        }
+    }
+
+    private func respond(to request: HTTPRequest, on connection: NWConnection) {
+        if request.method == "POST", request.path.hasPrefix("/hook/") {
+            let id = UUID(uuidString: String(request.path.dropFirst("/hook/".count)))
             let body = request.body
             let reply = id.flatMap { id in
                 self.vibesCards.contains(id) ? (try? HookEvent.decode(body)).flatMap(Vibes.reply(to:)) : nil
             }
-            var response = Data()
-            if let reply {
-                let json = reply.json
-                response.append(Data("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(json.count)\r\nConnection: close\r\n\r\n".utf8))
-                response.append(json)
-            } else if id != nil {
-                response.append(Data("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n".utf8))
-            } else {
-                response.append(Data("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".utf8))
-            }
-            connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
+            send(reply.map { HTTPResponse(status: 200, body: $0.json) } ?? HTTPResponse(status: 204), on: connection)
             if let id {
                 DispatchQueue.main.async { self.onEvent?(id, body, reply) }
             }
+            return
+        }
+        if request.method == "POST", request.path.hasPrefix("/gloss/") {
+            answerGloss(connection, request)
+            return
+        }
+        guard request.path.hasPrefix("/api/") else {
+            send(.error(404, APIError("not found", detail: "\(request.method) \(request.path)")), on: connection)
+            return
+        }
+        guard request.headers["origin"] == nil else {
+            send(.error(403, APIError("refused", detail: "requests from web pages aren't accepted")), on: connection)
+            return
+        }
+        guard let given = request.headers["authorization"], Self.same(given, "Bearer \(token)") else {
+            send(.error(401, APIError("unauthorized", detail: "the token in server.json is needed")), on: connection)
+            return
+        }
+        guard let onRequest else {
+            send(.error(503, APIError("not ready")), on: connection)
+            return
+        }
+        Task { @MainActor in
+            let response = await onRequest(request)
+            self.send(response, on: connection)
         }
     }
 
@@ -133,13 +156,28 @@ final class HookServer {
             }
         }
     }
+
+    private func send(_ response: HTTPResponse, on connection: NWConnection) {
+        connection.send(content: response.serialized, completion: .contentProcessed { _ in connection.cancel() })
+    }
+
+    /// Compares every byte, so how long a wrong token took doesn't say how much of it was right.
+    private static func same(_ a: String, _ b: String) -> Bool {
+        let a = Array(a.utf8), b = Array(b.utf8)
+        guard a.count == b.count else { return false }
+        return zip(a, b).reduce(0) { $0 | ($1.0 ^ $1.1) } == 0
+    }
 }
 
-/// Just enough HTTP/1.1 request parsing for the hooks: nil until the headers
-/// have all arrived.
-private struct HTTPRequest {
+/// Just enough HTTP/1.1 request parsing for the hooks and the API: nil until
+/// the headers have all arrived.
+struct HTTPRequest {
     let method: String
+    /// Without the query.
     let path: String
+    let query: [String: String]
+    /// Lower-cased names.
+    let headers: [String: String]
     let contentLength: Int
     let expectsContinue: Bool
     let body: Data
@@ -151,21 +189,46 @@ private struct HTTPRequest {
         let requestLine = lines.removeFirst().split(separator: " ")
         guard requestLine.count >= 2 else { return nil }
         method = String(requestLine[0])
-        path = String(requestLine[1])
-        var length = 0
-        var expects = false
+        let target = URLComponents(string: String(requestLine[1]))
+        path = target?.percentEncodedPath ?? String(requestLine[1])
+        var query: [String: String] = [:]
+        for item in target?.queryItems ?? [] { query[item.name] = item.value ?? "" }
+        self.query = query
+        var headers: [String: String] = [:]
         for line in lines {
             let parts = line.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
             guard parts.count == 2 else { continue }
-            switch parts[0].lowercased() {
-            case "content-length": length = Int(parts[1]) ?? 0
-            case "expect": expects = parts[1].lowercased() == "100-continue"
-            default: break
-            }
+            headers[parts[0].lowercased()] = parts[1]
         }
-        contentLength = length
-        expectsContinue = expects
-        body = data[end.upperBound...].prefix(length)
+        self.headers = headers
+        contentLength = headers["content-length"].flatMap { Int($0) } ?? 0
+        expectsContinue = headers["expect"]?.lowercased() == "100-continue"
+        body = data[end.upperBound...].prefix(contentLength)
+    }
+}
+
+struct HTTPResponse {
+    var status: Int
+    var body = Data()
+
+    static func json<T: Encodable>(_ value: T, status: Int = 200) -> HTTPResponse {
+        do {
+            return HTTPResponse(status: status, body: try API.encoder().encode(value) + Data("\n".utf8))
+        } catch {
+            return .error(500, APIError("couldn't encode the answer", detail: error.localizedDescription))
+        }
+    }
+
+    static func error(_ status: Int, _ error: APIError) -> HTTPResponse {
+        let body = (try? API.encoder().encode(error)) ?? Data()
+        return HTTPResponse(status: status, body: body + Data("\n".utf8))
+    }
+
+    var serialized: Data {
+        var head = "HTTP/1.1 \(status) \(HTTPURLResponse.localizedString(forStatusCode: status).capitalized)\r\n"
+        if !body.isEmpty { head += "Content-Type: application/json\r\n" }
+        head += "Content-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+        return Data(head.utf8) + body
     }
 }
 
