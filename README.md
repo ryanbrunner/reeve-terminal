@@ -46,13 +46,19 @@ feature parity. What Reeve adds is the board.
   as a draft, violet once merged, red if closed. Reeve asks your own `gh`
   at launch, when a turn ends and when you open the card. Without `gh` or a
   GitHub remote there is simply no badge.
-- **Each open card has four tabs.** Terminal is the session. Plan shows
-  the plan Claude wrote in plan mode, read from its file so later edits show,
-  with a dot on the tab when a new one arrives. Changes is everything the card
-  has done in its worktree since it started: commits, uncommitted edits and
-  new files, read again as Claude works. Preview is the app the card is
-  building, under review in [Gloss](https://github.com/ryanbrunner/gloss)
-  (below). ⌥⌘1–4 switch between them.
+- **Each open card has four tabs.** Terminal is the session. Plan shows the
+  plan Claude wrote in plan mode, read from its file so later edits show,
+  with a dot on the tab when a new one arrives. While Claude Code's plan
+  dialog is open, **Approve** answers it for you: Reeve reads the dialog off
+  the terminal and picks "Yes, and use auto mode", and the tab marks the
+  plan Approved, as it does however the plan was approved. When the dialog
+  has no auto mode option (a model without it, or with bypass permissions
+  on), it takes the first yes that keeps the context and doesn't bypass
+  permissions. Changes is everything the card has done in its worktree since
+  it started: commits, uncommitted edits and new files, read again as Claude
+  works. Preview is the app the card is building, under review in
+  [Gloss](https://github.com/ryanbrunner/gloss) (below). ⌥⌘1–4 switch
+  between them.
 - **Review the changes like a pull request.** Hover a line in Changes and
   click + to comment on it. **Comment now** sends it straight away; **Add to
   review** keeps it as pending until you **Submit review**. Reeve writes the
@@ -187,6 +193,8 @@ Add `REEVE_SMOKE_VIBES=1` to put the card in VIBES MODE and leave it alone
 until it ships (`REEVE_SMOKE_VIBES=board` flips the whole board's switch
 instead). `REEVE_SMOKE_START=plan` starts it planning, and
 `REEVE_SMOKE_MODEL`/`REEVE_SMOKE_EFFORT` pick its model and effort.
+`REEVE_SMOKE_APPROVE=1` (with `REEVE_SMOKE_START=plan`) presses the Plan
+tab's Approve once the plan dialog is up and logs the mode it lands in.
 
 `REEVE_SMOKE_MODE=preview` checks the Preview tab instead, without Claude
 taking a turn. It makes a card with no prompt, then does what the card's

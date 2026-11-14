@@ -14,7 +14,7 @@ struct PlanView: View {
     var body: some View {
         VStack(spacing: 0) {
             if let text {
-                PlanBar(path: card.planPath, text: text)
+                PlanBar(card: card, text: text)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
                         ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
@@ -50,12 +50,13 @@ struct PlanView: View {
 
 /// Where the plan lives, and what to do with it.
 private struct PlanBar: View {
-    let path: String?
+    @EnvironmentObject var board: Board
+    let card: Card
     let text: String
 
     var body: some View {
         HStack(spacing: 10) {
-            if let path {
+            if let path = card.planPath {
                 Text(URL(fileURLWithPath: path).lastPathComponent)
                     .font(.mono(11))
                     .foregroundStyle(Theme.muted)
@@ -64,12 +65,13 @@ private struct PlanBar: View {
                     .help(path)
             }
             Spacer()
+            approval
             Button("Copy") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(text, forType: .string)
             }
             .buttonStyle(SecondaryButtonStyle(height: 22))
-            if let path, FileManager.default.fileExists(atPath: path) {
+            if let path = card.planPath, FileManager.default.fileExists(atPath: path) {
                 Button("Open") { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
                     .buttonStyle(SecondaryButtonStyle(height: 22))
                     .help("Open the plan file in its app")
@@ -78,6 +80,23 @@ private struct PlanBar: View {
         .padding(.horizontal, 14)
         .frame(height: 34)
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.edge).frame(height: 1) }
+    }
+
+    /// Approve while Claude Code's plan dialog is open, and say so once the
+    /// plan is approved. Not while VIBES MODE is approving it itself; if that
+    /// misses, the button is there.
+    @ViewBuilder private var approval: some View {
+        if card.planApproved == true {
+            Label("Approved", systemImage: "checkmark")
+                .font(.geist(12))
+                .foregroundStyle(Theme.muted)
+        } else if board.acceptingPlans.contains(card.id) || board.approvingPlans.contains(card.id) {
+            Text("Approving…").font(.geist(12)).foregroundStyle(Theme.muted)
+        } else if board.planDialogs.contains(card.id), board.live.contains(card.id) {
+            Button("Approve") { board.acceptPlan(card.id) }
+                .buttonStyle(PrimaryButtonStyle(height: 22))
+                .help("Approve the plan and switch Claude to auto mode")
+        }
     }
 }
 

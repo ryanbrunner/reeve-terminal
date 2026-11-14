@@ -68,6 +68,15 @@ final class Terminals: NSObject, LocalProcessTerminalViewDelegate {
         }
     }
 
+    /// The rows the card's terminal shows at the bottom of its buffer, top to
+    /// bottom, wherever the view is scrolled to.
+    func screen(_ cardId: UUID) -> [String] {
+        guard let view = views[cardId] else { return [] }
+        let terminal = view.getTerminal()
+        let lines = String(decoding: terminal.getBufferAsData(), as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: false)
+        return lines.suffix(terminal.rows + 1).map(String.init)
+    }
+
     /// Ends the card's `claude`. SwiftTerm stops watching a process it is
     /// asked to end, so it never says the process exited; this waits for that
     /// itself, and kills it if it hasn't gone after a few seconds.
