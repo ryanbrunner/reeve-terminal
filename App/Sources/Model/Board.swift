@@ -34,6 +34,15 @@ final class Board: ObservableObject {
     @Published private(set) var tabs: [UUID: CardTab] = [:]
     /// Cards with a plan nobody has looked at in the Plan tab yet.
     @Published private(set) var unseenPlans: Set<UUID> = []
+    /// Cards whose terminal has the plan dialog open: Claude asked for its
+    /// plan to be approved, and nothing has happened since.
+    @Published private(set) var planDialogs: Set<UUID> = []
+    /// Cards whose plan a person approved from the Plan tab, while Reeve picks
+    /// the option in the dialog and until Claude Code says it took.
+    @Published private(set) var acceptingPlans: Set<UUID> = []
+    /// Cards whose plan dialog VIBES MODE has pressed Enter on and not yet
+    /// seen go: a key sent before the dialog drew is sent again.
+    @Published private(set) var approvingPlans: Set<UUID> = []
     /// Raised when a card showing its changes may have new ones, so the tab
     /// reads them again. Only for that card, so others' tool calls cost nothing.
     @Published private(set) var changeTicks: [UUID: Int] = [:]
@@ -93,9 +102,6 @@ final class Board: ObservableObject {
     /// What VIBES MODE last typed into each card, so its prompt is told apart
     /// from a person's when the hook reports it.
     private var vibesPrompts: [UUID: String] = [:]
-    /// Cards whose plan dialog VIBES MODE has pressed Enter on and not yet
-    /// seen go: a key sent before the dialog drew is sent again.
-    private var approvingPlans: Set<UUID> = []
     private let dataDir: URL
     private let storeURL: URL
     /// Where each card's review goes to Claude and its replies come back.
@@ -398,6 +404,8 @@ final class Board: ObservableObject {
         stopped.remove(id)
         settled.remove(id)
         approvingPlans.remove(id)
+        planDialogs.remove(id)
+        acceptingPlans.remove(id)
         vibesPrompts[id] = nil
         cards.removeAll { $0.id == id }
         live.remove(id)
@@ -555,6 +563,8 @@ final class Board: ObservableObject {
             return
         }
         live.remove(id)
+        planDialogs.remove(id)
+        acceptingPlans.remove(id)
         dialogOpen.remove(id)
         awaitingPrompt.remove(id)
         update(id) { card in
@@ -604,6 +614,12 @@ final class Board: ObservableObject {
             settled.remove(cardId)
         }
         if let reply { noteVibesReply(reply, on: before) }
+        if Vibes.showsPlanDialog(event) {
+            planDialogs.insert(cardId)
+        } else if event.closesPlanDialog {
+            planDialogs.remove(cardId)
+            acceptingPlans.remove(cardId)
+        }
         if Vibes.showsPlanDialog(event), inVibes(before) { approvePlan(before) }
         if event.hookEventName == "PostToolUse", event.toolName == "ExitPlanMode" { approvingPlans.remove(cardId) }
         if event.hookEventName == "UserPromptSubmit", inVibes(before) { notePrompt(event.prompt, on: before) }
@@ -646,6 +662,8 @@ final class Board: ObservableObject {
                 card.plan = merged.text
                 card.planPath = merged.path
             }
+            if event.putsUpNewPlan { card.planApproved = nil }
+            if event.approvesPlan { card.planApproved = true }
         }
         let showing = selectedId == cardId ? tab(cardId) : nil
         if effect.plan != nil, showing != .plan { unseenPlans.insert(cardId) }
@@ -882,6 +900,51 @@ final class Board: ObservableObject {
         vibes?.reviewsSkipped += 1
         vibes?.note("Claude approved its own plan on “\(displayTitle(card))” · nobody read it")
         save()
+    }
+
+    /// A person approves the plan from the Plan tab: Reeve picks the dialog's
+    /// auto mode option, as they would in the terminal. The dialog is read off
+    /// the screen, so the selection moves from wherever it is, and nothing is
+    /// typed until the dialog is seen, nor Enter pressed until its selection
+    /// is the approval. Otherwise the button comes back.
+    func acceptPlan(_ id: UUID) {
+        guard planDialogs.contains(id), live.contains(id), !acceptingPlans.contains(id), !approvingPlans.contains(id) else { return }
+        acceptingPlans.insert(id)
+        choosePlanApproval(id, tries: 3)
+    }
+
+    private func choosePlanApproval(_ id: UUID, tries: Int) {
+        guard acceptingPlans.contains(id) else { return }
+        guard let dialog = PlanDialog.find(onScreen: terminals.screen(id)) else {
+            // Not drawn yet, perhaps.
+            if tries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.choosePlanApproval(id, tries: tries - 1) }
+            } else {
+                acceptingPlans.remove(id)
+            }
+            return
+        }
+        let target = dialog.approval
+        let view = terminals.view(for: id)
+        // One key a write, so Claude Code reads each arrow as its own.
+        let moves = dialog.moves(to: target)
+        for (i, key) in moves.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08 * Double(i)) { [weak self] in
+                guard self?.acceptingPlans.contains(id) == true else { return }
+                view.send(txt: key)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08 * Double(moves.count) + 0.3) { [weak self] in
+            guard let self, self.acceptingPlans.contains(id) else { return }
+            guard PlanDialog.find(onScreen: self.terminals.screen(id))?.selected == target else {
+                self.acceptingPlans.remove(id)
+                return
+            }
+            view.send(txt: "\r")
+            // A dialog that took the key says so with `ExitPlanMode`'s
+            // PostToolUse; one that didn't gets its button back.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.acceptingPlans.remove(id) }
+        }
     }
 
     /// Types a line into the card's terminal and submits it, as a person would.

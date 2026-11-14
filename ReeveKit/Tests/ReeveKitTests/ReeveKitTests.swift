@@ -966,6 +966,89 @@ import Testing
     }
 }
 
+@Suite struct PlanDialogTests {
+    // The labels Claude Code 2.1.286 draws, with the plan above them.
+    private let screen = [
+        "│ 1. Add the button                                │",
+        "│ 2. Wire it up                                    │",
+        "",
+        " Would you like to proceed?",
+        "",
+        " ❯ 1. Yes, clear context (42% used) and use auto mode",
+        "   2. Yes, and use auto mode",
+        "   3. Yes, manually approve edits",
+        "   4. Tell Claude what to change",
+        "      shift+tab to approve with this feedback",
+        "",
+        " ctrl-g to edit in Vim",
+    ]
+
+    @Test func readsTheDialogBelowThePlan() {
+        let dialog = PlanDialog.find(onScreen: screen)
+        #expect(dialog?.options == ["Yes, clear context (42% used) and use auto mode", "Yes, and use auto mode", "Yes, manually approve edits", "Tell Claude what to change"])
+        #expect(dialog?.selected == 0)
+    }
+
+    @Test func approvesIntoAutoModeKeepingTheContext() throws {
+        let dialog = try #require(PlanDialog.find(onScreen: screen))
+        #expect(dialog.approval == 1)
+        #expect(dialog.moves(to: dialog.approval) == ["\u{1b}[B"])
+    }
+
+    @Test func followsAPointerMovedByHand() throws {
+        var moved = screen
+        moved[5] = "   1. Yes, clear context (42% used) and use auto mode"
+        moved[8] = " ❯ 4. Tell Claude what to change"
+        let dialog = try #require(PlanDialog.find(onScreen: moved))
+        #expect(dialog.selected == 3)
+        #expect(dialog.moves(to: dialog.approval) == ["\u{1b}[A", "\u{1b}[A"])
+    }
+
+    @Test func withoutAutoModeAcceptsEdits() throws {
+        let dialog = try #require(PlanDialog.find(onScreen: [" ❯ 1. Yes, auto-accept edits", "   2. Yes, manually approve edits", "   3. No, keep planning"]))
+        #expect(dialog.approval == 0)
+        #expect(dialog.moves(to: 0).isEmpty)
+    }
+
+    @Test func neverPicksBypassingPermissions() throws {
+        let dialog = try #require(PlanDialog.find(onScreen: [" ❯ 1. Yes, and switch to bypass permissions for this session", "   2. Yes, manually approve edits", "   3. No, keep planning"]))
+        #expect(dialog.approval == 1)
+    }
+
+    @Test func readsGapsTheTerminalLeftEmpty() throws {
+        // As SwiftTerm reads Claude Code's dialog back: skipped cells are NULs.
+        let dialog = try #require(PlanDialog.find(onScreen: ["\u{0} ❯ 1. Yes, and use auto mode", "\u{0}\u{0}\u{0}\u{0}\u{0}2. Yes,\u{0}manually\u{0}approve\u{0}edits", "     3. Tell Claude what to change"]))
+        #expect(dialog.options == ["Yes, and use auto mode", "Yes, manually approve edits", "Tell Claude what to change"])
+        #expect(dialog.approval == 0)
+    }
+
+    @Test func noPointerNoTellingWhereEnterLands() {
+        #expect(PlanDialog.find(onScreen: ["   1. Yes, and use auto mode", "   2. Yes, manually approve edits", "   3. Tell Claude what to change"]) == nil)
+    }
+
+    @Test func noDialogNoOptions() {
+        #expect(PlanDialog.find(onScreen: ["> hello", "1. Add the button", "2. Wire it up"]) == nil)
+    }
+
+    @Test func approvalAndDialogHooks() throws {
+        let approved = try HookEvent.decode(Data(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"ExitPlanMode"}"#.utf8))
+        #expect(approved.approvesPlan && approved.closesPlanDialog)
+        let subagent = try HookEvent.decode(Data(#"{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Read","agent_id":"a"}"#.utf8))
+        #expect(!subagent.closesPlanDialog)
+        let notification = try HookEvent.decode(Data(#"{"session_id":"s","hook_event_name":"Notification","notification_type":"permission_prompt"}"#.utf8))
+        #expect(!notification.closesPlanDialog)
+    }
+
+    @Test func aNewPlanIsNotYetApproved() throws {
+        func event(_ json: String) throws -> HookEvent { try HookEvent.decode(Data(json.utf8)) }
+        #expect(try event(#"{"session_id":"s","hook_event_name":"PreToolUse","permission_mode":"plan","tool_name":"ExitPlanMode","tool_input":{"plan":"p"}}"#).putsUpNewPlan)
+        #expect(try event(#"{"session_id":"s","hook_event_name":"PostToolUse","permission_mode":"plan","tool_name":"Write","tool_input":{"file_path":"/u/.claude/plans/a.md"}}"#).putsUpNewPlan)
+        // Ticking off the approved plan as the work goes.
+        #expect(try !event(#"{"session_id":"s","hook_event_name":"PostToolUse","permission_mode":"auto","tool_name":"Edit","tool_input":{"file_path":"/u/.claude/plans/a.md"}}"#).putsUpNewPlan)
+        #expect(try !event(#"{"session_id":"s","hook_event_name":"PostToolUse","permission_mode":"plan","tool_name":"ExitPlanMode"}"#).putsUpNewPlan)
+    }
+}
+
 @Suite struct RepoTests {
     @Test func isNamedForItsFolder() {
         #expect(Repo(path: "/code/app").name == "app")

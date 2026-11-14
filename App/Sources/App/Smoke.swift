@@ -20,6 +20,8 @@ import ReeveKit
 /// once it has started, so nobody is watching; it runs until the card ships.
 /// `REEVE_SMOKE_VIBES=board` flips the whole board's switch as well.
 /// `REEVE_SMOKE_MODEL` and `REEVE_SMOKE_EFFORT` pick the card's model and effort.
+/// `REEVE_SMOKE_APPROVE` presses the Plan tab's Approve once the plan dialog
+/// is up, saving the screen it read, and runs on to the end of the turn.
 /// `REEVE_SMOKE_MODE=preview` checks the Preview tab instead; see `runPreview`.
 /// `REEVE_SMOKE_MODE=repos` checks the repo list and Settings; see `runRepos`.
 @MainActor
@@ -57,6 +59,8 @@ enum Smoke {
         var cardId: UUID?
         var lastLog: String?
         var lastStage: Stage?
+        var lastMode: String?
+        var approved = false
         let vibes = env["REEVE_SMOKE_VIBES"] != nil
 
         func log(_ line: String) {
@@ -155,6 +159,23 @@ enum Smoke {
                         view.send(txt: "\u{1b}")
                     }
                     interrupted = Date()
+                }
+                if card.permissionMode != lastMode {
+                    lastMode = card.permissionMode
+                    log("permission mode \(card.permissionMode ?? "-")")
+                }
+                if env["REEVE_SMOKE_APPROVE"] != nil, !approved, board.planDialogs.contains(card.id) {
+                    approved = true
+                    // Once it has drawn: the hook comes before the dialog.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        let screen = board.terminals.screen(card.id)
+                        try? screen.joined(separator: "\n").write(toFile: "\(out)/plan-dialog.txt", atomically: true, encoding: .utf8)
+                        log("plan dialog \(PlanDialog.find(onScreen: screen).map { "\($0.options) selected \($0.selected) approving \($0.approval)" } ?? "not found")")
+                        snapshot(to: "\(out)/plan-dialog.png")
+                        board.show(.plan, for: card.id)
+                        log("pressing Approve")
+                        board.acceptPlan(card.id)
+                    }
                 }
                 if card.stage != lastStage {
                     lastStage = card.stage
