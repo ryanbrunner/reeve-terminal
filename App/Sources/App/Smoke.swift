@@ -21,6 +21,7 @@ import ReeveKit
 /// `REEVE_SMOKE_VIBES=board` flips the whole board's switch as well.
 /// `REEVE_SMOKE_MODEL` and `REEVE_SMOKE_EFFORT` pick the card's model and effort.
 /// `REEVE_SMOKE_MODE=preview` checks the Preview tab instead; see `runPreview`.
+/// `REEVE_SMOKE_MODE=repos` checks the repo list and Settings; see `runRepos`.
 @MainActor
 enum Smoke {
     static func runIfAsked(board: Board) {
@@ -29,6 +30,10 @@ enum Smoke {
         try? FileManager.default.createDirectory(atPath: out, withIntermediateDirectories: true)
         if env["REEVE_SMOKE_MODE"] == "preview" {
             Task { await runPreview(board: board, out: out, dir: dir, url: env["REEVE_SMOKE_URL"] ?? "http://127.0.0.1:4400/") }
+            return
+        }
+        if env["REEVE_SMOKE_MODE"] == "repos" {
+            Task { await runRepos(board: board, out: out, dir: dir) }
             return
         }
         // new: make a card with the prompt. resume: open the board's first
@@ -309,8 +314,91 @@ enum Smoke {
         done(0)
     }
 
-    private static func snapshot(to path: String) {
-        guard let view = NSApp.windows.first(where: { $0.isVisible })?.contentView,
+    /// Adds `dir` as a repo, twice, and starts a card in it from the new card
+    /// sheet with ⌘↩, as a person would, without Claude taking a turn. Then
+    /// closes the card, opens Settings and takes the repo off and on again,
+    /// saving a picture of each window and a line per check in `timeline.txt`.
+    /// The repo is left on the list, so a second launch can find it saved.
+    private static func runRepos(board: Board, out: String, dir: String) async {
+        var lines: [String] = []
+        var failures = 0
+        func log(_ line: String) {
+            lines.append(line)
+            FileHandle.standardError.write(Data(("reeve smoke: " + line + "\n").utf8))
+            try? lines.joined(separator: "\n").write(toFile: "\(out)/timeline.txt", atomically: true, encoding: .utf8)
+        }
+        func check(_ ok: Bool, _ what: String) {
+            log((ok ? "ok    " : "FAIL  ") + what)
+            if !ok { failures += 1 }
+        }
+        func wait(_ what: String, seconds: Double = 20, until: () -> Bool) async -> Bool {
+            let deadline = Date().addingTimeInterval(seconds)
+            while !until() {
+                if Date() > deadline { log("gave up waiting for \(what)"); return false }
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            return true
+        }
+        func done() {
+            log(failures == 0 ? "ok" : "failed: \(failures)")
+            board.shutdown()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { exit(failures == 0 ? 0 : 1) }
+        }
+        func picture(_ name: String, _ window: NSWindow?) async {
+            try? await Task.sleep(for: .milliseconds(800))
+            snapshot(to: "\(out)/\(name).png", window: window)
+        }
+
+        log("repos at launch: \(board.repos.map(\.path))")
+        let repo = board.addRepo(path: dir)
+        let count = board.repos.count
+        check(board.addRepo(path: dir + "/").id == repo.id && board.repos.count == count, "adding a repo twice keeps one")
+
+        board.showingNewCard = true
+        var sheet: NSWindow? { NSApp.windows.compactMap(\.attachedSheet).first }
+        guard await wait("the new card sheet", until: { sheet != nil }), let sheet else { return done() }
+        await picture("1-new-card", sheet)
+        // Pick the repo just added: what its item in the sheet's menu does.
+        board.pickedRepoId = repo.id
+        await picture("2-new-card-picked", sheet)
+
+        let cards = Set(board.cards.map(\.id))
+        let start = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0, windowNumber: sheet.windowNumber,
+                                     context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!
+        if !sheet.performKeyEquivalent(with: start) { NSApp.postEvent(start, atStart: false) }
+        guard await wait("a card", until: { board.cards.contains { !cards.contains($0.id) } }),
+              let card = board.cards.first(where: { !cards.contains($0.id) }) else { return done() }
+        log("card in \(card.cwd), repo \(card.repoPath ?? "-"), worktree \(card.worktreePath ?? "-")")
+        check(card.worktreePath.map { $0.hasSuffix(Worktree.name(for: card.id)) } == true, "⌘↩ starts a card in a worktree of the picked repo")
+        check(card.repoPath.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path } == URL(fileURLWithPath: repo.path).resolvingSymlinksInPath().path,
+              "the card's repo is the picked one")
+        check(board.pickedRepo?.id == repo.id && UserDefaults.standard.string(forKey: "newCardRepo") == repo.id.uuidString, "the sheet remembers the repo")
+        check(sheet.isVisible == false, "the sheet closes")
+        await picture("3-board", NSApp.windows.first { $0.isVisible })
+        board.close(card.id)
+        if let worktree = card.worktreePath {
+            check(await wait("the worktree to go", until: { !FileManager.default.fileExists(atPath: worktree) }), "closing the card removes its worktree")
+        }
+
+        // ⌘, from the app menu.
+        let appMenu = NSApp.mainMenu?.items.first?.submenu
+        let settingsItem = appMenu?.items.firstIndex { $0.keyEquivalent == "," && $0.keyEquivalentModifierMask == .command }
+        check(settingsItem != nil, "the app menu has a ⌘, item: \(settingsItem.flatMap { appMenu?.items[$0].title } ?? "-")")
+        if let settingsItem { appMenu?.performActionForItem(at: settingsItem) }
+        var settings: NSWindow? { NSApp.windows.first { $0.isVisible && $0.identifier?.rawValue.contains("Settings") == true || ($0.isVisible && $0.title.contains("Settings")) } }
+        check(await wait("Settings", until: { settings != nil }), "Settings opens")
+        log("windows: \(NSApp.windows.filter(\.isVisible).map { "\($0.title) [\($0.identifier?.rawValue ?? "-")]" })")
+        await picture("4-settings", settings)
+        board.removeRepo(repo.id)
+        check(!board.repos.contains { $0.id == repo.id }, "removing a repo takes it off the list")
+        await picture("5-settings-removed", settings)
+        board.addRepo(path: dir)
+        await picture("6-settings-added", settings)
+        done()
+    }
+
+    private static func snapshot(to path: String, window: NSWindow? = nil) {
+        guard let view = (window ?? NSApp.windows.first(where: { $0.isVisible }))?.contentView,
               let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
         view.cacheDisplay(in: view.bounds, to: rep)
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))

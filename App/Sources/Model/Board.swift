@@ -13,6 +13,13 @@ import SwiftUI
 @MainActor
 final class Board: ObservableObject {
     @Published private(set) var cards: [Card] = []
+    /// The folders a new card can start in.
+    @Published private(set) var repos: [Repo] = []
+    /// The repo picked for the last new card, so a run of cards starts in
+    /// the same one.
+    @Published var pickedRepoId: UUID? {
+        didSet { UserDefaults.standard.set(pickedRepoId?.uuidString, forKey: "newCardRepo") }
+    }
     /// The card open over the board, if any.
     @Published var selectedId: UUID?
     /// Cards whose terminal has a live `claude` in it.
@@ -93,6 +100,7 @@ final class Board: ObservableObject {
         storeURL = support.appendingPathComponent("board.json")
         reviewsDir = support.appendingPathComponent("reviews", isDirectory: true)
         try? FileManager.default.createDirectory(at: reviewsDir, withIntermediateDirectories: true)
+        pickedRepoId = UserDefaults.standard.string(forKey: "newCardRepo").flatMap(UUID.init)
         load()
 
         terminals.onStateChange = { [weak self] id, running, exitCode in
@@ -167,7 +175,6 @@ final class Board: ObservableObject {
     /// folder's HEAD; anywhere else it works in the folder itself. It starts
     /// in the column its mode begins in.
     func create(cwd: String, title: String, prompt: String?, mode: StartMode, model: String? = nil, effort: String? = nil, vibes: Bool = false) {
-        RecentFolders.add(cwd)
         // VIBES MODE flies over Planning unless its options say otherwise.
         let mode: StartMode = (vibes || self.vibes != nil) && vibesOptions.skipPlanning ? .build : mode
         var card = Card(title: title.trimmingCharacters(in: .whitespacesAndNewlines), cwd: cwd, stage: mode.stage)
@@ -197,6 +204,35 @@ final class Board: ObservableObject {
             save()
             start(card, prompt: prompt)
         }
+    }
+
+    /// The repos a new card can start in: those whose folder is still there.
+    /// Settings shows the rest.
+    var availableRepos: [Repo] {
+        repos.filter { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    /// The repo a new card starts in: the one picked last while it is still
+    /// available, else the first.
+    var pickedRepo: Repo? {
+        let available = availableRepos
+        return available.first { $0.id == pickedRepoId } ?? available.first
+    }
+
+    /// The repo for `path`, added to the list if it isn't on it yet.
+    @discardableResult
+    func addRepo(path: String) -> Repo {
+        let repo = Repo(path: path)
+        if let existing = repos.first(where: { $0.path == repo.path }) { return existing }
+        repos.append(repo)
+        save()
+        return repo
+    }
+
+    /// Takes a repo off the list. Its cards keep working where they are.
+    func removeRepo(_ id: UUID) {
+        repos.removeAll { $0.id == id }
+        save()
     }
 
     func select(_ id: UUID) {
@@ -889,10 +925,13 @@ final class Board: ObservableObject {
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: storeURL) else { return }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        guard let saved = try? decoder.decode(SavedBoard.self, from: data) else { return }
+        guard let data = try? Data(contentsOf: storeURL),
+              let saved = try? decoder.decode(SavedBoard.self, from: data) else {
+            repos = seededRepos()
+            return
+        }
         // Nothing is running after a restart; a card left mid-turn says so.
         cards = saved.cards.map { card in
             var card = card
@@ -900,6 +939,8 @@ final class Board: ObservableObject {
             card.background = nil
             return card
         }
+        // Before anything below saves the board.
+        repos = saved.repos ?? seededRepos()
         // Launch lands on the board; opening a card is what starts its session.
         updateBadge()
         vibes = saved.vibes
@@ -908,11 +949,20 @@ final class Board: ObservableObject {
         pendingRemovals.forEach(removeWorktree)
     }
 
+    /// A board saved before there were repos starts with the folders its
+    /// cards were made in, and the ones the new card sheet remembered. Not
+    /// a scratch folder in /tmp, which is where smoke tests start cards.
+    private func seededRepos() -> [Repo] {
+        let recent = UserDefaults.standard.stringArray(forKey: "recentFolders") ?? []
+        return Repo.seeded(from: recent + cards.compactMap { $0.repoPath ?? ($0.worktreePath == nil ? $0.cwd : nil) })
+            .filter { !$0.path.hasPrefix("/tmp/") && !$0.path.hasPrefix("/private/tmp/") && FileManager.default.fileExists(atPath: $0.path) }
+    }
+
     private func save() {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(SavedBoard(cards: cards, selectedId: selectedId, pendingRemovals: pendingRemovals, vibes: vibes, vibesOptions: vibesOptions)) else { return }
+        guard let data = try? encoder.encode(SavedBoard(cards: cards, selectedId: selectedId, pendingRemovals: pendingRemovals, vibes: vibes, vibesOptions: vibesOptions, repos: repos)) else { return }
         try? data.write(to: storeURL, options: .atomic)
         // Every change comes through here, so the hooks never answer off a stale list.
         hooks?.vibesCards.set(Set(cards.filter(inVibes).map(\.id)))
@@ -931,26 +981,12 @@ final class Board: ObservableObject {
         var pendingRemovals: [WorktreeRemoval]?
         var vibes: VibesLedger?
         var vibesOptions: VibesOptions?
+        var repos: [Repo]?
     }
 
     private struct WorktreeRemoval: Codable, Equatable {
         var path: String
         var repo: String
         var branch: String?
-    }
-}
-
-/// The folders cards were last started in, most recent first.
-enum RecentFolders {
-    private static let key = "recentFolders"
-
-    static var all: [String] {
-        (UserDefaults.standard.stringArray(forKey: key) ?? []).filter { FileManager.default.fileExists(atPath: $0) }
-    }
-
-    static func add(_ path: String) {
-        var list = all.filter { $0 != path }
-        list.insert(path, at: 0)
-        UserDefaults.standard.set(Array(list.prefix(10)), forKey: key)
     }
 }

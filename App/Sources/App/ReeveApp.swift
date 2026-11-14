@@ -15,6 +15,12 @@ struct ReeveApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1400, height: 900)
         .commands { BoardCommands(board: delegate.board) }
+
+        Settings {
+            ReposSettings()
+                .environmentObject(delegate.board)
+                .preferredColorScheme(.dark)
+        }
     }
 }
 
