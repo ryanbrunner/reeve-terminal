@@ -19,8 +19,11 @@ targets:
   Reeve:
     type: application
     platform: macOS
+    # Synced folders: Xcode lists their files itself, so files added or
+    # renamed show up without running xcodegen again.
     sources:
       - path: App/Sources
+        type: syncedFolder
       - path: App/Resources
         buildPhase: resources
     # The Preview tab shows dev servers, often plain http on a name other than
@@ -74,6 +77,7 @@ targets:
     platform: macOS
     sources:
       - path: ReeveKit/Sources/reeve
+        type: syncedFolder
     dependencies:
       - package: ReeveKit
         product: ReeveKit
