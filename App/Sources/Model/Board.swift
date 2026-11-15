@@ -18,7 +18,7 @@ final class Board: ObservableObject {
     /// The repo picked for the last new card, so a run of cards starts in
     /// the same one.
     @Published var pickedRepoId: UUID? {
-        didSet { UserDefaults.standard.set(pickedRepoId?.uuidString, forKey: "newCardRepo") }
+        didSet { Preferences.store.set(pickedRepoId?.uuidString, forKey: "newCardRepo") }
     }
     /// The card open over the board, if any.
     @Published var selectedId: UUID?
@@ -113,7 +113,7 @@ final class Board: ObservableObject {
         storeURL = dataDir.appendingPathComponent("board.json")
         reviewsDir = dataDir.appendingPathComponent("reviews", isDirectory: true)
         try? FileManager.default.createDirectory(at: reviewsDir, withIntermediateDirectories: true)
-        pickedRepoId = UserDefaults.standard.string(forKey: "newCardRepo").flatMap(UUID.init)
+        pickedRepoId = Preferences.store.string(forKey: "newCardRepo").flatMap(UUID.init)
         load()
 
         terminals.onStateChange = { [weak self] id, running, exitCode in
@@ -1187,7 +1187,7 @@ final class Board: ObservableObject {
     /// cards were made in, and the ones the new card sheet remembered. Not
     /// a scratch folder in /tmp, which is where smoke tests start cards.
     private func seededRepos() -> [Repo] {
-        let recent = UserDefaults.standard.stringArray(forKey: "recentFolders") ?? []
+        let recent = Preferences.store.stringArray(forKey: "recentFolders") ?? []
         return Repo.seeded(from: recent + cards.compactMap { $0.repoPath ?? ($0.worktreePath == nil ? $0.cwd : nil) })
             .filter { !$0.path.hasPrefix("/tmp/") && !$0.path.hasPrefix("/private/tmp/") && FileManager.default.fileExists(atPath: $0.path) }
     }

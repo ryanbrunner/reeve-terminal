@@ -1017,6 +1017,10 @@ import Testing
     @Test func dataDirectoryFollowsTheEnvironment() {
         #expect(DataDirectory.url(environment: ["REEVE_DATA_DIR": "/tmp/r"]).path == "/tmp/r")
         #expect(DataDirectory.url(environment: [:]).path.hasSuffix("Application Support/Reeve Terminal"))
+        // A Reeve on other data, as a smoke test runs, keeps its preferences apart.
+        #expect(DataDirectory.preferencesSuite(environment: [:]) == nil)
+        #expect(DataDirectory.preferencesSuite(environment: ["REEVE_DATA_DIR": ""]) == nil)
+        #expect(DataDirectory.preferencesSuite(environment: ["REEVE_DATA_DIR": "/tmp/r"]) == "com.ryanbrunner.reeve-terminal.other-data")
     }
 }
 

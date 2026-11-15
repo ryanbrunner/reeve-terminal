@@ -400,7 +400,7 @@ enum Smoke {
         check(card.worktreePath.map { $0.hasSuffix(Worktree.name(for: card.id)) } == true, "⌘↩ starts a card in a worktree of the picked repo")
         check(card.repoPath.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path } == URL(fileURLWithPath: repo.path).resolvingSymlinksInPath().path,
               "the card's repo is the picked one")
-        check(board.pickedRepo?.id == repo.id && UserDefaults.standard.string(forKey: "newCardRepo") == repo.id.uuidString, "the sheet remembers the repo")
+        check(board.pickedRepo?.id == repo.id && Preferences.store.string(forKey: "newCardRepo") == repo.id.uuidString, "the sheet remembers the repo")
         check(sheet.isVisible == false, "the sheet closes")
         await picture("3-board", NSApp.windows.first { $0.isVisible })
         board.close(card.id)
