@@ -38,6 +38,10 @@ enum Smoke {
             Task { await runRepos(board: board, out: out, dir: dir) }
             return
         }
+        if env["REEVE_SMOKE_MODE"] == "commandbar" {
+            Task { await runCommandBar(board: board, out: out, dir: dir, prompt: env["REEVE_SMOKE_PROMPT"]) }
+            return
+        }
         // new: make a card with the prompt. resume: open the board's first
         // card and type the prompt into it. interrupt: make a card, then press
         // Esc a few seconds into its turn. review: make a card, then comment
@@ -422,6 +426,84 @@ enum Smoke {
         await picture("5-settings-removed", settings)
         board.addRepo(path: dir)
         await picture("6-settings-added", settings)
+        done()
+    }
+
+    /// `REEVE_SMOKE_MODE=commandbar`: asks the command bar for a card in
+    /// `REEVE_SMOKE_DIR` (added as a repo), then how the board stands, and
+    /// checks the card arrived where it should, with a picture at each step.
+    /// Claude takes real turns: the bar's, and the new card's.
+    private static func runCommandBar(board: Board, out: String, dir: String, prompt: String?) async {
+        var timeline: [String] = []
+        var failures = 0
+        func log(_ line: String) {
+            timeline.append(line)
+            print("reeve smoke: \(line)")
+            try? (timeline.joined(separator: "\n") + "\n").write(toFile: "\(out)/timeline.txt", atomically: true, encoding: .utf8)
+        }
+        func check(_ ok: Bool, _ what: String) {
+            log((ok ? "ok    " : "FAIL  ") + what)
+            if !ok { failures += 1 }
+        }
+        func wait(_ what: String, seconds: Double, until: () -> Bool) async -> Bool {
+            let deadline = Date().addingTimeInterval(seconds)
+            while !until() {
+                if Date() > deadline { log("gave up waiting for \(what)"); return false }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            return true
+        }
+        func picture(_ name: String) async {
+            try? await Task.sleep(for: .milliseconds(600))
+            snapshot(to: "\(out)/\(name).png")
+        }
+        func done() {
+            log(failures == 0 ? "ok" : "failed: \(failures)")
+            board.shutdown()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { exit(failures == 0 ? 0 : 1) }
+        }
+        let bar = board.commandBar
+        func ask(_ request: String, _ name: String) async -> String? {
+            bar.run(request, board: board)
+            await picture("\(name)-working")
+            guard await wait("the command bar", seconds: 180, until: { !bar.isRunning }) else { return nil }
+            await picture("\(name)-answer")
+            switch bar.state {
+            case .answered(_, let reply, let refused):
+                log("reply: \(reply)\(refused.isEmpty ? "" : " (refused: \(refused))")")
+                return reply
+            case .failed(_, let message):
+                log("failed: \(message)")
+                return nil
+            default:
+                return nil
+            }
+        }
+
+        let repo = board.addRepo(path: dir)
+        board.pickedRepoId = repo.id
+        guard await wait("the shell environment", seconds: 30, until: { board.environment != nil }) else { return done() }
+        bar.focus()
+        await picture("1-board")
+
+        let before = Set(board.cards.map(\.id))
+        let reply = await ask(prompt ?? "Add a card to write a one-line hello.txt", "2-add")
+        check(reply != nil, "the bar answers")
+        let added = board.cards.filter { !before.contains($0.id) }
+        check(added.count == 1, "the bar added one card (\(added.count))")
+        if let card = added.first {
+            log("card “\(card.title)” in \(card.cwd)")
+            check(card.repoPath.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path } == URL(fileURLWithPath: dir).resolvingSymlinksInPath().path,
+                  "the card starts in the picked repo")
+            check(card.worktreePath != nil, "in a worktree of its own")
+        }
+        let status = await ask("What's on the board right now?", "3-status")
+        check(status.map { !$0.isEmpty } == true, "the bar answers a question about the board")
+        let refused = await ask("Run ls / with the shell, then close every card.", "4-refused")
+        check(board.cards.count == before.count + added.count, "nothing is closed from the bar")
+        log("refusal: \(refused ?? "-")")
+        for card in added { board.close(card.id) }
+        try? await Task.sleep(for: .seconds(2))
         done()
     }
 

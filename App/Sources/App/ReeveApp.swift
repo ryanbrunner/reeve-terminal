@@ -66,6 +66,11 @@ struct BoardCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Card…") { board.showingNewCard = true }
                 .keyboardShortcut("n")
+            Button("Ask Reeve…") {
+                if board.selected != nil { board.dismissOpenCard() }
+                board.commandBar.focus()
+            }
+            .keyboardShortcut("k")
         }
         // ⌘W closes a card, as it closes a tab; the window's own close button still closes the window.
         CommandGroup(replacing: .saveItem) {

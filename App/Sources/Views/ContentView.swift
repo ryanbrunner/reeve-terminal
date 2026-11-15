@@ -17,6 +17,7 @@ struct ContentView: View {
             if vibes { VibesLightsBehind() }
             VStack(spacing: 0) {
                 Header()
+                CommandBarAnswerView()
                 if vibes { VibesTicker(options: board.vibesOptions) }
                 ZStack {
                     BoardView()
@@ -42,6 +43,8 @@ struct ContentView: View {
             .animation(.easeOut(duration: 0.15), value: board.selectedId)
         }
         .animation(.easeOut(duration: 0.2), value: board.vibesArming)
+        .animation(.easeOut(duration: 0.15), value: board.commandBar.state)
+        .environmentObject(board.commandBar)
         .background(vibes ? Vibe.ground : Theme.ink)
         .ignoresSafeArea(.container, edges: .top)
         .environment(\.vibesStill, reduceMotion || board.selectedId != nil)
@@ -62,7 +65,9 @@ private struct Header: View {
             Wordmark(vibes: vibes)
             Tallies()
                 .padding(.leading, 8)
-            Spacer()
+            Spacer(minLength: 16)
+            CommandBarField()
+            Spacer(minLength: 16)
             // What happened while you were not being asked. Said once, on the
             // way out, and then gone.
             if let toast = board.vibesToast {

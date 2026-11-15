@@ -69,6 +69,8 @@ final class Board: ObservableObject {
 
     let terminals = Terminals()
     let previews = Previews()
+    /// The field above the board that runs a request through `reeve`.
+    let commandBar = CommandBarRunner()
     /// Claude Code is showing a dialog on these cards — a permission prompt,
     /// a question, a plan to approve — so typing into them would answer it.
     private(set) var dialogOpen: Set<UUID> = []
@@ -103,6 +105,8 @@ final class Board: ObservableObject {
     /// from a person's when the hook reports it.
     private var vibesPrompts: [UUID: String] = [:]
     private let dataDir: URL
+    /// Where the board lives, which the command bar's `reeve` is pointed at.
+    var dataDirectory: URL { dataDir }
     private let storeURL: URL
     /// Where each card's review goes to Claude and its replies come back.
     private let reviewsDir: URL

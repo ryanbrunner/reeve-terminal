@@ -1239,3 +1239,43 @@ import Testing
         #expect(decoded == repo)
     }
 }
+
+@Suite struct CommandBarTests {
+    @Test func runsOnlyReeveWithNothingOfThePersonsLoaded() {
+        let args = CommandBar.arguments(repos: ["/r/a"], startRepo: "/r/a")
+        func value(after flag: String) -> String? { args.firstIndex(of: flag).map { args[$0 + 1] } }
+        #expect(args.first == "-p")
+        #expect(value(after: "--tools") == "Bash")
+        #expect(value(after: "--allowedTools") == "Bash(reeve *)")
+        let denied = args.firstIndex(of: "--disallowedTools").map { Array(args[($0 + 1)...].prefix { !$0.hasPrefix("--") }) }
+        #expect(denied == ["Bash(reeve card close*)", "Bash(reeve *--force*)"])
+        #expect(value(after: "--permission-mode") == "dontAsk")
+        #expect(value(after: "--setting-sources") == "")
+        #expect(value(after: "--output-format") == "json")
+        #expect(args.contains("--no-session-persistence") && args.contains("--strict-mcp-config"))
+    }
+
+    @Test func promptNamesTheReposAndWhereNewCardsStart() {
+        let prompt = CommandBar.systemPrompt(repos: ["/r/a", "/r/b"], startRepo: "/r/b")
+        #expect(prompt.contains("- /r/a\n- /r/b"))
+        #expect(prompt.contains("Use /r/b unless the person names another."))
+        #expect(prompt.contains("Always pass --cwd"))
+        #expect(prompt.contains(CLIUsage.text))
+        #expect(CommandBar.systemPrompt(repos: [], startRepo: nil).contains("no repos on the list"))
+    }
+
+    @Test func readsTheReplyAndWhatWasRefused() throws {
+        let json = """
+        {"type":"result","subtype":"success","is_error":false,"result":"  Added “Fix login”. \\n",
+         "permission_denials":[{"tool_name":"Bash","tool_use_id":"t1","tool_input":{"command":"reeve card close abc"}}]}
+        """
+        let answer = try CommandBar.parse(Data(json.utf8))
+        #expect(answer == CommandBarAnswer(reply: "Added “Fix login”.", refused: ["reeve card close abc"]))
+    }
+
+    @Test func anErrorIsThrown() {
+        let json = #"{"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login"}"#
+        #expect(throws: ClassifierError.self) { try CommandBar.parse(Data(json.utf8)) }
+        #expect(throws: ClassifierError.self) { try CommandBar.parse(Data("nope".utf8)) }
+    }
+}

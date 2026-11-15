@@ -32,6 +32,14 @@ feature parity. What Reeve adds is the board.
   output: a title, a one-line summary, and any question Claude left you. This
   uses your existing Claude login, with no tools, no session saved and no
   settings loaded.
+- **Ask Reeve from the header.** The field at the top of the board (⌘K)
+  takes a request in plain words: "add a card to fix the login bug", "what's
+  in testing?", "move the icon card to release", "tell the PRs card to rebase".
+  Claude carries it out with `reeve` (below) and answers under the header.
+  It runs `claude -p` on your Claude login in the repo new cards start in,
+  with Bash as its only tool and `reeve` the only command it may run; closing
+  a card and `--force` are refused. No session is saved, and none of your
+  settings, hooks or MCP servers are loaded.
 - **You can still drag.** A card you drag is pinned in its new column until
   your next prompt, so the board never undoes your move behind your back.
 - **Cards start in a repo.** Reeve keeps a list of the folders you work in,
@@ -182,6 +190,7 @@ script/release fetch    # once Apple is done → build/release/Reeve.zip
 | | |
 |---|---|
 | ⌘N | New card |
+| ⌘K | Ask Reeve: the command bar above the board |
 | ⌘, | Settings: the repos new cards start in |
 | ⌘W | Close card (asks first if its session is live) |
 | ⌘1…⌘9 | Open card 1–9, in board order |
@@ -293,6 +302,11 @@ tab's Approve once the plan dialog is up and logs the mode it lands in.
 closes it, and opens Settings to take the repo off and put it back, with a
 picture of each window and a line per check in `timeline.txt`. Run it twice
 on one `REEVE_DATA_DIR` to see the list kept.
+
+`REEVE_SMOKE_MODE=commandbar` asks the command bar to add a card in
+`REEVE_SMOKE_DIR` (or `REEVE_SMOKE_PROMPT`), then how the board stands, then
+for something it may not do, and checks the card started in that repo and
+nothing was closed. Claude takes real turns.
 
 `REEVE_SMOKE_MODE=preview` checks the Preview tab instead, without Claude
 taking a turn. It makes a card with no prompt, then does what the card's
