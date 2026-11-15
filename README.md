@@ -25,8 +25,12 @@ feature parity. What Reeve adds is the board.
   - an open, draft or merged pull request for the card's branch (see the
     badge below) → **Release**
 
-  A pull request wins over everything else. Switching modes with ⇧⇥ fires no
-  hook, so the card moves on the next prompt or tool call.
+  A pull request wins over everything else. A card only moves forward on its
+  own: one in Testing stays there while Claude works on it again, and going
+  back into plan mode or closing a pull request leaves a card where it got
+  to. Moving it back is yours to do (drag it, or Move to… in its menu), and
+  it moves on from there. Switching modes with ⇧⇥ fires no hook, so the card
+  moves on the next prompt or tool call.
 - **The title and summary come from Claude.** When a turn ends, Reeve digests
   the session's transcript and asks `claude -p --model haiku` for structured
   output: a title, a one-line summary, and any question Claude left you. This

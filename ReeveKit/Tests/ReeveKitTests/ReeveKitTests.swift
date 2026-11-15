@@ -173,7 +173,7 @@ import Testing
     }
 
     @Test func planModeIsPlanning() {
-        #expect(card(.inProgress, mode: "plan").stage(running: true, hasChanges: true) == .planning)
+        #expect(card(.backlog, mode: "plan").stage(running: true, hasChanges: true) == .planning)
         #expect(card(.backlog, mode: "plan").stage(running: false, hasChanges: false) == .planning)
     }
 
@@ -181,7 +181,6 @@ import Testing
         for mode in ["auto", "default", "acceptEdits", "bypassPermissions"] {
             #expect(card(.planning, mode: mode).stage(running: true, hasChanges: false) == .inProgress)
         }
-        #expect(card(.testing, mode: "auto").stage(running: true, hasChanges: true) == .inProgress)
     }
 
     @Test func changedCodeAtTheEndOfATurnIsTesting() {
@@ -194,7 +193,30 @@ import Testing
         #expect(card(.testing, mode: "auto", pr: .open).stage(running: false, hasChanges: true) == .release)
         #expect(card(.inProgress, mode: "auto", pr: .draft).stage(running: true, hasChanges: false) == .release)
         #expect(card(.inProgress, mode: "plan", pr: .merged).stage(running: true, hasChanges: false) == .release)
-        #expect(card(.release, mode: "auto", pr: .closed).stage(running: false, hasChanges: true) == .testing)
+        #expect(card(.inProgress, mode: "auto", pr: .closed).stage(running: false, hasChanges: true) == .testing)
+    }
+
+    @Test func neverMovesBackwardsOnItsOwn() {
+        // Working on a card in Testing again leaves it there.
+        #expect(card(.testing, mode: "auto").stage(running: true, hasChanges: true) == .testing)
+        #expect(card(.testing, mode: "auto").stage(running: false, hasChanges: false) == .testing)
+        // Back in plan mode, or its pull request closed: still where it got to.
+        #expect(card(.inProgress, mode: "plan").stage(running: true, hasChanges: true) == .inProgress)
+        #expect(card(.testing, mode: "plan").stage(running: false, hasChanges: false) == .testing)
+        #expect(card(.release, mode: "auto", pr: .closed).stage(running: false, hasChanges: true) == .release)
+        #expect(card(.release, mode: "auto").stage(running: true, hasChanges: false) == .release)
+        #expect(Stage.allCases == Stage.allCases.sorted())
+    }
+
+    @Test func aPersonMovingItBackStartsItFromThere() {
+        // Dragged back to In Progress: it stays while pinned, then moves on
+        // from there once the person speaks to Claude.
+        let pinned = card(.inProgress, mode: "auto", pinned: true)
+        #expect(pinned.stage(running: false, hasChanges: true) == .inProgress)
+        var unpinned = pinned
+        unpinned.stagePinned = false
+        #expect(unpinned.stage(running: true, hasChanges: true) == .inProgress)
+        #expect(unpinned.stage(running: false, hasChanges: true) == .testing)
     }
 
     @Test func nothingKnownOrPinnedStaysPut() {
