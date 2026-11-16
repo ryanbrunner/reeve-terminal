@@ -17,8 +17,11 @@ cask "reeve" do
 
   depends_on macos: :sonoma
 
-  app "Reeve.app"
-  binary "#{appdir}/Reeve.app/Contents/Helpers/reeve"
+  # ~/Applications rather than /Applications: just for you, and no admin
+  # password to install or upgrade. Homebrew expands ~ in a target, but not
+  # in a source, so the binary's path is spelled out.
+  app "Reeve.app", target: "~/Applications/Reeve.app"
+  binary "#{Dir.home}/Applications/Reeve.app/Contents/Helpers/reeve"
 
   zap trash: [
     "~/Library/Application Support/Reeve Terminal",
