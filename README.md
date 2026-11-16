@@ -52,6 +52,14 @@ feature parity. What Reeve adds is the board.
   shows `+N` for the ones from other branches. Reeve asks your own `gh`
   at launch, when a turn ends and when you open the card. Without `gh` or a
   GitHub remote there is simply no badge.
+- **Clean up merged cards into the Archive.** The archive button in the
+  Release column's header archives every card whose pull requests have merged
+  (the one on its current branch is merged and none it opened is still open
+  or a draft). It asks first, ends each card's session, deletes its worktree
+  and moves the card to the Archive, opened from the button in the header. A
+  card whose worktree has uncommitted changes stays on the board. The Archive
+  lists each card with a link to its pull request, and you can remove entries
+  from it.
 - **Each open card has five tabs.** Terminal is the session. Plan shows the
   plan Claude wrote in plan mode, read from its file so later edits show,
   with a dot on the tab when a new one arrives. While Claude Code's plan

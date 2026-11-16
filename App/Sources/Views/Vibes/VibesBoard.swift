@@ -105,6 +105,7 @@ private struct VibesWell: View {
                     .foregroundStyle(.white)
                     .help("New card (⌘N)")
                 }
+                if stage == .release { CleanupButton(tint: .white) }
                 if closed {
                     Text("SKIPPED")
                         .font(.mono(10, .bold))

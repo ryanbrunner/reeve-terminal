@@ -48,6 +48,9 @@ struct ContentView: View {
         .sheet(isPresented: $board.showingNewCard) {
             NewCardSheet().environmentObject(board)
         }
+        .sheet(isPresented: $board.showingArchive) {
+            ArchiveView().environmentObject(board)
+        }
         .preferredColorScheme(.dark)
     }
 }
@@ -76,6 +79,8 @@ private struct Header: View {
             // Quiet until it is hovered: the one control here that changes
             // what Reeve is rather than what it shows.
             VibesSwitch(on: vibes) { board.toggleVibes() }
+            Button(board.archive.isEmpty ? "Archive" : "Archive \(board.archive.count)") { board.showingArchive = true }
+                .buttonStyle(SecondaryButtonStyle())
             Button("New Card") { board.showingNewCard = true }
                 .buttonStyle(PrimaryButtonStyle())
         }
