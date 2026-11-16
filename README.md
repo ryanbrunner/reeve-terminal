@@ -207,6 +207,7 @@ script/release fetch    # once Apple is done → build/release/Reeve.zip
 | ⌘W | Close card (asks first if its session is live) |
 | ⌘1…⌘9 | Open card 1–9, in board order |
 | ⇧⌘] / ⇧⌘[ | Next / previous card |
+| ⌘↩ | In a card's terminal: a new line in the prompt, rather than sending it |
 | ⌘B | Back to the board (the session keeps running) |
 | ⌥⌘1 / ⌥⌘2 / ⌥⌘3 / ⌥⌘4 / ⌥⌘5 | The open card's Terminal / Plan / Changes / Preview / PRs |
 | ⇧⌘V | VIBES MODE for the whole board |
