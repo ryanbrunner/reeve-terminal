@@ -13,6 +13,10 @@ import SwiftUI
 @MainActor
 final class Board: ObservableObject {
     @Published private(set) var cards: [Card] = []
+    /// Cards cleaned up once their pull requests merged, newest first. They
+    /// have no session or worktree any more; this is only a record.
+    @Published private(set) var archive: [Card] = []
+    @Published var showingArchive = false
     /// The folders a new card can start in.
     @Published private(set) var repos: [Repo] = []
     /// The repo picked for the last new card, so a run of cards starts in
@@ -393,8 +397,15 @@ final class Board: ObservableObject {
 
     /// Ends the card's session and removes its worktree. Every way a card
     /// leaves the board comes through here.
-    func close(_ id: UUID) {
+    func close(_ id: UUID, archiving: Bool = false) {
         let closing = card(id)
+        if archiving, var kept = closing {
+            kept.archivedAt = Date()
+            kept.activity = .idle
+            kept.waitingOn = nil
+            kept.background = nil
+            archive.insert(kept, at: 0)
+        }
         terminals.close(id)
         previews.close(id)
         // Only ever a worktree Reeve made: a card without one works in the
@@ -425,6 +436,42 @@ final class Board: ObservableObject {
         try? FileManager.default.removeItem(at: reviewURL(id))
         // Back to the board, rather than opening (and starting) a neighbour.
         if selectedId == id { selectedId = nil }
+        save()
+    }
+
+    /// The cards on the board whose pull requests have all merged.
+    var archivable: [Card] {
+        cards.filter(\.isFullyMerged)
+    }
+
+    /// Archives every card whose pull requests have merged: ends its session,
+    /// deletes its worktree and moves it to the archive. A card whose worktree
+    /// has uncommitted changes stays on the board, since deleting the worktree
+    /// would lose them. Returns how many were archived and how many were kept.
+    @discardableResult
+    func archiveMerged() async -> (archived: Int, kept: Int) {
+        var archived = 0
+        var kept = 0
+        for candidate in archivable {
+            var changes = 0
+            if let path = candidate.worktreePath, FileManager.default.fileExists(atPath: path) {
+                changes = await Worktrees.uncommittedChanges(at: path, env: environment)
+            }
+            // The board moved on while git was answering.
+            guard let current = card(candidate.id), current.isFullyMerged else { continue }
+            if changes > 0 {
+                kept += 1
+            } else {
+                close(current.id, archiving: true)
+                archived += 1
+            }
+        }
+        return (archived, kept)
+    }
+
+    /// Forgets an archived card for good.
+    func deleteArchived(_ id: UUID) {
+        archive.removeAll { $0.id == id }
         save()
     }
 
@@ -1183,6 +1230,7 @@ final class Board: ObservableObject {
         updateBadge()
         vibes = saved.vibes
         vibesOptions = saved.vibesOptions ?? VibesOptions()
+        archive = saved.archive ?? []
         pendingRemovals = saved.pendingRemovals ?? []
         pendingRemovals.forEach(removeWorktree)
     }
@@ -1200,7 +1248,7 @@ final class Board: ObservableObject {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(SavedBoard(cards: cards, selectedId: selectedId, pendingRemovals: pendingRemovals, vibes: vibes, vibesOptions: vibesOptions, repos: repos)) else { return }
+        guard let data = try? encoder.encode(SavedBoard(cards: cards, archive: archive, selectedId: selectedId, pendingRemovals: pendingRemovals, vibes: vibes, vibesOptions: vibesOptions, repos: repos)) else { return }
         try? data.write(to: storeURL, options: .atomic)
         // Every change comes through here, so the hooks never answer off a stale list.
         server?.vibesCards.set(Set(cards.filter(inVibes).map(\.id)))
@@ -1214,6 +1262,7 @@ final class Board: ObservableObject {
 
     private struct SavedBoard: Codable {
         var cards: [Card]
+        var archive: [Card]?
         var selectedId: UUID?
         /// Worktrees of closed cards that git hasn't finished removing.
         var pendingRemovals: [WorktreeRemoval]?

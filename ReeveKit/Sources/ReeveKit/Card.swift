@@ -147,6 +147,8 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     public var shippedAt: Date?
     /// Its branch was found on main once it shipped, not just said to be.
     public var merged: Bool?
+    /// When the card was cleaned up into the archive. Nil for a card on the board.
+    public var archivedAt: Date?
     public var createdAt: Date
     public var updatedAt: Date
 
@@ -189,6 +191,13 @@ extension Card {
     /// merged: the work has gone out for release.
     public var hasLivePullRequest: Bool {
         pullRequest.map { $0.state != .closed } ?? false
+    }
+
+    /// The card's pull request has merged and no other one it opened is still
+    /// open or draft: nothing is left to release, so cleanup may archive it.
+    public var isFullyMerged: Bool {
+        guard pullRequest?.state == .merged else { return false }
+        return !(pullRequests ?? []).contains { $0.state == .open || $0.state == .draft }
     }
 
     /// What a waiting card is waiting on, in a line: "Waiting on 2 subagents".

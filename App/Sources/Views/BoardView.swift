@@ -49,6 +49,7 @@ struct ColumnView: View {
                     .foregroundStyle(Theme.muted)
                     .help("New card (⌘N)")
                 }
+                if stage == .release { CleanupButton() }
             }
             .padding(.horizontal, 4)
             ScrollView(.vertical) {
@@ -78,6 +79,48 @@ struct ColumnView: View {
             withAnimation(.spring(duration: 0.35, bounce: 0.15)) { board.move(id, to: stage) }
             return true
         } isTargeted: { targeted = $0 }
+    }
+}
+
+/// The Release column's broom: archives every card whose pull requests have
+/// merged. Asks first, since it ends their sessions and deletes their worktrees.
+struct CleanupButton: View {
+    @EnvironmentObject var board: Board
+    var tint: Color = Theme.muted
+
+    var body: some View {
+        let count = board.archivable.count
+        Button {
+            Cleanup.confirm(board: board)
+        } label: {
+            Image(systemName: "archivebox").font(.system(size: 11, weight: .medium))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(tint.opacity(count > 0 ? 1 : 0.4))
+        .disabled(count == 0)
+        .help(count == 0 ? "Clean up: no cards have merged pull requests" : "Clean up \(count) merged card\(count == 1 ? "" : "s") into the archive")
+    }
+}
+
+enum Cleanup {
+    @MainActor
+    static func confirm(board: Board) {
+        let count = board.archivable.count
+        guard count > 0 else { return }
+        let alert = NSAlert()
+        alert.messageText = "Archive \(count) merged card\(count == 1 ? "" : "s")?"
+        alert.informativeText = "Their pull requests have merged. Each card's session ends and its worktree is deleted, and the card moves to the Archive. A card with uncommitted changes in its worktree stays on the board."
+        alert.addButton(withTitle: "Archive")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Task {
+            let result = await board.archiveMerged()
+            guard result.kept > 0 else { return }
+            let note = NSAlert()
+            note.messageText = "\(result.kept) card\(result.kept == 1 ? " was" : "s were") left on the board"
+            note.informativeText = "\(result.kept == 1 ? "Its" : "Their") worktree\(result.kept == 1 ? " has" : "s have") uncommitted changes. Commit or discard \(result.kept == 1 ? "them" : "those"), then clean up again."
+            note.runModal()
+        }
     }
 }
 

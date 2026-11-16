@@ -219,6 +219,24 @@ import Testing
         #expect(unpinned.stage(running: false, hasChanges: true) == .testing)
     }
 
+    @Test func onlyAMergedPullRequestWithNothingOpenIsFullyMerged() {
+        #expect(card(.release, mode: "auto", pr: .merged).isFullyMerged)
+        #expect(!card(.release, mode: "auto", pr: .open).isFullyMerged)
+        #expect(!card(.release, mode: "auto", pr: .draft).isFullyMerged)
+        #expect(!card(.release, mode: "auto", pr: .closed).isFullyMerged)
+        #expect(!card(.release, mode: "auto").isFullyMerged)
+
+        var another = card(.release, mode: "auto", pr: .merged)
+        another.pullRequests?.append(PullRequest(number: 2, state: .open, url: "https://github.com/o/r/pull/2", branch: "other"))
+        #expect(!another.isFullyMerged)
+        another.pullRequests?[1].state = .closed
+        #expect(another.isFullyMerged)
+
+        var left = card(.release, mode: "auto", pr: .merged)
+        left.headBranch = "next-thing"
+        #expect(!left.isFullyMerged)
+    }
+
     @Test func nothingKnownOrPinnedStaysPut() {
         #expect(card(.backlog, mode: nil).stage(running: true, hasChanges: true) == .backlog)
         #expect(card(.release, mode: "plan", pinned: true).stage(running: true, hasChanges: false) == .release)
