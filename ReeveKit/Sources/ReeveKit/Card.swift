@@ -3,7 +3,7 @@ import Foundation
 /// The board's five columns, left to right. A card's column is where its work
 /// is; the card works that out itself from the session's state (see
 /// `Card.stage(running:hasChanges:)`), and a person can drag it somewhere else.
-public enum Stage: String, Codable, CaseIterable, Identifiable, Sendable {
+public enum Stage: String, Codable, CaseIterable, Identifiable, Comparable, Sendable {
     case backlog
     case planning
     case inProgress = "in_progress"
@@ -11,6 +11,11 @@ public enum Stage: String, Codable, CaseIterable, Identifiable, Sendable {
     case release
 
     public var id: String { rawValue }
+
+    /// Left to right on the board.
+    public static func < (a: Stage, b: Stage) -> Bool {
+        allCases.firstIndex(of: a)! < allCases.firstIndex(of: b)!
+    }
 
     public var label: String {
         switch self {
@@ -206,8 +211,16 @@ extension Card {
     /// Otherwise the card stays put, apart from leaving backlog or planning
     /// once the session is out of plan mode. A card a person put somewhere
     /// stays there.
+    ///
+    /// It only ever moves forward: a card in Testing stays there while Claude
+    /// works on it again, and only a person moves it back. From the column
+    /// they put it in, it moves forward again once they next speak to Claude.
     public func stage(running: Bool, hasChanges: Bool) -> Stage {
         if stagePinned { return stage }
+        return max(stage, sessionStage(running: running, hasChanges: hasChanges))
+    }
+
+    private func sessionStage(running: Bool, hasChanges: Bool) -> Stage {
         if hasLivePullRequest { return .release }
         guard let permissionMode else { return stage }
         if permissionMode == "plan" { return .planning }
