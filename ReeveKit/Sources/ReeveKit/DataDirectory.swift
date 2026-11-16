@@ -11,6 +11,15 @@ public enum DataDirectory {
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Reeve Terminal", isDirectory: true)
     }
+
+    /// The preferences domain for a Reeve on other data, or nil for the app's
+    /// own. A smoke test runs a second Reeve on a `REEVE_DATA_DIR` of its own;
+    /// with the app's preferences too it would leave its scratch repo, model
+    /// and effort as yours.
+    public static func preferencesSuite(environment: [String: String] = ProcessInfo.processInfo.environment) -> String? {
+        guard let dir = environment["REEVE_DATA_DIR"], !dir.isEmpty else { return nil }
+        return "com.ryanbrunner.reeve-terminal.other-data"
+    }
 }
 
 /// How the running app is reached: its loopback port and a token that every

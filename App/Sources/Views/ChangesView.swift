@@ -24,7 +24,7 @@ struct ChangesView: View {
     @State private var collapsed: Set<String> = []
     /// The file last picked in the tree, for the diff to scroll to.
     @State private var jump: Jump?
-    @AppStorage("changesTree") private var showTree = true
+    @AppStorage("changesTree", store: Preferences.store) private var showTree = true
     /// The comment or reply being written, if any.
     @State private var editing: Editing?
     /// What's been typed in composers, kept here because diff rows come and

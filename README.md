@@ -269,6 +269,11 @@ The board, and the list of repos, are saved to `~/Library/Application Support/Re
 Set `REEVE_DATA_DIR` to put it somewhere else. `reeve` reads it too, to find
 the same app.
 
+A Reeve on another `REEVE_DATA_DIR` also keeps its preferences (the repo,
+model and effort the new card sheet remembers) apart from yours, in
+`com.ryanbrunner.reeve-terminal.other-data`, so a smoke test never changes
+where your next card starts.
+
 ## Smoke test
 
 This runs the whole loop with nobody at the keyboard. It makes a card, lets

@@ -13,8 +13,8 @@ struct NewCardSheet: View {
     @State private var showingDetails = false
     /// The last card's choices, so a run of cards starts the same way. Empty
     /// means the person's own default.
-    @AppStorage("newCardModel") private var model = ""
-    @AppStorage("newCardEffort") private var effort = ""
+    @AppStorage("newCardModel", store: Preferences.store) private var model = ""
+    @AppStorage("newCardEffort", store: Preferences.store) private var effort = ""
     @State private var vibes = false
 
     var body: some View {
