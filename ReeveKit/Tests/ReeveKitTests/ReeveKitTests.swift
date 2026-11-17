@@ -1453,3 +1453,86 @@ import Testing
         #expect(old.lanes == nil)
     }
 }
+
+@Suite struct IdeasTests {
+    private let since = Date(timeIntervalSince1970: 1_000)
+
+    private func card(_ title: String, repo: String = "/code/app", stage: Stage = .release, shipped: Double? = nil) -> Card {
+        var card = Card(title: title, cwd: repo + "/.claude/worktrees/x", stage: stage)
+        card.repoPath = repo
+        card.shippedAt = shipped.map { Date(timeIntervalSince1970: $0) }
+        return card
+    }
+
+    @Test func theLastCardToShipSinceTheSwitchIsAskedOnce() {
+        let first = card("First", shipped: 2_000)
+        var last = card("Last", shipped: 3_000)
+        let before = card("Before the switch", shipped: 500)
+        #expect(Ideas.source(for: "/code/app", board: [first, last, before], archive: [], since: since)?.id == last.id)
+        last.ideasAsked = true
+        // Not the one before it: that would work back through the repo's history.
+        #expect(Ideas.source(for: "/code/app", board: [first, last], archive: [], since: since) == nil)
+    }
+
+    @Test func notWhileTheRepoHasWorkOpen() {
+        let shipped = card("Shipped", shipped: 2_000)
+        #expect(Ideas.source(for: "/code/app", board: [shipped, card("Building", stage: .inProgress)], archive: [], since: since) == nil)
+        var queued = Card(title: "Queued", cwd: "/code/app", stage: .backlog)
+        queued.queued = true
+        #expect(Ideas.source(for: "/code/app", board: [shipped, queued], archive: [], since: since) == nil)
+        // Another repo's work, or a pull request in Release, doesn't hold it up.
+        let elsewhere = card("Elsewhere", repo: "/code/other", stage: .inProgress)
+        let releasing = card("Releasing", stage: .release)
+        #expect(Ideas.source(for: "/code/app", board: [shipped, elsewhere, releasing], archive: [], since: since)?.id == shipped.id)
+    }
+
+    @Test func anArchivedCardStillCounts() {
+        var archived = card("Archived", shipped: 2_000)
+        archived.archivedAt = Date(timeIntervalSince1970: 2_500)
+        #expect(Ideas.source(for: "/code/app", board: [], archive: [archived], since: since)?.id == archived.id)
+        #expect(Ideas.source(for: "/code/app", board: [], archive: [], since: since) == nil)
+    }
+
+    @Test func acceptsAtMostThreeNewNamedIdeas() {
+        let ideas = ["Shipped before", "  ", "Dark mode", "dark mode ", "Search", "Export", "Import"]
+            .map { Ideas.Idea(title: $0, body: "b") }
+        #expect(Ideas.accepted(ideas, existingTitles: ["shipped before"]).map(\.title) == ["Dark mode", "Search", "Export"])
+    }
+
+    @Test func readsIdeasAndFoldsCriteriaIntoTheBrief() throws {
+        let out = #"{"type":"result","is_error":false,"result":"","structured_output":{"ideas":[{"title":" Dark mode ","body":"Add it.","criteria":["Toggle in settings"," "]}]}}"#
+        let ideas = try Ideas.parse(Data(out.utf8))
+        #expect(ideas == [Ideas.Idea(title: "Dark mode", body: "Add it.", criteria: ["Toggle in settings"])])
+        #expect(ideas[0].brief == "Add it.\n\nDone when:\n- Toggle in settings")
+        #expect(Ideas.Idea(title: "T", body: "Just this.").brief == "Just this.")
+        let none = #"{"type":"result","is_error":false,"result":"{\"ideas\":[]}"}"#
+        #expect(try Ideas.parse(Data(none.utf8)).isEmpty)
+    }
+
+    @Test func schemaIsValidJSONAndToolsOnlyRead() throws {
+        _ = try JSONSerialization.jsonObject(with: Data(Ideas.schema.utf8))
+        let args = Ideas.arguments(prompt: "p")
+        #expect(args[args.firstIndex(of: "--tools")! + 1] == "Read,Grep,Glob")
+    }
+
+    @Test func promptListsTheRepoNewestFirst() {
+        var older = card("Older")
+        older.createdAt = Date(timeIntervalSince1970: 1)
+        var newer = card("Newer", shipped: 2_000)
+        newer.createdAt = Date(timeIntervalSince1970: 2)
+        newer.summary = "Added a thing"
+        let prompt = Ideas.prompt(repo: "/code/app", directory: "/code/app", source: newer, history: [older, newer])
+        #expect(prompt.contains("**app**"))
+        #expect(prompt.contains("- Newer (shipped)\n- Older (Release)"))
+        #expect(prompt.contains("Added a thing"))
+    }
+
+    @Test func boardsSavedBeforeIdeasStillLoad() throws {
+        var ledger = VibesLedger(since: since)
+        ledger.ideas = 2
+        var json = try JSONSerialization.jsonObject(with: API.encoder().encode(ledger)) as! [String: Any]
+        json["ideas"] = nil
+        let old = try API.decoder().decode(VibesLedger.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(old.ideas == nil && old.since == since)
+    }
+}

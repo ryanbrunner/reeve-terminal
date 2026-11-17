@@ -81,6 +81,29 @@ enum StageClassifier {
     }
 }
 
+/// Asks Claude what a repo should build next, from inside it. See `Ideas`.
+enum IdeaGenerator {
+    static func think(prompt: String, in directory: String, env: ShellEnvironment) async throws -> [Ideas.Idea] {
+        guard let claude = env.claudePath else { throw ClassifierError.failed("Couldn't find claude on your PATH") }
+        // No card's hook port or id: its hooks would report on a real card.
+        let environment = Launch.environment(base: env.baseEnvironment, hookPort: 0, cardId: UUID())
+            .filter { $0.key != "REEVE_HOOK_PORT" && $0.key != "REEVE_CARD_ID" && $0.key != "GLOSS_HOST" }
+        let result = try await Subprocess.run(
+            claude,
+            Ideas.arguments(prompt: prompt),
+            environment: environment,
+            currentDirectory: directory,
+            // Reading a repo takes a while; this is a ceiling, not a guess.
+            timeout: 600
+        )
+        if result.status != 0, result.stdout.isEmpty {
+            let err = String(decoding: result.stderr, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            throw ClassifierError.failed(err.isEmpty ? "claude -p exited \(result.status)" : err)
+        }
+        return try Ideas.parse(result.stdout)
+    }
+}
+
 /// Runs a process to completion off the main thread.
 enum Subprocess {
     struct Result {

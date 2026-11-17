@@ -698,6 +698,7 @@ let vibesVerb = Verb(
         ["plans and reviews skipped", String(ledger.reviewsSkipped)],
         ["questions answered", String(ledger.questionsSelfAnswered)],
         ["prompts from you", String(ledger.humanApprovals)],
+        ["ideas of its own", String(ledger.ideas ?? 0)],
     ], indent: "  ")
     if !ledger.log.isEmpty { text += "\n\n" + ledger.log.map { "  " + $0 }.joined(separator: "\n") }
     out(text)
