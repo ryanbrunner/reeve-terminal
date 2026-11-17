@@ -592,7 +592,8 @@ let closeVerb = Verb(
 
     Ends the card's session and deletes its worktree, uncommitted changes and
     all. The branch goes too unless it has commits. This can't be undone, so
-    a live session or uncommitted work is refused without --force.
+    uncommitted changes, unmerged commits or an open pull request is refused
+    without --force.
     """,
     flags: ["force", "json"]
 ) { args in

@@ -80,7 +80,7 @@ enum APIRouter {
             let card = try card(id, board)
             let force = ["1", "true", "yes"].contains(request.query["force"] ?? "")
             if !force, let losing = await board.closeWouldLose(card.id) {
-                throw Failure(status: 409, error: APIError("not closed: \(losing)",
+                throw Failure(status: 409, error: APIError("not closed: \(losing.summary)",
                                                            detail: "closing deletes the worktree and its branch; pass --force to close it anyway"))
             }
             let closing = board.apiCard(board.card(card.id) ?? card)

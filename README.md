@@ -279,8 +279,8 @@ reeve open [<card>] · status · models · doctor
 - **Backlog cards.** `card add --mode backlog` makes one, with `--prompt`
   kept until it starts. `move` to planning or in-progress starts it; `run`
   and `reply` refuse it until then.
-- **`close`.** Deletes the worktree, as ⌘W does. It refuses a live session or
-  uncommitted work unless you pass `--force`.
+- **`close`.** Deletes the worktree, as ⌘W does. It refuses uncommitted
+  changes, unmerged commits or an open pull request unless you pass `--force`.
 
 **Exit codes:**
 

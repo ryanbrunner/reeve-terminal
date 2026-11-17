@@ -81,6 +81,16 @@ enum Worktrees {
         return Int(count.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
     }
 
+    /// How many commits the worktree at `path` has that the repo's checked-out
+    /// branch doesn't. A squash merge leaves them out too, so ask the pull
+    /// request first.
+    static func unmergedCommits(at path: String, repo: String, env: ShellEnvironment?) async -> Int {
+        guard let head = try? await git(["rev-parse", "HEAD"], in: repo, env: env).trimmingCharacters(in: .whitespacesAndNewlines),
+              !head.isEmpty,
+              let count = try? await git(["rev-list", "--count", "HEAD", "^\(head)"], in: path, env: env) else { return 0 }
+        return Int(count.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+
     /// The branch checked out at `path` now, which Claude may have switched
     /// from the one Reeve made. Nil when HEAD is detached.
     static func currentBranch(at path: String, env: ShellEnvironment?) async -> String? {

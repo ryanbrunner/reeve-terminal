@@ -374,23 +374,19 @@ enum Rename {
 }
 
 enum CloseCard {
-    /// Closing ends the card's session and deletes its worktree, so a live
-    /// one, or one with work not yet committed, asks first.
+    /// Closing ends the card's session and deletes its worktree, so one with
+    /// code that hasn't landed (uncommitted changes, unmerged commits, an open
+    /// pull request) asks first. Anything else just closes.
     @MainActor
     static func confirm(card: Card, board: Board) {
         Task {
-            let live = board.live.contains(card.id)
-            var changes = 0
-            if let path = card.worktreePath {
-                changes = await Worktrees.uncommittedChanges(at: path, env: board.environment)
-            }
-            guard live || changes > 0 else {
+            guard let unmerged = await board.closeWouldLose(card.id) else {
                 board.close(card.id)
                 return
             }
             let alert = NSAlert()
             alert.messageText = "Close “\(board.displayTitle(card))”?"
-            alert.informativeText = message(card: card, live: live, changes: changes)
+            alert.informativeText = message(card: card, live: board.live.contains(card.id), unmerged: unmerged)
             alert.addButton(withTitle: "Close Card")
             alert.addButton(withTitle: "Cancel")
             if alert.runModal() == .alertFirstButtonReturn {
@@ -399,16 +395,24 @@ enum CloseCard {
         }
     }
 
-    private static func message(card: Card, live: Bool, changes: Int) -> String {
-        guard card.worktreePath != nil else {
-            return "This ends its Claude Code session. The conversation stays in Claude Code's history, and claude --resume can still open it."
-        }
+    private static func message(card: Card, live: Bool, unmerged: Board.Unmerged) -> String {
         var lines: [String] = []
+        let changes = unmerged.uncommitted
         if changes > 0 {
             lines.append("Its worktree has \(changes == 1 ? "1 file" : "\(changes) files") with uncommitted changes, which will be lost.")
         }
+        if unmerged.commits > 0 {
+            lines.append("\(unmerged.commits == 1 ? "1 commit" : "\(unmerged.commits) commits") on \(card.branch ?? "its branch") \(unmerged.commits == 1 ? "isn't" : "aren't") merged.")
+        }
+        let prs = unmerged.openPullRequests
+        if !prs.isEmpty {
+            let numbers = prs.map { "#\($0.number)" }.joined(separator: ", ")
+            lines.append("Pull request\(prs.count == 1 ? "" : "s") \(numbers) \(prs.count == 1 ? "is" : "are") still open.")
+        }
         if live { lines.append("This ends its Claude Code session.") }
-        lines.append("The worktree is deleted. Anything committed on \(card.branch ?? "its branch") stays in the repo.")
+        if card.worktreePath != nil {
+            lines.append("The worktree is deleted. Anything committed on \(card.branch ?? "its branch") stays in the repo.")
+        }
         return lines.joined(separator: " ")
     }
 }

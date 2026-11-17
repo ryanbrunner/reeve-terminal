@@ -648,17 +648,42 @@ final class Board: ObservableObject {
         }
     }
 
-    /// What closing the card would lose that a person might want: its live
-    /// session, and work in its worktree not yet committed. Nil when nothing.
-    func closeWouldLose(_ id: UUID) async -> String? {
-        guard let card = card(id) else { return nil }
-        var reasons: [String] = []
-        if live.contains(id) { reasons.append("its session is live") }
-        if let path = card.worktreePath {
-            let changes = await Worktrees.uncommittedChanges(at: path, env: environment)
-            if changes > 0 { reasons.append("its worktree has \(changes) uncommitted change\(changes == 1 ? "" : "s")") }
+    /// Code of the card's that hasn't landed, which closing would throw away
+    /// or leave behind.
+    struct Unmerged {
+        var uncommitted = 0
+        var commits = 0
+        var openPullRequests: [PullRequest] = []
+
+        var isEmpty: Bool { uncommitted == 0 && commits == 0 && openPullRequests.isEmpty }
+
+        /// In a line: "its worktree has 2 uncommitted changes and PR #42 is still open".
+        var summary: String {
+            var reasons: [String] = []
+            if uncommitted > 0 { reasons.append("its worktree has \(uncommitted) uncommitted change\(uncommitted == 1 ? "" : "s")") }
+            if commits > 0 { reasons.append("its branch has \(commits) unmerged commit\(commits == 1 ? "" : "s")") }
+            if !openPullRequests.isEmpty {
+                let numbers = openPullRequests.map { "#\($0.number)" }.joined(separator: ", ")
+                reasons.append("PR\(openPullRequests.count == 1 ? "" : "s") \(numbers) \(openPullRequests.count == 1 ? "is" : "are") still open")
+            }
+            return reasons.joined(separator: " and ")
         }
-        return reasons.isEmpty ? nil : reasons.joined(separator: " and ")
+    }
+
+    /// What closing the card would lose that a person might want: work in its
+    /// worktree not yet committed, commits not yet merged, and pull requests
+    /// still open. A live session alone isn't worth asking about. Nil when nothing.
+    func closeWouldLose(_ id: UUID) async -> Unmerged? {
+        guard let card = card(id) else { return nil }
+        var unmerged = Unmerged()
+        unmerged.openPullRequests = (card.pullRequests ?? []).filter { $0.state == .open || $0.state == .draft }
+        if let path = card.worktreePath, FileManager.default.fileExists(atPath: path) {
+            unmerged.uncommitted = await Worktrees.uncommittedChanges(at: path, env: environment)
+            if let repo = card.repoPath, card.pullRequest?.state != .merged {
+                unmerged.commits = await Worktrees.unmergedCommits(at: path, repo: repo, env: environment)
+            }
+        }
+        return unmerged.isEmpty ? nil : unmerged
     }
 
     /// Starts the card's session if it isn't running, without opening the card.
