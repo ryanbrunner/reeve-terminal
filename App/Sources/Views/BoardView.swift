@@ -128,6 +128,7 @@ private struct LaneTitle: View {
             Text("\(board.cards(inLane: lane.id).count)")
                 .font(.mono(11, .medium))
                 .foregroundStyle(Theme.muted.opacity(0.6))
+            LaneBar(lane: lane)
             Text(summary.isEmpty ? "No cards" : summary)
                 .font(.geist(12))
                 .foregroundStyle(Theme.muted.opacity(0.7))
@@ -156,6 +157,47 @@ private struct LaneTitle: View {
         .contextMenu {
             Button(collapsed ? "Expand" : "Collapse") { collapsed.toggle() }
             Button("Rename…") { LaneName.ask(renaming: lane, board: board) }
+        }
+    }
+}
+
+/// A lane's cards by column, as one thin bar: each column's share of the
+/// lane in its own colour, left to right as on the board.
+private struct LaneBar: View {
+    @EnvironmentObject var board: Board
+    let lane: Lane
+
+    var body: some View {
+        let counts = Stage.allCases.map { (stage: $0, count: board.cards(in: $0, lane: lane.id).count) }
+        let total = counts.reduce(0) { $0 + $1.count }
+        GeometryReader { geo in
+            let filled = counts.filter { $0.count > 0 }
+            let gaps = CGFloat(max(filled.count - 1, 0)) * 2
+            HStack(spacing: 2) {
+                ForEach(filled, id: \.stage) { part in
+                    Capsule()
+                        .fill(part.stage.tint)
+                        .frame(width: max(2, (geo.size.width - gaps) * CGFloat(part.count) / CGFloat(total)))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(width: 72, height: 4)
+        .background(Capsule().fill(Theme.edge.opacity(total == 0 ? 0.6 : 0)))
+        .animation(.easeInOut(duration: 0.25), value: counts.map(\.count))
+        .help(counts.map { "\($0.count) \($0.stage.label)" }.joined(separator: " · "))
+    }
+}
+
+private extension Stage {
+    /// Cool to warm to done, as a card travels the board.
+    var tint: Color {
+        switch self {
+        case .backlog: Theme.slate500
+        case .planning: Theme.indigo400
+        case .inProgress: Theme.sky400
+        case .testing: Color(hex: 0xFBBF24)
+        case .release: Color(hex: 0x10B981)
         }
     }
 }
