@@ -25,6 +25,11 @@ struct CardFace: View {
         vibes && card.shippedAt != nil
     }
 
+    /// The card it waits on, while that one hasn't merged.
+    private var blocker: Card? {
+        board.blocker(of: card.id)
+    }
+
     var body: some View {
         let tone = shipped ? nil : GlowTone(card.activity)
         VStack(alignment: .leading, spacing: 6) {
@@ -61,6 +66,13 @@ struct CardFace: View {
                 Text(summary)
                     .font(.mono(11))
                     .foregroundStyle(card.activity == .running ? Theme.sky200.opacity(0.7) : Theme.muted)
+                    .lineLimit(2)
+            }
+            if !vibes, let blocker {
+                // What it waits on, so a card that won't start says why without being opened.
+                Label("Waits on “\(board.displayTitle(blocker))” · \(Dependency.status(of: blocker))", systemImage: "arrow.turn.down.right")
+                    .font(.geist(12))
+                    .foregroundStyle(Theme.amber100.opacity(0.85))
                     .lineLimit(2)
             }
             footer
@@ -113,10 +125,10 @@ struct CardFace: View {
         .contentShape(RoundedRectangle(cornerRadius: 6))
         .help(help)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel([board.displayTitle(card), label, card.pullRequest?.spoken, card.morePullRequestsSpoken].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityLabel([board.displayTitle(card), label, waitsOnSpoken, card.pullRequest?.spoken, card.morePullRequestsSpoken].compactMap { $0 }.joined(separator: ", "))
         .accessibilityActions {
             // Combined into one element, the card would otherwise hide its button.
-            if !vibes, card.canMergePullRequest, let pr = card.pullRequest {
+            if !vibes, card.canMergePullRequest, blocker == nil, let pr = card.pullRequest {
                 Button("Merge pull request #\(pr.number)") { Task { try? await board.mergePullRequest(card.id) } }
             }
         }
@@ -126,7 +138,8 @@ struct CardFace: View {
     private var footer: some View {
         if vibes {
             HStack(spacing: 6) {
-                Text(Vibes.chip(stage: card.stage, activity: card.activity, shipped: card.shippedAt != nil, merged: card.merged == true, options: board.vibesOptions))
+                Text(Vibes.chip(stage: card.stage, activity: card.activity, shipped: card.shippedAt != nil, merged: card.merged == true,
+                                waitingOn: blocker.map { "“\(board.displayTitle($0))”" }, options: board.vibesOptions))
                     .font(.mono(10))
                     .tracking(0.4)
                     .foregroundStyle(.white)
@@ -168,7 +181,7 @@ struct CardFace: View {
                     .help("You put this card here. It stays until you next prompt Claude.")
             }
             Spacer(minLength: 0)
-            if card.canMergePullRequest || board.merging.contains(card.id) {
+            if (card.canMergePullRequest && blocker == nil) || board.merging.contains(card.id) {
                 MergeButton(card: card)
             }
         }
@@ -199,8 +212,14 @@ struct CardFace: View {
         }
     }
 
+    /// What it waits on, in words, for its tooltip and VoiceOver.
+    private var waitsOnSpoken: String? {
+        blocker.map { "waits on “\(board.displayTitle($0))”, \(Dependency.status(of: $0))" }
+    }
+
     private var help: String {
         var lines = [board.displayTitle(card), card.cwd]
+        if let waits = waitsOnSpoken { lines.append(waits.prefix(1).uppercased() + waits.dropFirst()) }
         if let pr = card.pullRequest { lines.append(pr.spoken) }
         if let more = card.morePullRequestsSpoken { lines.append(more) }
         if let error = board.classifyErrors[card.id] { lines.append("Couldn't sort: \(error)") }

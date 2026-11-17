@@ -72,6 +72,16 @@ enum APIRouter {
         case let ("PATCH", "cards"?, id?, nil):
             let card = try card(id, board)
             let body = try decode(EditCardBody.self, request)
+            if let ref = body.dependsOnId {
+                guard ref.isEmpty || UUID(uuidString: ref) != nil else {
+                    throw Failure(status: 400, error: APIError("dependsOnId takes a card's full id", detail: ref))
+                }
+                do {
+                    try board.waitOn(card.id, UUID(uuidString: ref))
+                } catch let refusal as APIError {
+                    throw Failure(status: 400, error: refusal)
+                }
+            }
             if let title = body.title { board.rename(card.id, to: title) }
             if let vibes = body.vibes { board.setVibes(card.id, vibes) }
             return .json(board.apiCard(board.card(card.id) ?? card))
@@ -113,12 +123,22 @@ enum APIRouter {
                 throw Failure(status: 400, error: APIError("nowhere to move it", detail: "give a stage, a lane or both"))
             }
             let lane = try body.lane.map { try findLane($0, board) }
+            // A card that would start here can't while what it waits on hasn't
+            // merged. Asked again first, since its pull request may have merged
+            // since the board last looked.
+            let starts = card.queued == true && body.stage.flatMap(Card.launch(movingTo:)) != nil
+            if starts, let blocker = board.blocker(of: card.id) {
+                await board.findPullRequest(blocker.id)
+                if let refusal = board.startRefusal(card.id) { throw Failure(status: 409, error: refusal) }
+            }
             board.move(card.id, to: body.stage, lane: lane?.id, launching: false)
             // Leaving the backlog starts it, here rather than in the app, so
             // a worktree git won't make is this request's error.
             if card.queued == true, let stage = body.stage, let mode = Card.launch(movingTo: stage) {
                 do {
                     try await board.launch(card.id, mode: mode, inFolder: body.inFolder)
+                } catch let refusal as APIError {
+                    throw Failure(status: 409, error: refusal)
                 } catch {
                     throw Failure(status: 409, error: APIError("couldn't make a worktree for the card",
                                                                detail: error.localizedDescription + " (pass --in-folder to work in the folder itself)"))

@@ -29,17 +29,20 @@ public struct APICard: Codable, Equatable, Sendable {
     public var dialogOpen: Bool
     /// The name the board shows: the title, else the terminal's, else "New session".
     public var displayTitle: String
+    /// The card it waits on (`dependsOnId`), and how far that one has got.
+    public var dependsOn: DependencyLink?
 
-    public init(card: Card, live: Bool, starting: Bool, dialogOpen: Bool, displayTitle: String) {
+    public init(card: Card, live: Bool, starting: Bool, dialogOpen: Bool, displayTitle: String, dependsOn: DependencyLink? = nil) {
         self.card = card
         self.live = live
         self.starting = starting
         self.dialogOpen = dialogOpen
         self.displayTitle = displayTitle
+        self.dependsOn = dependsOn
     }
 
     private enum Extra: String, CodingKey {
-        case live, starting, dialogOpen, displayTitle, pullRequest
+        case live, starting, dialogOpen, displayTitle, dependsOn, pullRequest
     }
 
     public init(from decoder: Decoder) throws {
@@ -49,6 +52,7 @@ public struct APICard: Codable, Equatable, Sendable {
         starting = try extra.decode(Bool.self, forKey: .starting)
         dialogOpen = try extra.decode(Bool.self, forKey: .dialogOpen)
         displayTitle = try extra.decode(String.self, forKey: .displayTitle)
+        dependsOn = try extra.decodeIfPresent(DependencyLink.self, forKey: .dependsOn)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -58,6 +62,7 @@ public struct APICard: Codable, Equatable, Sendable {
         try extra.encode(starting, forKey: .starting)
         try extra.encode(dialogOpen, forKey: .dialogOpen)
         try extra.encode(displayTitle, forKey: .displayTitle)
+        try extra.encodeIfPresent(dependsOn, forKey: .dependsOn)
         // The one on the badge, worked out from `pullRequests` and not stored,
         // written out for scripts reading the JSON. Worked out again on decode.
         try extra.encodeIfPresent(card.pullRequest, forKey: .pullRequest)
@@ -161,15 +166,18 @@ public struct CreateCardBody: Codable, Equatable, Sendable {
 }
 
 /// `PATCH /api/cards/:id`: what is given changes. An empty title hands
-/// naming back to Claude.
+/// naming back to Claude, and an empty `dependsOnId` stops the card waiting.
 public struct EditCardBody: Codable, Equatable, Sendable {
     public var title: String?
     /// The card in VIBES MODE on its own, or back out of it.
     public var vibes: Bool?
+    /// The full id of the card it waits on.
+    public var dependsOnId: String?
 
-    public init(title: String? = nil, vibes: Bool? = nil) {
+    public init(title: String? = nil, vibes: Bool? = nil, dependsOnId: String? = nil) {
         self.title = title
         self.vibes = vibes
+        self.dependsOnId = dependsOnId
     }
 }
 
