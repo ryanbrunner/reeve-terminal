@@ -229,7 +229,7 @@ Reading
 
 Driving
   reeve card add [<title…>] [--prompt TEXT] [--mode plan|build|backlog] [--lane L] [--cwd DIR] …
-  reeve card edit <card> [--title TITLE | --no-title] [--vibes | --no-vibes]
+  reeve card edit <card> [--title TITLE | --no-title] [--vibes | --no-vibes] [--wait-on CARD | --no-wait-on]
   reeve card move <card> [<stage>] [--lane L]
   reeve card run <card> [--restart]
   reeve card reply <card> <text…> [--file PATH|-]
