@@ -914,6 +914,14 @@ import Testing
             .rule,
         ])
     }
+
+    @Test func knowsWhereEachBlockStarts() {
+        let md = "# Plan\n\nToday there is no\nlogin.\n\n- Add a form\n  that posts\n\n```\nx\n```\n| a |\n|---|\n| b |"
+        let located = MarkdownBlock.locate(md)
+        #expect(located.map(\.line) == [1, 3, 6, 9, 12])
+        #expect(located.map(\.source) == ["# Plan", "Today there is no\nlogin.", "- Add a form\n  that posts", "```\nx\n```", "| a |\n|---|\n| b |"])
+        #expect(located.map(\.block) == MarkdownBlock.parse(md))
+    }
 }
 
 @Suite struct StageNameTests {
@@ -1179,6 +1187,46 @@ import Testing
         #expect(ReviewFile.merge(file, into: merged) == merged)
     }
 
+    @Test func planCommentsGoOutdatedWhenTheirPartIsRewritten() {
+        let path = "/u/.claude/plans/p.md"
+        let before = MarkdownBlock.locate("# Plan\n\nUse a cookie.\n\n- Test it")
+        let onCookie = ReviewThread(anchor: ReviewAnchor(plan: path, block: before[1]), messages: [ReviewMessage(author: .person, body: "why?")])
+        let onTests = ReviewThread(anchor: ReviewAnchor(plan: path, block: before[2]), messages: [ReviewMessage(author: .person, body: "which?")])
+        #expect(PlanReviewPlacement([onCookie, onTests], plan: path, blocks: before).byBlock.count == 2)
+        let after = MarkdownBlock.locate("# Plan\n\nUse a session token.\n\n- Test it")
+        let placed = PlanReviewPlacement([onCookie, onTests], plan: path, blocks: after)
+        #expect(placed.outdated == [onCookie])
+        #expect(placed.byBlock[ReviewAnchor(plan: path, block: after[2]).key] == [onTests])
+        #expect(PlanReviewPlacement([onTests], plan: "/u/.claude/plans/other.md", blocks: after).outdated == [onTests])
+    }
+
+    @Test func thePlanFileSaysWhatEachCommentIsOn() throws {
+        let block = MarkdownBlock.locate("# Plan\n\nUse a cookie.")[1]
+        let thread = ReviewThread(anchor: ReviewAnchor(plan: "/p.md", block: block), messages: [ReviewMessage(author: .person, body: "why?")])
+        let doc = try JSONSerialization.jsonObject(with: ReviewFile.encode(plan: [thread], planPath: "/p.md")) as! [String: Any]
+        let comments = doc["comments"] as! [[String: Any]]
+        #expect(doc["plan"] as? String == "/p.md")
+        #expect(comments[0]["line"] as? Int == 3)
+        #expect(comments[0]["text"] as? String == "Use a cookie.")
+        #expect(comments[0]["reply"] is NSNull)
+    }
+
+    @Test func claudeMayEditReviewFilesInPlanMode() throws {
+        func event(_ name: String, _ tool: String, _ path: String) throws -> HookEvent {
+            try HookEvent.decode(Data(#"{"session_id":"s","hook_event_name":"\#(name)","permission_mode":"plan","tool_name":"\#(tool)","tool_input":{"file_path":"\#(path)"}}"#.utf8))
+        }
+        let dir = "/Users/a/Library/Application Support/Reeve/reviews"
+        let allowed = try #require(ReviewFile.permission(for: event("PreToolUse", "Edit", dir + "/X-plan.json"), reviewsDir: dir))
+        let output = try JSONSerialization.jsonObject(with: allowed) as! [String: Any]
+        #expect((output["hookSpecificOutput"] as? [String: Any])?["permissionDecision"] as? String == "allow")
+        #expect(try ReviewFile.permission(for: event("PreToolUse", "Write", dir + "/X.json"), reviewsDir: dir + "/") != nil)
+        #expect(try ReviewFile.permission(for: event("PreToolUse", "Edit", dir + "/../board.json"), reviewsDir: dir) == nil)
+        #expect(try ReviewFile.permission(for: event("PreToolUse", "Edit", dir + "/X.md"), reviewsDir: dir) == nil)
+        #expect(try ReviewFile.permission(for: event("PreToolUse", "Edit", "/repo/app.swift"), reviewsDir: dir) == nil)
+        #expect(try ReviewFile.permission(for: event("PostToolUse", "Edit", dir + "/X.json"), reviewsDir: dir) == nil)
+        #expect(try ReviewFile.permission(for: event("PreToolUse", "Bash", dir + "/X.json"), reviewsDir: dir) == nil)
+    }
+
     @Test func aBrokenFileChangesNothing() {
         let a = comment(.new, 2, "let b = 3")
         #expect(ReviewFile.merge(Data("{not json".utf8), into: [a]) == [a])
@@ -1227,6 +1275,13 @@ import Testing
         let dialog = try #require(PlanDialog.find(onScreen: [" ❯ 1. Yes, auto-accept edits", "   2. Yes, manually approve edits", "   3. No, keep planning"]))
         #expect(dialog.approval == 0)
         #expect(dialog.moves(to: 0).isEmpty)
+    }
+
+    @Test func feedbackGoesToTheOptionThatDoesntApprove() throws {
+        #expect(try #require(PlanDialog.find(onScreen: screen)).feedback == 3)
+        let older = try #require(PlanDialog.find(onScreen: [" ❯ 1. Yes, auto-accept edits", "   2. Yes, manually approve edits", "   3. No, keep planning"]))
+        #expect(older.feedback == 2)
+        #expect(older.moves(to: 2) == ["\u{1b}[B", "\u{1b}[B"])
     }
 
     @Test func neverPicksBypassingPermissions() throws {

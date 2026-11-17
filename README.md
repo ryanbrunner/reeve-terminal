@@ -123,6 +123,17 @@ feature parity. What Reeve adds is the board.
   Outdated. Claude may read and write those files without asking, through a
   permission rule in the `--settings` Reeve passes. Sending waits while
   Claude is asking you something, and while it is in plan mode.
+- **Review the plan the same way.** Hover a heading, paragraph or list item
+  in Plan and click + in the margin to comment on it, then send it now or
+  as part of a review. The comments go to `reviews/<card>-plan.json`, and
+  Claude revises the plan to address them and replies in that file. While
+  the plan dialog is open, **Submit review** answers it with "Tell Claude
+  what to change" instead of approving. As with approving, Reeve checks the
+  selection on screen before it types anything. Plan mode refuses every edit
+  except the plan's, whatever the settings allow, so Reeve's `PreToolUse`
+  hook answers `allow` for edits to its own review files. A comment on a
+  part Claude has since rewritten moves to the top, under "On an earlier
+  draft".
 - **Gloss runs in the Preview tab.** Each card's `claude` gets `GLOSS_HOST`,
   so a `gloss open <url>` in the card (or the Gloss plugin's `/gloss <url>`)
   shows the page in the card's Preview tab, with Gloss's feedback bar across

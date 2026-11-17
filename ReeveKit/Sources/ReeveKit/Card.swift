@@ -109,6 +109,8 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     /// The comments a person left on the card's changes, and Claude's replies.
     /// Nil for cards saved before there were any.
     public var review: [ReviewThread]?
+    /// The comments a person left on the card's plan, and Claude's replies.
+    public var planReview: [ReviewThread]?
     /// The model the card's `claude` runs, as `--model` takes it. Nil leaves
     /// it to the person's own settings.
     public var model: String?

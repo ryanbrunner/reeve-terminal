@@ -11,8 +11,10 @@ import ReeveKit
 ///
 /// The answer is the hook's output. It is empty (204) unless the card is in
 /// VIBES MODE and Claude is asking something VIBES MODE answers; then it is the
-/// JSON that answers it. Decided here, on the server's own queue, from
-/// `vibesCards`: a hook waits on this reply, and the main thread may be busy.
+/// JSON that answers it; or Claude is editing a review file, and the answer
+/// lets it, plan mode or not. Decided here, on the server's own queue, from
+/// `vibesCards` and `reviewsDir`: a hook waits on this reply, and the main
+/// thread may be busy.
 ///
 /// A card's `gloss open` posts to `/gloss/<card>` (its `GLOSS_HOST`) to have
 /// the page shown in the card's Preview tab. That one waits for `onGloss` to
@@ -31,11 +33,14 @@ final class LocalServer {
     var onEvent: ((_ cardId: UUID, _ body: Data, _ reply: VibesReply?) -> Void)?
     /// The cards VIBES MODE answers for. The board keeps it up to date.
     let vibesCards = LockedSet()
+    /// Where the cards' review files are, which Claude may always edit.
+    private let reviewsDir: String
     /// Answers with an error to say why not, or nil once the session is up.
     var onGloss: ((_ cardId: UUID, _ body: Data, _ respond: @escaping (_ error: String?) -> Void) -> Void)?
     var onRequest: (@MainActor (HTTPRequest) async -> HTTPResponse)?
 
-    init() throws {
+    init(reviewsDir: String) throws {
+        self.reviewsDir = reviewsDir
         let params = NWParameters.tcp
         params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
         params.allowLocalEndpointReuse = true
@@ -96,10 +101,12 @@ final class LocalServer {
         if request.method == "POST", request.path.hasPrefix("/hook/") {
             let id = UUID(uuidString: String(request.path.dropFirst("/hook/".count)))
             let body = request.body
+            let event = try? HookEvent.decode(body)
             let reply = id.flatMap { id in
-                self.vibesCards.contains(id) ? (try? HookEvent.decode(body)).flatMap(Vibes.reply(to:)) : nil
+                self.vibesCards.contains(id) ? event.flatMap(Vibes.reply(to:)) : nil
             }
-            send(reply.map { HTTPResponse(status: 200, body: $0.json) } ?? HTTPResponse(status: 204), on: connection)
+            let answer = reply?.json ?? event.flatMap { ReviewFile.permission(for: $0, reviewsDir: self.reviewsDir) }
+            send(answer.map { HTTPResponse(status: 200, body: $0) } ?? HTTPResponse(status: 204), on: connection)
             if let id {
                 DispatchQueue.main.async { self.onEvent?(id, body, reply) }
             }

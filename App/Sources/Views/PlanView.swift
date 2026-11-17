@@ -4,21 +4,52 @@ import SwiftUI
 
 /// The card's plan, as Claude wrote it in plan mode. Read from its file each
 /// time the tab shows, so an edit made since the approval is what you see.
+///
+/// A part of the plan can take a comment, as a line of the diff can: sent to
+/// Claude at once, or kept with others and sent together. While the plan
+/// dialog is open they go in as its feedback, and Claude revises the plan.
 struct PlanView: View {
     @EnvironmentObject var board: Board
     let card: Card
     @State private var text: String?
-    @State private var blocks: [MarkdownBlock] = []
+    @State private var blocks: [MarkdownBlock.Located] = []
     @State private var loaded = false
+    /// The comment or reply being written, if any.
+    @State private var editing: Editing?
+    @StateObject private var drafts = Drafts()
 
     var body: some View {
         VStack(spacing: 0) {
             if let text {
-                PlanBar(card: card, text: text)
+                let threads = card.planReview ?? []
+                let blocker = board.reviewBlocker(card.id, .plan)
+                let path = card.planPath ?? "plan"
+                let placement = PlanReviewPlacement(threads, plan: path, blocks: blocks)
+                let review = ReviewContext(threads: threads, editing: editing, blocker: blocker, working: card.activity == .running, drafts: drafts, actions: actions)
+                PlanBar(card: card, text: text, pending: threads.filter(\.hasPending).count, blocker: blocker) {
+                    board.submitReview(card.id, .plan)
+                }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
+                        if !placement.outdated.isEmpty {
+                            Text("On an earlier draft")
+                                .font(.geist(12, .medium))
+                                .foregroundStyle(Theme.muted)
+                            ForEach(placement.outdated) { thread in
+                                ThreadView(thread: thread, outdated: true, review: review, inset: 0)
+                            }
+                            Rectangle().fill(Theme.edge).frame(height: 1).padding(.vertical, 6)
+                        }
                         ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                            BlockView(block: block)
+                            let anchor = ReviewAnchor(plan: path, block: block)
+                            BlockRow(block: block.block) { editing = .line(anchor) }
+                            ForEach(placement.byBlock[anchor.key] ?? []) { thread in
+                                ThreadView(thread: thread, outdated: false, review: review, inset: 0)
+                            }
+                            if editing == .line(anchor) {
+                                Composer(draftKey: Editing.line(anchor).draftKey, drafts: drafts, placeholder: "Leave a comment on the plan", sendLabel: "Comment now", blocker: blocker, post: actions.post, cancel: { editing = nil })
+                                    .modifier(ReviewInset(leading: 0))
+                            }
                         }
                     }
                     .textSelection(.enabled)
@@ -41,10 +72,32 @@ struct PlanView: View {
             let latest = await board.loadPlan(card.id)
             if latest != text {
                 text = latest
-                blocks = latest.map(MarkdownBlock.parse) ?? []
+                blocks = latest.map(MarkdownBlock.locate) ?? []
             }
             loaded = true
         }
+    }
+
+    private var actions: ReviewActions {
+        let id = card.id
+        return ReviewActions(
+            edit: { editing = $0 },
+            post: { text, send in
+                switch editing {
+                case let .line(anchor):
+                    board.comment(on: anchor, text, in: id, .plan, send: send)
+                case let .reply(thread):
+                    board.reply(to: thread, text, in: id, .plan, send: send)
+                case nil:
+                    return
+                }
+                if let key = editing?.draftKey { drafts.texts[key] = nil }
+                editing = nil
+            },
+            send: { board.submitReview(id, .plan, only: $0) },
+            discard: { board.discardDrafts($0, in: id, .plan) },
+            resolve: { board.resolve($0, $1, in: id, .plan) }
+        )
     }
 }
 
@@ -53,6 +106,10 @@ private struct PlanBar: View {
     @EnvironmentObject var board: Board
     let card: Card
     let text: String
+    /// Threads with a draft not yet sent.
+    let pending: Int
+    let blocker: String?
+    let submit: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
@@ -65,6 +122,13 @@ private struct PlanBar: View {
                     .help(path)
             }
             Spacer()
+            if pending > 0 {
+                Button("Submit review (\(pending))", action: submit)
+                    .buttonStyle(PrimaryButtonStyle(height: 22))
+                    .disabled(blocker != nil)
+                    .opacity(blocker == nil ? 1 : 0.5)
+                    .help(blocker ?? (board.planDialogs.contains(card.id) ? "Send your comments to Claude instead of approving the plan" : "Send your comments to Claude"))
+            }
             approval
             Button("Copy") {
                 NSPasteboard.general.clearContents()
@@ -90,6 +154,8 @@ private struct PlanBar: View {
             Label("Approved", systemImage: "checkmark")
                 .font(.geist(12))
                 .foregroundStyle(Theme.muted)
+        } else if board.answeringPlans.contains(card.id) {
+            Text("Sending comments…").font(.geist(12)).foregroundStyle(Theme.muted)
         } else if board.acceptingPlans.contains(card.id) || board.approvingPlans.contains(card.id) {
             Text("Approving…").font(.geist(12)).foregroundStyle(Theme.muted)
         } else if board.planDialogs.contains(card.id), board.live.contains(card.id) {
@@ -97,6 +163,42 @@ private struct PlanBar: View {
                 .buttonStyle(PrimaryButtonStyle(height: 22))
                 .help("Approve the plan and switch Claude to auto mode")
         }
+    }
+}
+
+/// A block of the plan, with a button in the margin to comment on it.
+private struct BlockRow: View {
+    let block: MarkdownBlock
+    let comment: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Button(action: comment) {
+                Image(systemName: "plus")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(Theme.text)
+                    .frame(width: 18, height: 18)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Theme.sky600))
+            }
+            .buttonStyle(.plain)
+            .help("Comment on this part of the plan")
+            .opacity(hovering ? 1 : 0)
+            .frame(width: 20)
+            BlockView(block: block)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        // The button sits in the margin, the block where it was.
+        .padding(.leading, -28)
+        .padding(.top, topSpace)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+    }
+
+    /// Room above a heading, outside the row so the button lines up with it.
+    private var topSpace: CGFloat {
+        guard case let .heading(level, _) = block else { return 0 }
+        return level <= 2 ? 10 : 4
     }
 }
 
@@ -110,7 +212,6 @@ private struct BlockView: View {
             inline(text)
                 .font(.geist(level == 1 ? 20 : level == 2 ? 16 : 14, .semibold))
                 .foregroundStyle(Theme.text)
-                .padding(.top, level <= 2 ? 10 : 4)
         case let .paragraph(text):
             inline(text).font(.geist(13.5)).foregroundStyle(Theme.textSoft).lineSpacing(3)
         case let .listItem(marker, indent, text):
