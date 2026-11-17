@@ -1359,7 +1359,7 @@ import Testing
         #expect(value(after: "--tools") == "Bash")
         #expect(value(after: "--allowedTools") == "Bash(reeve *)")
         let denied = args.firstIndex(of: "--disallowedTools").map { Array(args[($0 + 1)...].prefix { !$0.hasPrefix("--") }) }
-        #expect(denied == ["Bash(reeve card close*)", "Bash(reeve *--force*)"])
+        #expect(denied == ["Bash(reeve *--force*)"])
         #expect(value(after: "--permission-mode") == "dontAsk")
         #expect(value(after: "--setting-sources") == "")
         #expect(value(after: "--output-format") == "json")
@@ -1373,15 +1373,16 @@ import Testing
         #expect(prompt.contains("Always pass --cwd"))
         #expect(prompt.contains(CLIUsage.text))
         #expect(CommandBar.systemPrompt(repos: [], startRepo: nil).contains("no repos on the list"))
+        #expect(prompt.contains("Never retry with --force"))
     }
 
     @Test func readsTheReplyAndWhatWasRefused() throws {
         let json = """
         {"type":"result","subtype":"success","is_error":false,"result":"  Added “Fix login”. \\n",
-         "permission_denials":[{"tool_name":"Bash","tool_use_id":"t1","tool_input":{"command":"reeve card close abc"}}]}
+         "permission_denials":[{"tool_name":"Bash","tool_use_id":"t1","tool_input":{"command":"reeve card close abc --force"}}]}
         """
         let answer = try CommandBar.parse(Data(json.utf8))
-        #expect(answer == CommandBarAnswer(reply: "Added “Fix login”.", refused: ["reeve card close abc"]))
+        #expect(answer == CommandBarAnswer(reply: "Added “Fix login”.", refused: ["reeve card close abc --force"]))
     }
 
     @Test func anErrorIsThrown() {

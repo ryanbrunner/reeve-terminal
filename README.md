@@ -73,8 +73,9 @@ feature parity. What Reeve adds is the board.
   in testing?", "move the icon card to release", "tell the PRs card to rebase".
   Claude carries it out with `reeve` (below) and answers under the header.
   It runs `claude -p` on your Claude login in the repo new cards start in,
-  with Bash as its only tool and `reeve` the only command it may run; closing
-  a card and `--force` are refused. No session is saved, and none of your
+  with Bash as its only tool and `reeve` the only command it may run. It can
+  close a card you name, but not one that would lose work (see `close`
+  below), and `--force` is refused. No session is saved, and none of your
   settings, hooks or MCP servers are loaded.
 - **You can still drag.** A card you drag is pinned in its new column until
   your next prompt, so the board never undoes your move behind your back.
