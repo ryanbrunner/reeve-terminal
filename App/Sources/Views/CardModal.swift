@@ -43,6 +43,7 @@ struct CardModal: View {
                     // changes yet, only a way to start it.
                     BacklogPanel(card: card)
                 } else {
+                    CardTabBar(card: card, selected: tab)
                     ZStack {
                         // Always mounted, so the terminal keeps its size: every
                         // resize makes `claude` redraw. The other tabs cover it.
@@ -68,7 +69,6 @@ struct CardModal: View {
                             PullRequestsView(card: card).id(card.id)
                         }
                     }
-                    CardTabBar(card: card, selected: tab)
                 }
             }
             .background(Theme.ink)
@@ -157,7 +157,7 @@ private struct TerminalHeader: View {
     }
 }
 
-/// The open card's tabs, along the bottom of the card.
+/// The open card's tabs, under its header.
 private struct CardTabBar: View {
     @EnvironmentObject var board: Board
     let card: Card
@@ -183,7 +183,7 @@ private struct CardTabBar: View {
                     .foregroundStyle(tab == selected ? Theme.text : Theme.muted)
                     .padding(.horizontal, 10)
                     .frame(maxHeight: .infinity)
-                    .overlay(alignment: .top) {
+                    .overlay(alignment: .bottom) {
                         if tab == selected { Rectangle().fill(Theme.sky400).frame(height: 2) }
                     }
                     .contentShape(Rectangle())
@@ -196,7 +196,7 @@ private struct CardTabBar: View {
         .padding(.horizontal, 6)
         .frame(height: 30)
         .background(Theme.panel)
-        .overlay(alignment: .top) { Rectangle().fill(Theme.edge).frame(height: 1) }
+        .overlay(alignment: .bottom) { Rectangle().fill(Theme.edge).frame(height: 1) }
     }
 }
 
