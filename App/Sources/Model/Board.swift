@@ -17,6 +17,8 @@ final class Board: ObservableObject {
     /// have no session or worktree any more; this is only a record.
     @Published private(set) var archive: [Card] = []
     @Published var showingArchive = false
+    /// The swimlanes, top to bottom. Never empty.
+    @Published private(set) var lanes: [Lane] = [Lane.starter()]
     /// The folders a new card can start in.
     @Published private(set) var repos: [Repo] = []
     /// The repo picked for the last new card, so a run of cards starts in
@@ -50,7 +52,8 @@ final class Board: ObservableObject {
     /// Raised when a card showing its changes may have new ones, so the tab
     /// reads them again. Only for that card, so others' tool calls cost nothing.
     @Published private(set) var changeTicks: [UUID: Int] = [:]
-    @Published var showingNewCard = false
+    /// Where a new card is being named, inline on the board. Nil when none is.
+    @Published var composing: NewCardSpot?
     @Published private(set) var environment: ShellEnvironment?
 
     /// The board-wide VIBES MODE switch, and its tally since it was flipped.
@@ -92,6 +95,8 @@ final class Board: ObservableObject {
     /// Cards whose pull requests are being looked up right now.
     @Published private(set) var findingPullRequests: Set<UUID> = []
     private var restarting: Set<UUID> = []
+    /// Backlog cards whose worktree is being made on the way to their first start.
+    @Published private(set) var launching: Set<UUID> = []
     /// Cards waiting on a person because of a notification (a permission
     /// prompt, often a subagent's) rather than a question Claude asked.
     private var notifiedInput: Set<UUID> = []
@@ -174,9 +179,23 @@ final class Board: ObservableObject {
         cards.filter { $0.stage == stage }
     }
 
-    /// The board in reading order: column by column, top to bottom.
+    func cards(in stage: Stage, lane: UUID) -> [Card] {
+        cards.filter { $0.stage == stage && self.lane(of: $0).id == lane }
+    }
+
+    func cards(inLane lane: UUID) -> [Card] {
+        cards.filter { self.lane(of: $0).id == lane }
+    }
+
+    /// The board in reading order: lane by lane, and in each, column by
+    /// column, top to bottom.
     var ordered: [Card] {
-        Stage.allCases.flatMap { cards(in: $0) }
+        lanes.flatMap { lane in Stage.allCases.flatMap { cards(in: $0, lane: lane.id) } }
+    }
+
+    /// The card's swimlane: its own, else the first.
+    func lane(of card: Card) -> Lane {
+        card.lane(in: lanes) ?? lanes[0]
     }
 
     var selected: Card? {
@@ -203,22 +222,42 @@ final class Board: ObservableObject {
 
     // MARK: Changing the board
 
-    /// Starts a card from the new card sheet, and opens it. When git can't
+    /// Makes a card named on the board, where it was named: in Backlog it
+    /// waits, in Planning it plans and in In Progress it builds, with its
+    /// name as its first prompt. The board stays in front. When git can't
     /// make a worktree, asks whether to work in the folder instead.
-    func create(cwd: String, title: String, prompt: String?, mode: StartMode, model: String? = nil, effort: String? = nil, vibes: Bool = false) {
+    func create(name: String, in spot: NewCardSpot, cwd: String, model: String? = nil, effort: String? = nil) {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        let mode = Card.launch(movingTo: spot.stage)
         Task {
-            do {
-                _ = try await createCard(cwd: cwd, title: title, prompt: prompt, mode: mode, model: model, effort: effort, vibes: vibes, open: true, inFolder: false)
-            } catch {
-                let alert = NSAlert()
-                alert.messageText = "Couldn't make a worktree for this card"
-                alert.informativeText = error.localizedDescription
-                alert.addButton(withTitle: "Work in the Folder")
-                alert.addButton(withTitle: "Cancel")
-                guard alert.runModal() == .alertFirstButtonReturn else { return }
-                _ = try? await createCard(cwd: cwd, title: title, prompt: prompt, mode: mode, model: model, effort: effort, vibes: vibes, open: true, inFolder: true)
+            await withWorktreeFallback { inFolder in
+                _ = try await self.createCard(cwd: cwd, title: name, prompt: name, mode: mode, model: model, effort: effort,
+                                              lane: spot.lane, open: false, inFolder: inFolder)
             }
         }
+    }
+
+    /// Runs `make`, and when git couldn't make the card a worktree, asks
+    /// whether to work in the folder itself and runs it again if so.
+    private func withWorktreeFallback(_ make: (_ inFolder: Bool) async throws -> Void) async {
+        do {
+            try await make(false)
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Couldn't make a worktree for this card"
+            alert.informativeText = error.localizedDescription
+            alert.addButton(withTitle: "Work in the Folder")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            try? await make(true)
+        }
+    }
+
+    /// Opens the new card field in `spot`, over whatever the board shows.
+    func compose(in stage: Stage = .backlog, lane: UUID? = nil) {
+        if selectedId != nil { dismissOpenCard() }
+        composing = NewCardSpot(lane: lane ?? lanes[0].id, stage: stage)
     }
 
     /// The repos a new card can start in: those whose folder is still there.
@@ -254,37 +293,110 @@ final class Board: ObservableObject {
     /// folder's HEAD; anywhere else it works in the folder itself. It starts
     /// in the column its mode begins in. When git can't make the worktree,
     /// the card works in the folder if `inFolder`, else this throws.
+    ///
+    /// With no mode it goes in Backlog and nothing happens: no worktree and
+    /// no session until it is moved on (see `launch`). The worktree waits
+    /// too, so it starts from HEAD as it is then.
     @discardableResult
-    func createCard(cwd: String, title: String, prompt: String?, mode: StartMode, model: String?, effort: String?,
-                    vibes: Bool = false, open: Bool, inFolder: Bool) async throws -> Card {
-        // VIBES MODE flies over Planning unless its options say otherwise.
-        let mode: StartMode = (vibes || self.vibes != nil) && vibesOptions.skipPlanning ? .build : mode
-        var card = Card(title: title.trimmingCharacters(in: .whitespacesAndNewlines), cwd: cwd, stage: mode.stage)
+    func createCard(cwd: String, title: String, prompt: String?, mode: StartMode?, model: String?, effort: String?,
+                    vibes: Bool = false, lane: UUID? = nil, open: Bool, inFolder: Bool) async throws -> Card {
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        var card = Card(title: title, cwd: cwd, stage: .backlog)
         card.vibes = vibes ? true : nil
-        card.startMode = mode
+        card.laneId = lanes.contains { $0.id == lane } ? lane : nil
         card.model = model
         card.effort = effort
+        guard let mode else {
+            card.queued = true
+            let prompt = prompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            card.brief = prompt.isEmpty || prompt == title ? nil : prompt
+            cards.append(card)
+            if open { selectedId = card.id }
+            save()
+            return card
+        }
+        let start = startingMode(mode, vibes: vibes)
+        card.stage = start.stage
+        card.startMode = start
+        if let made = try await makeWorktree(for: card.id, in: cwd, inFolder: inFolder) {
+            card.cwd = made.cwd
+            card.repoPath = made.repo
+            card.worktreePath = made.path
+            card.branch = made.branch
+            card.baseCommit = made.base
+        }
+        cards.append(card)
+        if open { selectedId = card.id }
+        save()
+        begin(card.id, prompt: prompt)
+        return card
+    }
+
+    /// VIBES MODE flies over Planning unless its options say otherwise.
+    private func startingMode(_ mode: StartMode, vibes: Bool) -> StartMode {
+        (vibes || self.vibes != nil) && vibesOptions.skipPlanning ? .build : mode
+    }
+
+    /// The card's worktree, or nil for a folder outside git, or when git
+    /// can't make one and the card may work in the folder.
+    private func makeWorktree(for id: UUID, in folder: String, inFolder: Bool) async throws -> Worktrees.Made? {
         do {
-            if let made = try await Worktrees.make(for: card.id, in: cwd, env: environment) {
+            return try await Worktrees.make(for: id, in: folder, env: environment)
+        } catch {
+            guard inFolder else { throw error }
+            return nil
+        }
+    }
+
+    /// A new session's first start, on `prompt` if there is one.
+    private func begin(_ id: UUID, prompt: String?) {
+        guard let card = card(id) else { return }
+        let prompted = prompt.map { !$0.isEmpty } ?? false
+        // Working from the moment it's asked, so a `reeve card wait` straight
+        // after doesn't find it idle before Claude has read the prompt.
+        if prompted {
+            update(id) { $0.activity = .running }
+            expectPrompt(id)
+        }
+        start(self.card(id) ?? card, prompt: prompt)
+    }
+
+    /// Starts a backlog card: its worktree from HEAD as it is now, then its
+    /// session in `mode`, on its brief, else its name. A card moved to its
+    /// column stays there; one started where it is goes to the mode's column.
+    func launch(_ id: UUID, mode: StartMode, inFolder: Bool) async throws {
+        guard let card = card(id), card.queued == true, !launching.contains(id) else { return }
+        launching.insert(id)
+        defer { launching.remove(id) }
+        let start = startingMode(mode, vibes: card.vibes == true)
+        let made = try await makeWorktree(for: id, in: card.cwd, inFolder: inFolder)
+        // Closed while git was busy: the worktree has nobody to go to.
+        guard let card = self.card(id), card.queued == true else {
+            if let made { removeWorktree(WorktreeRemoval(path: made.path, repo: made.repo, branch: made.branch)) }
+            return
+        }
+        update(id) { card in
+            if let made {
                 card.cwd = made.cwd
                 card.repoPath = made.repo
                 card.worktreePath = made.path
                 card.branch = made.branch
                 card.baseCommit = made.base
             }
-        } catch {
-            guard inFolder else { throw error }
+            card.queued = nil
+            card.startMode = start
+            if card.stage == .backlog { card.stage = start.stage }
         }
-        let prompted = prompt.map { !$0.isEmpty } ?? false
-        // Working from the moment it's asked, so a `reeve card wait` straight
-        // after doesn't find it idle before Claude has read the prompt.
-        if prompted { card.activity = .running }
-        cards.append(card)
-        if open { selectedId = card.id }
-        save()
-        if prompted { expectPrompt(card.id) }
-        start(card, prompt: prompt)
-        return card
+        let prompt = card.brief ?? (card.title.isEmpty ? nil : card.title)
+        update(id) { $0.brief = nil }
+        begin(id, prompt: prompt)
+    }
+
+    /// `launch`, from the board, asking about the folder if git says no.
+    func startQueued(_ id: UUID, mode: StartMode) {
+        Task {
+            await withWorktreeFallback { inFolder in try await self.launch(id, mode: mode, inFolder: inFolder) }
+        }
     }
 
     func select(_ id: UUID) {
@@ -379,12 +491,60 @@ final class Board: ObservableObject {
     }
 
     /// A person put the card here. It stays until they next speak to Claude.
-    func move(_ id: UUID, to stage: Stage) {
+    /// A backlog card moved to Planning or In Progress starts, unless
+    /// `launching` is off, for a caller that starts it itself.
+    func move(_ id: UUID, to stage: Stage? = nil, lane: UUID? = nil, launching: Bool = true) {
         update(id) { card in
-            guard card.stage != stage else { return }
+            if let lane, lanes.contains(where: { $0.id == lane }) { card.laneId = lane }
+            guard let stage, card.stage != stage else { return }
             card.stage = stage
             card.stagePinned = true
         }
+        if launching, let stage, card(id)?.queued == true, let mode = Card.launch(movingTo: stage) {
+            startQueued(id, mode: mode)
+        }
+    }
+
+    // MARK: Swimlanes
+
+    @discardableResult
+    func addLane(named name: String) -> Lane {
+        let lane = Lane(name: name.trimmingCharacters(in: .whitespacesAndNewlines))
+        lanes.append(lane)
+        save()
+        return lane
+    }
+
+    func renameLane(_ id: UUID, to name: String) {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, let i = lanes.firstIndex(where: { $0.id == id }) else { return }
+        lanes[i].name = name
+        save()
+    }
+
+    /// Takes a lane off the board. Its cards go to the lane above it, or the
+    /// one below for the top lane. The last lane stays.
+    func deleteLane(_ id: UUID) {
+        guard lanes.count > 1, let i = lanes.firstIndex(where: { $0.id == id }) else { return }
+        let heir = lanes[i == 0 ? 1 : i - 1].id
+        for card in cards where lane(of: card).id == id {
+            update(card.id) { $0.laneId = heir }
+        }
+        lanes.remove(at: i)
+        if composing?.lane == id { composing = nil }
+        save()
+    }
+
+    /// Moves a lane up (negative) or down the board.
+    func moveLane(_ id: UUID, by offset: Int) {
+        guard let i = lanes.firstIndex(where: { $0.id == id }), lanes.indices.contains(i + offset) else { return }
+        lanes.swapAt(i, i + offset)
+        save()
+    }
+
+    /// The lane `ref` names, by id or name.
+    func lane(named ref: String) -> Lane? {
+        Lane.find(ref, in: lanes)
     }
 
     func rename(_ id: UUID, to title: String) {
@@ -424,6 +584,7 @@ final class Board: ObservableObject {
         planDialogs.remove(id)
         acceptingPlans.remove(id)
         vibesPrompts[id] = nil
+        launching.remove(id)
         cards.removeAll { $0.id == id }
         live.remove(id)
         dialogOpen.remove(id)
@@ -523,7 +684,7 @@ final class Board: ObservableObject {
 
     /// Starts the card's session if it isn't running, without opening the card.
     func startIfNeeded(_ id: UUID, prompt: String? = nil) {
-        guard let card = card(id), !live.contains(id), !starting.contains(id) else { return }
+        guard let card = card(id), card.queued != true, !live.contains(id), !starting.contains(id) else { return }
         if let prompt, !prompt.isEmpty { sendingPrompt(id) }
         start(self.card(id) ?? card, prompt: prompt)
     }
@@ -537,7 +698,8 @@ final class Board: ObservableObject {
     /// session is live, else as the prompt the session starts with. Not while
     /// a dialog is up unless `force`, since the text would answer it.
     func reply(_ id: UUID, text: String, force: Bool) throws -> ReplyResponse.Delivery {
-        guard card(id) != nil else { throw APIError("no such card") }
+        guard let card = card(id) else { throw APIError("no such card") }
+        if card.queued == true { throw Board.queuedError }
         if starting.contains(id) {
             throw APIError("the session is still starting", detail: "try again in a moment")
         }
@@ -546,13 +708,17 @@ final class Board: ObservableObject {
             return .started
         }
         if dialogOpen.contains(id), !force {
-            let showing = card(id)?.waitingOn.map { ": \($0)" } ?? ""
+            let showing = card.waitingOn.map { ": \($0)" } ?? ""
             throw APIError("Claude is showing a dialog\(showing)", detail: "answer it in the app, or pass --force to type into it anyway")
         }
         sendingPrompt(id)
         terminals.send(text, to: id)
         return .typed
     }
+
+    /// What `reeve` hears for a backlog card that hasn't started.
+    static let queuedError = APIError("the card is in the backlog and hasn't started",
+                                      detail: "move it to planning or in-progress to start it")
 
     /// The card is busy from the moment a prompt goes out, until its hooks say otherwise.
     private func sendingPrompt(_ id: UUID) {
@@ -612,6 +778,9 @@ final class Board: ObservableObject {
     // MARK: Terminals
 
     private func start(_ card: Card, prompt: String? = nil) {
+        // A backlog card has no worktree yet: its `cwd` is the person's own
+        // folder. Only `launch` starts it, once it has one.
+        guard card.queued != true else { return }
         guard let env = environment, let port = hookPort else {
             waitingToStart.append((card, prompt))
             return
@@ -1251,6 +1420,7 @@ final class Board: ObservableObject {
         }
         // Before anything below saves the board.
         repos = saved.repos ?? seededRepos()
+        if let saved = saved.lanes, !saved.isEmpty { lanes = saved }
         // Launch lands on the board; opening a card is what starts its session.
         updateBadge()
         vibes = saved.vibes
@@ -1273,7 +1443,7 @@ final class Board: ObservableObject {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(SavedBoard(cards: cards, archive: archive, selectedId: selectedId, pendingRemovals: pendingRemovals, vibes: vibes, vibesOptions: vibesOptions, repos: repos)) else { return }
+        guard let data = try? encoder.encode(SavedBoard(cards: cards, archive: archive, selectedId: selectedId, pendingRemovals: pendingRemovals, vibes: vibes, vibesOptions: vibesOptions, repos: repos, lanes: lanes)) else { return }
         try? data.write(to: storeURL, options: .atomic)
         // Every change comes through here, so the hooks never answer off a stale list.
         server?.vibesCards.set(Set(cards.filter(inVibes).map(\.id)))
@@ -1294,6 +1464,7 @@ final class Board: ObservableObject {
         var vibes: VibesLedger?
         var vibesOptions: VibesOptions?
         var repos: [Repo]?
+        var lanes: [Lane]?
     }
 
     private struct WorktreeRemoval: Codable, Equatable {

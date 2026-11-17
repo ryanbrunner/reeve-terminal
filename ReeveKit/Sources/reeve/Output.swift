@@ -43,7 +43,9 @@ extension APICard {
     /// is asleep, and its pull request.
     var status: String {
         var parts = [card.activity.label]
-        if starting {
+        if card.queued == true {
+            parts = ["not started"]
+        } else if starting {
             parts = ["starting"]
         } else if !live, card.activity != .error {
             parts.append("(asleep)")

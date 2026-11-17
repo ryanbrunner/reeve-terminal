@@ -10,6 +10,27 @@ board, with the session still running.
 Reeve doesn't talk to Claude itself, so the terminal is Claude Code at full
 feature parity. What Reeve adds is the board.
 
+- **Name a card where it goes.** Each of Backlog, Planning and In Progress
+  has a New card field (⌘N opens the one in the top lane's Backlog). Type a
+  name and press Return; the field stays open for the next one, and Esc puts
+  it away. The name is the card's title and the first thing Claude is told.
+  Which column you name it in decides what happens:
+  - **Backlog**: nothing. The card waits with no worktree and no session
+    until you move it. Drag it to Planning and it starts in plan mode; to
+    In Progress and it starts in auto mode. Its worktree is made then, from
+    HEAD as it is then. An open backlog card has Plan it and Start building
+    buttons that do the same.
+  - **Planning**: Claude starts in plan mode on it straight away.
+  - **In Progress**: Claude starts in auto mode on it straight away.
+
+  The chips under the name pick the repo, model and effort. They start as
+  your last card's.
+- **Swimlanes.** Lanes are rows across the columns, named whatever you like:
+  Add swimlane under the board, or ⇧⌘N. Drag a card into another lane's
+  cell, or use Move to Lane in its menu. A lane's ⋯ renames it, moves it up
+  or down, or deletes it, which moves its cards to the lane above. With one
+  lane its name is hidden and the board looks as it always has. VIBES MODE
+  shows every card in one set of columns.
 - **Activity is live.** Each card's `claude` starts with hooks layered on
   through `--settings`, which leaves your own settings alone. The hooks post
   to a small server Reeve runs on 127.0.0.1. A prompt or a tool call turns
@@ -48,7 +69,7 @@ feature parity. What Reeve adds is the board.
   your next prompt, so the board never undoes your move behind your back.
 - **Cards start in a repo.** Reeve keeps a list of the folders you work in,
   so a new card picks one rather than browsing for it. Add and remove them in
-  Settings (⌘,), or with Add Repo… in the new card sheet, which starts in the
+  Settings (⌘,), or with Add Repo… in the new card field, which starts in the
   repo you used last. For now a repo is just its folder.
 - **Each card gets its own worktree.** A card started in a git repo works in
   a fresh worktree at `.claude/worktrees/reeve-<id>`, on a new branch
@@ -117,17 +138,16 @@ feature parity. What Reeve adds is the board.
 - **Sessions survive restarts.** A card owns its session id (`--session-id`
   the first time, `--resume` after that). After a restart it sleeps until you
   open it.
-- **Pick a model and effort per card.** The new card sheet passes them as
+- **Pick a model and effort per card.** The new card field passes them as
   `--model` and `--effort`, including on every resume, so a card keeps them
   across restarts. "Default" passes neither, which leaves your own settings
-  in charge. The sheet remembers your last choice.
+  in charge. The field remembers your last choice.
 
 ## VIBES MODE
 
 VIBES MODE takes you out of the loop. Flip the switch in the header (⇧⌘V)
 for the whole board, or put one card in it: from its context menu, the
-switch in its open header, or the new card sheet. It is off until you turn
-it on.
+or the switch in its open header. It is off until you turn it on.
 
 For a card in VIBES MODE, Reeve does what you would otherwise have to:
 
@@ -201,12 +221,14 @@ script/release fetch    # once Apple is done → build/release/Reeve.zip
 
 | | |
 |---|---|
-| ⌘N | New card |
+| ⌘N | New card, named in the top lane's Backlog |
+| ⇧⌘N | New swimlane |
 | ⌘K | Ask Reeve: the command bar above the board |
 | ⌘, | Settings: the repos new cards start in |
 | ⌘W | Close card (asks first if its session is live) |
 | ⌘1…⌘9 | Open card 1–9, in board order |
 | ⇧⌘] / ⇧⌘[ | Next / previous card |
+| ⌘↩ | In a card's terminal: a new line in the prompt, rather than sending it |
 | ⌘B | Back to the board (the session keeps running) |
 | ⌥⌘1 / ⌥⌘2 / ⌥⌘3 / ⌥⌘4 / ⌥⌘5 | The open card's Terminal / Plan / Changes / Preview / PRs |
 | ⇧⌘V | VIBES MODE for the whole board |
@@ -233,11 +255,11 @@ reeve-board's CLI is also called `reeve`; whichever comes first on your PATH
 wins (a card's terminal always gets this one).
 
 ```
-reeve board [--stage S] [--repo PATH]       every card, column by column
+reeve board [--stage S] [--lane L] [--repo PATH]  every card, column by column
 reeve card show|plan|diff|worktree|pr [<card>]
-reeve card add [<title…>] [--prompt TEXT] [--mode plan|build] [--cwd DIR] [--model M] [--effort E]
+reeve card add [<title…>] [--prompt TEXT] [--mode plan|build|backlog] [--lane L] [--cwd DIR] [--model M] [--effort E]
 reeve card edit <card> [--title TITLE | --no-title] [--vibes | --no-vibes]
-reeve card move <card> <stage>
+reeve card move <card> [<stage>] [--lane L] [--in-folder]
 reeve card run <card> [--restart]
 reeve card reply <card> <text…> [--file PATH|-] [--force]
 reeve card wait [<card>] [--timeout SECONDS]
@@ -253,6 +275,9 @@ reeve open [<card>] · status · models · doctor
 - **`reply`.** Types into the card's terminal when its session is running,
   or starts the session with the message. It refuses while Claude Code shows
   a dialog, unless you pass `--force`.
+- **Backlog cards.** `card add --mode backlog` makes one, with `--prompt`
+  kept until it starts. `move` to planning or in-progress starts it; `run`
+  and `reply` refuse it until then.
 - **`close`.** Deletes the worktree, as ⌘W does. It refuses uncommitted
   changes, unmerged commits or an open pull request unless you pass `--force`.
 
@@ -291,7 +316,7 @@ Set `REEVE_DATA_DIR` to put it somewhere else. `reeve` reads it too, to find
 the same app.
 
 A Reeve on another `REEVE_DATA_DIR` also keeps its preferences (the repo,
-model and effort the new card sheet remembers) apart from yours, in
+model and effort the new card field remembers) apart from yours, in
 `com.ryanbrunner.reeve-terminal.other-data`, so a smoke test never changes
 where your next card starts.
 
@@ -314,9 +339,11 @@ instead). `REEVE_SMOKE_START=plan` starts it planning, and
 `REEVE_SMOKE_APPROVE=1` (with `REEVE_SMOKE_START=plan`) presses the Plan
 tab's Approve once the plan dialog is up and logs the mode it lands in.
 
-`REEVE_SMOKE_MODE=repos` checks repos without Claude taking a turn: it adds
-`REEVE_SMOKE_DIR` as a repo, starts a card in it from the new card sheet,
-closes it, and opens Settings to take the repo off and put it back, with a
+`REEVE_SMOKE_MODE=repos` checks repos, backlog cards and swimlanes without
+Claude taking a turn: it adds `REEVE_SMOKE_DIR` as a repo, names a card in
+Backlog and checks nothing starts, moves it to a new lane and deletes the
+lane, moves it to Planning and checks it starts there in a worktree, closes
+it, and opens Settings to take the repo off and put it back, with a
 picture of each window and a line per check in `timeline.txt`. Run it twice
 on one `REEVE_DATA_DIR` to see the list kept.
 

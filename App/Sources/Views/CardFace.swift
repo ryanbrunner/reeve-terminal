@@ -36,6 +36,12 @@ struct CardFace: View {
                 .frame(maxWidth: .infinity, minHeight: vibes ? 38.5 : nil, alignment: .topLeading)
             if vibes {
                 Spacer(minLength: 0)
+            } else if card.queued == true, board.launching.contains(card.id) || card.stage != .backlog {
+                // The footer already says it hasn't started.
+                Text(board.launching.contains(card.id) ? "Making its worktree…" : "Move to Planning or In Progress to start")
+                    .font(.mono(11))
+                    .foregroundStyle(Theme.muted.opacity(0.8))
+                    .lineLimit(2)
             } else if let line = card.backgroundLine {
                 // Waiting on its own agents: nothing for you to do yet.
                 Text(line)

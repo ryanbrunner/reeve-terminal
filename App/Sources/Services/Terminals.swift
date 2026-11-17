@@ -197,6 +197,20 @@ final class CardTerminalView: LocalProcessTerminalView {
         }
     }
 
+    /// ⌘↩ adds a line to the prompt instead of submitting it. A terminal has no
+    /// such key, so it is sent as ⌃J, the line feed `claude` takes for a newline.
+    /// (SwiftTerm's `keyDown` can't be overridden from here, but a key with ⌘
+    /// held reaches `performKeyEquivalent` first.)
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let isReturn = event.keyCode == 36 || event.keyCode == 76
+        let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        guard isReturn, modifiers == .command, window?.firstResponder === self else {
+            return super.performKeyEquivalent(with: event)
+        }
+        send(txt: "\n")
+        return true
+    }
+
     /// Sends the wheel event to the program as mouse button 4 or 5 and returns
     /// nil, or returns the event if SwiftTerm should handle it: the program
     /// isn't tracking the mouse, Shift or Option asks for the local behaviour,

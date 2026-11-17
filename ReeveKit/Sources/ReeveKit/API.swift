@@ -64,16 +64,19 @@ public struct APICard: Codable, Equatable, Sendable {
     }
 }
 
-/// `GET /api/board`: every card in board order, column by column.
+/// `GET /api/board`: every card in board order, lane by lane, column by column.
 public struct BoardResponse: Codable, Equatable, Sendable {
     public var cards: [APICard]
+    /// The swimlanes, top to bottom. Nil from an app older than lanes.
+    public var lanes: [Lane]?
     /// The card open over the board, if any.
     public var selectedId: UUID?
     /// What VIBES MODE has done since it went on; nil while it is off.
     public var vibes: VibesLedger?
 
-    public init(cards: [APICard], selectedId: UUID?, vibes: VibesLedger? = nil) {
+    public init(cards: [APICard], lanes: [Lane]? = nil, selectedId: UUID?, vibes: VibesLedger? = nil) {
         self.cards = cards
+        self.lanes = lanes
         self.selectedId = selectedId
         self.vibes = vibes
     }
@@ -118,9 +121,15 @@ public struct CreateCardBody: Codable, Equatable, Sendable {
     public var open: Bool
     /// In VIBES MODE on its own, whatever the board's switch says.
     public var vibes: Bool
+    /// Put it in Backlog and start nothing: `mode` is ignored, and the card
+    /// starts when it is moved to Planning or In Progress.
+    public var backlog: Bool
+    /// The swimlane, by id or name. Nil is the first.
+    public var lane: String?
 
     public init(cwd: String, title: String = "", prompt: String? = nil, mode: StartMode = .plan,
-                model: String? = nil, effort: String? = nil, inFolder: Bool = false, open: Bool = false, vibes: Bool = false) {
+                model: String? = nil, effort: String? = nil, inFolder: Bool = false, open: Bool = false, vibes: Bool = false,
+                backlog: Bool = false, lane: String? = nil) {
         self.cwd = cwd
         self.title = title
         self.prompt = prompt
@@ -130,6 +139,8 @@ public struct CreateCardBody: Codable, Equatable, Sendable {
         self.inFolder = inFolder
         self.open = open
         self.vibes = vibes
+        self.backlog = backlog
+        self.lane = lane
     }
 
     /// Only `cwd` is needed; the rest default as the initializer's do.
@@ -144,6 +155,8 @@ public struct CreateCardBody: Codable, Equatable, Sendable {
         inFolder = try c.decodeIfPresent(Bool.self, forKey: .inFolder) ?? false
         open = try c.decodeIfPresent(Bool.self, forKey: .open) ?? false
         vibes = try c.decodeIfPresent(Bool.self, forKey: .vibes) ?? false
+        backlog = try c.decodeIfPresent(Bool.self, forKey: .backlog) ?? false
+        lane = try c.decodeIfPresent(String.self, forKey: .lane)
     }
 }
 
@@ -160,12 +173,26 @@ public struct EditCardBody: Codable, Equatable, Sendable {
     }
 }
 
-/// `POST /api/cards/:id/move`.
+/// `POST /api/cards/:id/move`: to another column, another swimlane, or both.
 public struct MoveBody: Codable, Equatable, Sendable {
-    public var stage: Stage
+    public var stage: Stage?
+    /// The swimlane, by id or name.
+    public var lane: String?
+    /// A backlog card moved on starts; work in its folder itself if git
+    /// can't make it a worktree, rather than fail.
+    public var inFolder: Bool
 
-    public init(stage: Stage) {
+    public init(stage: Stage? = nil, lane: String? = nil, inFolder: Bool = false) {
         self.stage = stage
+        self.lane = lane
+        self.inFolder = inFolder
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        stage = try c.decodeIfPresent(Stage.self, forKey: .stage)
+        lane = try c.decodeIfPresent(String.self, forKey: .lane)
+        inFolder = try c.decodeIfPresent(Bool.self, forKey: .inFolder) ?? false
     }
 }
 

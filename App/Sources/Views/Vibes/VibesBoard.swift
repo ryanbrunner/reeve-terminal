@@ -96,14 +96,24 @@ private struct VibesWell: View {
                     .foregroundStyle(Vibe.r3)
                 Spacer()
                 if stage == .backlog {
+                    // No lanes in here, and no room among the flying cards
+                    // for the field, so it comes up beside the button.
                     Button {
-                        board.showingNewCard = true
+                        board.compose()
                     } label: {
                         Image(systemName: "plus").font(.system(size: 11, weight: .medium))
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.white)
                     .help("New card (⌘N)")
+                    .popover(isPresented: Binding(get: { board.composing != nil }, set: { if !$0 { board.composing = nil } }), arrowEdge: .bottom) {
+                        if let spot = board.composing {
+                            NewCardField(spot: spot)
+                                .frame(width: 280)
+                                .padding(8)
+                                .environmentObject(board)
+                        }
+                    }
                 }
                 if stage == .release { CleanupButton(tint: .white) }
                 if closed {

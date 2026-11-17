@@ -45,7 +45,7 @@ public enum CommandBar {
 
         - Read the board with `reeve board --json`, or `reeve card show <card> --json`, before answering about it or changing a card. Never guess what is on it.
         - You are not in any card, so always name the card, by its id's first characters or its title. If more than one card could be meant, ask which instead of changing any.
-        - A new card: `reeve card add "<2 to 6 word title>" --prompt "<the request>" --cwd <repo>`. Always pass --cwd. The card's Claude starts on the prompt straight away, so give it what the person asked for, in their words, and nothing they didn't. Add --mode plan only if they ask for a plan first.
+        - A new card: `reeve card add "<2 to 6 word title>" --prompt "<the request>" --cwd <repo>`. Always pass --cwd. The card's Claude starts on the prompt straight away, so give it what the person asked for, in their words, and nothing they didn't. Add --mode plan only if they ask for a plan first, or --mode backlog if they want it kept for later rather than started. Add --lane only if they name a swimlane.
         \(repoLines)
 
         Reply in one to three short plain sentences, without Markdown: what you did, or the answer. Name cards by title.
