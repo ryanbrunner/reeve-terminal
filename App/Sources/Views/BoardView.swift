@@ -73,17 +73,20 @@ private struct LaneView: View {
     let lane: Lane
     let titled: Bool
     let minHeight: CGFloat
+    @State private var collapsed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if titled { LaneTitle(lane: lane) }
-            HStack(alignment: .top, spacing: 10) {
-                ForEach(Stage.allCases) { stage in
-                    CellView(spot: NewCardSpot(lane: lane.id, stage: stage), minHeight: minHeight)
+            if titled { LaneTitle(lane: lane, collapsed: $collapsed) }
+            if !titled || !collapsed {
+                HStack(alignment: .top, spacing: 10) {
+                    ForEach(Stage.allCases) { stage in
+                        CellView(spot: NewCardSpot(lane: lane.id, stage: stage), minHeight: minHeight)
+                    }
                 }
+                // Every cell as tall as the lane's tallest, so the row reads as one.
+                .fixedSize(horizontal: false, vertical: true)
             }
-            // Every cell as tall as the lane's tallest, so the row reads as one.
-            .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -91,10 +94,33 @@ private struct LaneView: View {
 private struct LaneTitle: View {
     @EnvironmentObject var board: Board
     let lane: Lane
+    @Binding var collapsed: Bool
+
+    /// What is in the lane, by column: "2 Backlog · 1 In Progress".
+    private var summary: String {
+        Stage.allCases
+            .compactMap { stage -> String? in
+                let count = board.cards(in: stage, lane: lane.id).count
+                return count > 0 ? "\(count) \(stage.label)" : nil
+            }
+            .joined(separator: " · ")
+    }
 
     var body: some View {
         let index = board.lanes.firstIndex(of: lane) ?? 0
         HStack(spacing: 8) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { collapsed.toggle() }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .rotationEffect(.degrees(collapsed ? 0 : 90))
+                    .frame(width: 12, height: 20)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.muted)
+            .help(collapsed ? "Expand swimlane" : "Collapse swimlane")
             Text(lane.name)
                 .font(.geist(13, .semibold))
                 .foregroundStyle(Theme.text)
@@ -102,6 +128,10 @@ private struct LaneTitle: View {
             Text("\(board.cards(inLane: lane.id).count)")
                 .font(.mono(11, .medium))
                 .foregroundStyle(Theme.muted.opacity(0.6))
+            Text(summary.isEmpty ? "No cards" : summary)
+                .font(.geist(12))
+                .foregroundStyle(Theme.muted.opacity(0.7))
+                .lineLimit(1)
             Menu {
                 Button("Rename…") { LaneName.ask(renaming: lane, board: board) }
                 Button("Move Up") { board.moveLane(lane.id, by: -1) }
@@ -121,7 +151,10 @@ private struct LaneTitle: View {
         }
         .padding(.horizontal, 10)
         .frame(height: 20)
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { withAnimation(.easeInOut(duration: 0.2)) { collapsed.toggle() } }
         .contextMenu {
+            Button(collapsed ? "Expand" : "Collapse") { collapsed.toggle() }
             Button("Rename…") { LaneName.ask(renaming: lane, board: board) }
         }
     }
