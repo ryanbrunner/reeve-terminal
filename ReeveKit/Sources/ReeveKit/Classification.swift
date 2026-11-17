@@ -6,6 +6,7 @@ public struct Classification: Decodable, Equatable, Sendable {
     public var title: String
     public var summary: String
     /// The question Claude's last message leaves a person to answer, if any.
+    /// It doesn't make the card wait on them: only a dialog does that.
     public var waitingOn: String?
 
     enum CodingKeys: String, CodingKey {

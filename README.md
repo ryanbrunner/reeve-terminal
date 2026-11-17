@@ -15,7 +15,8 @@ feature parity. What Reeve adds is the board.
   to a small server Reeve runs on 127.0.0.1. A prompt or a tool call turns
   the card sky blue (running). A permission prompt, `AskUserQuestion` or
   `ExitPlanMode` turns it amber (waiting on you). The end of a turn turns it
-  green (ready for review).
+  green (ready for review), even when Claude's last message asks you
+  something: only a dialog Claude Code is showing turns a card amber.
 - **The column follows the session.** The hooks carry Claude Code's
   permission mode, so a card moves as the session does:
   - plan mode → **Planning**
