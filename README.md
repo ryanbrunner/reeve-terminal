@@ -96,6 +96,11 @@ feature parity. What Reeve adds is the board.
   shows `+N` for the ones from other branches. Reeve asks your own `gh`
   at launch, when a turn ends and when you open the card. Without `gh` or a
   GitHub remote there is simply no badge.
+- **Merge from the card.** A Release card whose open pull request GitHub
+  says merges cleanly wears a Merge button. Press it, then Confirm within
+  three seconds, and Reeve asks GitHub once more and squash-merges it with
+  your `gh`. A draft, a conflict or branch protection leaves it unmerged:
+  what gh said shows under the card. `reeve card merge` does the same.
 - **Clean up merged cards into the Archive.** The archive button in the
   Release column's header archives every card whose pull requests have merged
   (the one on its current branch is merged and none it opened is still open
@@ -303,6 +308,7 @@ reeve card move <card> [<stage>] [--lane L] [--in-folder]
 reeve card run <card> [--restart]
 reeve card reply <card> <text…> [--file PATH|-] [--force]
 reeve card wait [<card>] [--timeout SECONDS]
+reeve card merge <card>
 reeve card close <card> [--force]
 reeve vibes [on | off]                      the board's VIBES MODE switch
 reeve open [<card>] · status · models · doctor
@@ -320,6 +326,11 @@ reeve open [<card>] · status · models · doctor
   and `reply` refuse it until then. `card edit --wait-on <card>` has it wait
   on another card: `move` refuses to start it (exit 1, naming that card)
   until that one merges. `card show` says what it depends on.
+- **`merge`.** Merges a Release card's pull request on GitHub, squashed, as
+  the card's Merge button does, once GitHub says it merges cleanly. Branch
+  protection still applies: when gh refuses, it says why. Merging a change
+  under `.github/workflows/` needs gh's token to have the `workflow` scope,
+  which `reeve doctor` checks (`gh auth refresh -h github.com -s workflow`).
 - **`close`.** Deletes the worktree, as ⌘W does. It refuses uncommitted
   changes, unmerged commits or an open pull request unless you pass `--force`.
 

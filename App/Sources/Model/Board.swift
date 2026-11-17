@@ -97,6 +97,13 @@ final class Board: ObservableObject {
     private var pendingClassify: [UUID: Task<Void, Never>] = [:]
     /// Cards whose pull requests are being looked up right now.
     @Published private(set) var findingPullRequests: Set<UUID> = []
+    /// Cards whose pull request gh is merging right now.
+    @Published private(set) var merging: Set<UUID> = []
+    /// Why the last Merge didn't land, by card, in gh's words. Cleared by the next try.
+    @Published private(set) var mergeErrors: [UUID: String] = [:]
+    /// How many times in a row GitHub has answered `unknown` about a Release
+    /// card's pull request since something other than a recheck looked.
+    private var mergeableRechecks: [UUID: Int] = [:]
     private var restarting: Set<UUID> = []
     /// Backlog cards whose worktree is being made on the way to their first start.
     @Published private(set) var launching: Set<UUID> = []
@@ -1605,17 +1612,20 @@ final class Board: ObservableObject {
     /// been on: the one it is on now, which Claude may have switched to from
     /// the one Reeve made, and the ones it left. A branch gh can't say about
     /// keeps the pull requests it had.
-    func refreshPullRequest(_ id: UUID) {
-        Task { await findPullRequest(id) }
+    func refreshPullRequest(_ id: UUID, recheck: Bool = false) {
+        Task { await findPullRequest(id, recheck: recheck) }
     }
 
     /// A pull request found open or merged on the card's branch moves the
     /// card to Release.
-    func findPullRequest(_ id: UUID) async {
+    func findPullRequest(_ id: UUID, recheck: Bool = false) async {
         guard let card = card(id), let worktree = card.worktreePath, let env = environment,
               !findingPullRequests.contains(id), FileManager.default.fileExists(atPath: worktree) else { return }
         findingPullRequests.insert(id)
-        defer { findingPullRequests.remove(id) }
+        defer {
+            findingPullRequests.remove(id)
+            recheckMergeable(id, again: recheck)
+        }
         let head = await Worktrees.currentBranch(at: worktree, env: env)
         let owns = Set([head, card.branch].compactMap { $0 })
         let tracked = card.pullRequests ?? []
@@ -1656,6 +1666,112 @@ final class Board: ObservableObject {
         }
         // Merged, whatever waited on it can go on.
         if self.card(id)?.pullRequest?.state == .merged, cards.contains(where: { $0.dependsOnId == id }) { vibesSweep() }
+    }
+
+    /// GitHub works out whether a pull request merges cleanly only once it is
+    /// asked, so the first look after a push is usually `unknown`, and nothing
+    /// else here looks again until a turn ends. A Release card's is asked a
+    /// few more times, so its Merge button turns up without anyone opening it.
+    private func recheckMergeable(_ id: UUID, again: Bool) {
+        guard let card = card(id), card.stage == .release, let pr = card.pullRequest,
+              pr.state == .open, pr.mergeable == .unknown else {
+            mergeableRechecks[id] = nil
+            return
+        }
+        let tries = again ? mergeableRechecks[id, default: 0] : 0
+        guard tries < 4 else { return }
+        mergeableRechecks[id] = tries + 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in self?.refreshPullRequest(id, recheck: true) }
+    }
+
+    /// Lands a Release card's pull request on GitHub, squashed. Only what the
+    /// board offers: the card has to be `canMergePullRequest`, and GitHub is
+    /// asked again first, since Claude may have pushed since it last said.
+    /// Anything gh refuses (a branch protection rule, a required review, a
+    /// token without `workflow`) is thrown in its words and kept on the card.
+    /// Returns where the pull request stands after: merged, or still open
+    /// when GitHub queued it rather than landing it.
+    @discardableResult
+    func mergePullRequest(_ id: UUID) async throws -> PullRequest.State {
+        guard let card = card(id) else { throw APIError("no such card") }
+        guard !merging.contains(id) else { throw APIError("already merging", detail: card.pullRequest?.url) }
+        merging.insert(id)
+        mergeErrors[id] = nil
+        defer { merging.remove(id) }
+        return try await merge(card)
+    }
+
+    private func merge(_ card: Card) async throws -> PullRequest.State {
+        guard card.stage == .release else {
+            throw APIError("only a Release card's pull request is merged", detail: "it is in \(card.stage.label)")
+        }
+        guard let pr = card.pullRequest else {
+            throw APIError("nothing to merge", detail: "the card has no pull request" + (card.branch.map { " from \($0)" } ?? ""))
+        }
+        guard pr.state == .open else {
+            throw APIError("#\(pr.number) is \(pr.state.rawValue)", detail: pr.state == .draft ? "mark it ready for review first" : pr.url)
+        }
+        // The order the work has to land in is kept here too: a card told to
+        // wait after it had started could otherwise merge first.
+        if let blocker = blocker(of: card.id) {
+            throw APIError("waits on “\(displayTitle(blocker))”, which hasn't merged",
+                           detail: "\(CardRef.short(blocker.id)) is in \(Dependency.status(of: blocker)); merge it first")
+        }
+        let directory = [card.repoPath, card.worktreePath, card.cwd].compactMap { $0 }
+            .first { FileManager.default.fileExists(atPath: $0) } ?? card.cwd
+        let env = environment
+        do {
+            var now = try await PullRequests.view(url: pr.url, in: directory, env: env)
+            // Asking is what sets GitHub working it out; it answers in seconds.
+            for _ in 0..<3 where now.state == .open && now.mergeable == .unknown {
+                try? await Task.sleep(for: .seconds(2))
+                now = try await PullRequests.view(url: pr.url, in: directory, env: env)
+            }
+            noteMergeable(card.id, number: pr.number, now.state, now.mergeable)
+            guard now.state == .open else {
+                throw APIError("#\(pr.number) is \(now.state.rawValue)", detail: now.state == .draft ? "mark it ready for review first" : pr.url)
+            }
+            guard now.mergeable == .mergeable else {
+                throw APIError("GitHub doesn't say #\(pr.number) merges cleanly",
+                               detail: now.mergeable == .conflicting ? "it conflicts with its base branch" : "it is still working that out; try again in a moment")
+            }
+            try await PullRequests.merge(url: pr.url, in: directory, env: env)
+        } catch {
+            // GitHub's answer, kept under the card's button whoever asked;
+            // a refusal before asking is only the asker's.
+            let failure = switch error {
+            case let error as APIError: error
+            case let refusal as PullRequests.Refusal: APIError("couldn't merge #\(pr.number)", detail: refusal.message)
+            default: APIError("couldn't merge #\(pr.number)", detail: error.localizedDescription)
+            }
+            mergeErrors[card.id] = failure.detail.map { "\(failure.error): \($0)" } ?? failure.error
+            throw failure
+        }
+        // Asked rather than assumed: a repo with a merge queue takes the
+        // pull request and lands it later.
+        var after = PullRequest.State.merged
+        if let now = try? await PullRequests.view(url: pr.url, in: directory, env: env) {
+            noteMergeable(card.id, number: pr.number, now.state, now.mergeable)
+            after = now.state
+        }
+        refreshPullRequest(card.id)
+        return after
+    }
+
+    private func noteMergeable(_ id: UUID, number: Int, _ state: PullRequest.State, _ mergeable: PullRequest.Mergeable) {
+        update(id) { card in
+            card.pullRequests = card.pullRequests?.map { pr in
+                guard pr.number == number else { return pr }
+                var pr = pr
+                pr.state = state
+                pr.mergeable = mergeable
+                return pr
+            }
+        }
+    }
+
+    func clearMergeError(_ id: UUID) {
+        mergeErrors[id] = nil
     }
 
     /// The card as `reeve` sees it.

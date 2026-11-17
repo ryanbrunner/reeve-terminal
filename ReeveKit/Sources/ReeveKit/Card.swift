@@ -218,6 +218,16 @@ extension Card {
         return !(pullRequests ?? []).contains { $0.state == .open || $0.state == .draft }
     }
 
+    /// Whether the board offers to merge the card's pull request: a Release
+    /// card's open one, not a draft, which GitHub last said merges cleanly.
+    /// The Merge button is drawn from this and `reeve card merge` refuses by
+    /// it. Mergeable is GitHub's verdict on conflicts alone, so a branch
+    /// protection rule still leaves the button there, and gh says no.
+    public var canMergePullRequest: Bool {
+        guard stage == .release, let pr = pullRequest else { return false }
+        return pr.state == .open && pr.mergeable == .mergeable
+    }
+
     /// What a waiting card is waiting on, in a line: "Waiting on 2 shells".
     public var backgroundLine: String? {
         guard activity == .waiting else { return nil }
