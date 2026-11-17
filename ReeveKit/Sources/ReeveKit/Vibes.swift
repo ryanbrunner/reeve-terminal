@@ -83,9 +83,11 @@ public enum Vibes {
     }
 
     /// The one chip a card wears in VIBES MODE: the guardrail its column is
-    /// not applying.
-    public static func chip(stage: Stage, activity: Activity, shipped: Bool, merged: Bool, options: VibesOptions) -> String {
+    /// not applying. Or the one it is: a card waiting on another that hasn't
+    /// merged is held, VIBES MODE or not.
+    public static func chip(stage: Stage, activity: Activity, shipped: Bool, merged: Bool, blocked: Bool = false, options: VibesOptions) -> String {
         if activity == .error { return "error ignored" }
+        if blocked, !shipped { return "waits on a merge" }
         switch stage {
         case .backlog: return "auto-run"
         case .planning: return "self-answered"

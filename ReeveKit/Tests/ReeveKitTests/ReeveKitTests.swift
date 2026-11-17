@@ -1453,3 +1453,101 @@ import Testing
         #expect(old.lanes == nil)
     }
 }
+
+@Suite struct DependencyTests {
+    private func card(_ title: String, stage: Stage = .backlog, pr: PullRequest.State? = nil) -> Card {
+        var card = Card(title: title, cwd: "/r", stage: stage)
+        card.branch = "reeve/\(title)"
+        card.pullRequests = pr.map { [PullRequest(number: 1, state: $0, url: "https://github.com/o/r/pull/1", branch: "reeve/\(title)")] }
+        return card
+    }
+
+    private func waiting(on target: Card) -> Card {
+        var waiting = card("waiting")
+        waiting.queued = true
+        waiting.dependsOnId = target.id
+        return waiting
+    }
+
+    @Test func unmergedBlocks() {
+        let target = card("target", stage: .release, pr: .open)
+        let waiter = waiting(on: target)
+        #expect(Dependency.blocker(of: waiter, in: [waiter, target])?.id == target.id)
+        #expect(Dependency.status(of: target) == "Release, PR not merged")
+        let refusal = Dependency.refusal(waiter, in: [waiter, target], name: \.title)
+        #expect(refusal?.error == "waits on “target”, which hasn't merged")
+        #expect(refusal?.detail?.contains(CardRef.short(target.id)) == true)
+    }
+
+    @Test func mergedPullRequestLetsItStart() {
+        let target = card("target", stage: .release, pr: .merged)
+        let waiter = waiting(on: target)
+        #expect(Dependency.blocker(of: waiter, in: [waiter, target]) == nil)
+        #expect(Dependency.refusal(waiter, in: [waiter, target], name: \.title) == nil)
+        #expect(Dependency.status(of: target) == "merged")
+    }
+
+    @Test func branchFoundOnMainLetsItStart() {
+        var target = card("target", stage: .testing)
+        target.merged = true
+        #expect(!Dependency.stillBlocking(target))
+    }
+
+    @Test func archivedOrClosedDoesNotBlock() {
+        var target = card("target", stage: .release, pr: .open)
+        target.archivedAt = Date()
+        #expect(!Dependency.stillBlocking(target))
+        let waiter = waiting(on: card("gone"))
+        #expect(Dependency.blocker(of: waiter, in: [waiter]) == nil)
+    }
+
+    @Test func statusSaysHowFarOff() {
+        var queued = card("q")
+        queued.queued = true
+        #expect(Dependency.status(of: queued) == "Backlog, not started")
+        #expect(Dependency.status(of: card("t", stage: .testing)) == "Testing")
+        #expect(Dependency.status(of: card("r", stage: .release)) == "Release, no pull request yet")
+    }
+
+    @Test func noWaitingOnItself() {
+        let a = card("a")
+        #expect(Dependency.linkRefusal(a, waitingOn: a, in: [a], name: \.title)?.error == "a card can't wait on itself")
+    }
+
+    @Test func noLoops() {
+        let a = card("a")
+        var b = card("b")
+        var c = card("c")
+        b.dependsOnId = a.id
+        #expect(Dependency.linkRefusal(a, waitingOn: b, in: [a, b], name: \.title)?.detail == "“b” already waits on “a”")
+        c.dependsOnId = b.id
+        let loop = Dependency.linkRefusal(a, waitingOn: c, in: [a, b, c], name: \.title)
+        #expect(loop?.error == "that would make a loop")
+        #expect(loop?.detail == "“c” already waits on “a”, through “b”")
+        #expect(Dependency.linkRefusal(c, waitingOn: a, in: [a, b, c], name: \.title) == nil)
+    }
+
+    @Test func aBadLoopOnDiskDoesNotHang() {
+        var a = card("a")
+        var b = card("b")
+        a.dependsOnId = b.id
+        b.dependsOnId = a.id
+        let c = card("c")
+        #expect(Dependency.linkRefusal(c, waitingOn: a, in: [a, b, c], name: \.title) == nil)
+    }
+
+    @Test func heldCardsSayWhyInVibesMode() {
+        #expect(Vibes.chip(stage: .backlog, activity: .idle, shipped: false, merged: false, blocked: true, options: VibesOptions()) == "waits on a merge")
+        #expect(Vibes.chip(stage: .backlog, activity: .idle, shipped: false, merged: false, options: VibesOptions()) == "auto-run")
+    }
+
+    @Test func theLinkTravelsWithTheCard() throws {
+        let target = card("target")
+        let waiter = waiting(on: target)
+        let api = APICard(card: waiter, live: false, starting: false, dialogOpen: false, displayTitle: "waiting",
+                          dependsOn: DependencyLink(id: target.id, title: "target", done: false, status: "Backlog"))
+        let back = try API.decoder().decode(APICard.self, from: API.encoder().encode(api))
+        #expect(back.dependsOn == api.dependsOn)
+        #expect(back.card.dependsOnId == target.id)
+    }
+}
