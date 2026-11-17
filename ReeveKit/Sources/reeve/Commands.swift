@@ -109,6 +109,9 @@ let showVerb = Verb(
         ["Stage", "\(card.stage.label) · \(api.status)" + (card.stagePinned ? " (moved by hand)" : "")],
     ]
     if let waiting = card.waitingOn { facts.append(["Waiting on", waiting]) }
+    if let link = api.dependsOn {
+        facts.append(["Depends on", "\(CardRef.short(link.id)) \(link.title.isEmpty ? "(closed)" : link.title) · \(link.status)"])
+    }
     facts.append(["Folder", card.cwd])
     if let repo = card.repoPath { facts.append(["Repo", repo]) }
     if let branch = card.branch { facts.append(["Branch", branch]) }
@@ -399,12 +402,16 @@ let addVerb = Verb(
 let editVerb = Verb(
     name: "edit",
     usage: """
-    reeve card edit <card> [--title TITLE | --no-title] [--vibes | --no-vibes] [--json]
+    reeve card edit <card> [--title TITLE | --no-title] [--vibes | --no-vibes]
+                           [--wait-on CARD | --no-wait-on] [--json]
 
-    Renames the card, or puts it in VIBES MODE on its own or takes it out.
-      --no-title   hand naming back to Claude
+    Renames the card, puts it in VIBES MODE on its own or takes it out, or
+    has it wait on another card.
+      --no-title      hand naming back to Claude
+      --wait-on CARD  in the backlog, it can't start until CARD has merged
+      --no-wait-on    stop waiting
     """,
-    valued: ["title"], flags: ["no-title", "vibes", "no-vibes", "json"]
+    valued: ["title", "wait-on"], flags: ["no-title", "vibes", "no-vibes", "no-wait-on", "json"]
 ) { args in
     guard args.positionals.count == 1 else { throw UsageError("which card?") }
     var body = EditCardBody()
@@ -420,9 +427,18 @@ let editVerb = Verb(
     case (false, true): body.vibes = false
     case (false, false): break
     }
-    guard body.title != nil || body.vibes != nil else { throw UsageError("nothing to change: --title, --no-title, --vibes or --no-vibes") }
+    if args.has("no-wait-on") {
+        guard args.value("wait-on") == nil else { throw UsageError("--wait-on or --no-wait-on, not both") }
+        body.dependsOnId = ""
+    }
+    guard body.title != nil || body.vibes != nil || body.dependsOnId != nil || args.value("wait-on") != nil else {
+        throw UsageError("nothing to change: --title, --no-title, --vibes, --no-vibes, --wait-on or --no-wait-on")
+    }
     let client = try Client.connect()
     let api = try await client.card(args.positionals[0])
+    if let ref = args.value("wait-on") {
+        body.dependsOnId = try await client.card(ref).card.id.uuidString
+    }
     let edited: APICard = try await client.call("PATCH", path(api.card.id), body: body)
     if args.has("json") {
         try printJSON(edited)
@@ -434,6 +450,13 @@ let editVerb = Verb(
     if let vibes = body.vibes {
         out(vibes ? "VIBES MODE drives \(edited.short)" : "\(edited.short) is out of VIBES MODE")
     }
+    if body.dependsOnId != nil {
+        if let link = edited.dependsOn {
+            out("\(edited.short) waits on \(CardRef.short(link.id)) \(link.title)" + (link.done ? " (\(link.status), so it can start)" : " (\(link.status))"))
+        } else {
+            out("\(edited.short) waits on nothing")
+        }
+    }
     return .ok
 }
 
@@ -444,7 +467,8 @@ let moveVerb = Verb(
 
     Puts the card in a column, as dragging it does: it stays there until your
     next prompt to its Claude. A backlog card that hasn't started starts:
-    in plan mode moved to planning, in auto mode moved to in-progress.
+    in plan mode moved to planning, in auto mode moved to in-progress. One
+    waiting on a card that hasn't merged (`card edit --wait-on`) is refused.
       --lane LANE    to another swimlane, by name, as well or instead
       --in-folder    work in the folder itself if git can't make a worktree
     Stages: \(StageName.accepted).

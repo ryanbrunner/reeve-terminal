@@ -45,6 +45,7 @@ extension APICard {
         var parts = [card.activity.label]
         if card.queued == true {
             parts = ["not started"]
+            if let link = dependsOn, !link.done { parts.append("(waits on \(CardRef.short(link.id)))") }
         } else if starting {
             parts = ["starting"]
         } else if !live, card.activity != .error {

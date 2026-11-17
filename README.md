@@ -31,6 +31,16 @@ feature parity. What Reeve adds is the board.
   or down, or deletes it, which moves its cards to the lane above. With one
   lane its name is hidden and the board looks as it always has. VIBES MODE
   shows every card in one set of columns.
+- **A card can wait on another.** Wait On in a card's context menu picks
+  the card it waits on (or `reeve card edit --wait-on`). While that card
+  hasn't merged, a waiting card in Backlog can't start: a drag to Planning or
+  In Progress, Plan it and Start building, and `reeve card move` are all
+  refused, saying which card it waits on and how far off that one is
+  ("Testing", "Release, PR not merged"). Its face says the same in amber.
+  Merged means its pull request merged, its branch found on main, or archived.
+  Closing the card it waits on lets it go, and a link that would make a loop
+  is refused. VIBES MODE never starts a backlog card, waiting or not; one
+  already started that waits on another is held (below).
 - **Activity is live.** Each card's `claude` starts with hooks layered on
   through `--settings`, which leaves your own settings alone. The hooks post
   to a small server Reeve runs on 127.0.0.1. A prompt or a tool call turns
@@ -179,13 +189,18 @@ For a card in VIBES MODE, Reeve does what you would otherwise have to:
   checked-out branch or its pull request merged (or, with Merge to Main off,
   when its pull request is up). Otherwise it is told to ship again. A card
   pushed from the same column three times running is left for you.
+- **Waiting still means waiting.** A started card waiting on another that
+  hasn't merged isn't pushed on when its turn ends, and its chip names the
+  card it waits on. Once that card merges, it is picked up. A waiting card in
+  Backlog still waits for you to start it.
 
 With the board's switch on, two more things happen that a card in VIBES MODE
 on its own never does:
 
 - **Backlog runs on arrival.** Every card in Backlog is started, in the
   column VIBES MODE starts in, including one you name there while the switch
-  is on. A card git can't make a worktree for is left for you.
+  is on. One waiting on a card that hasn't merged is held until it does. A
+  card git can't make a worktree for is left for you.
 - **It thinks of what's next.** When the last card in a repo ships, and
   nothing in it is left short of Release, Reeve asks `claude -p` in that repo
   what should follow, with nothing but tools that read. Up to three ideas
@@ -261,9 +276,9 @@ script/release fetch    # once Apple is done → build/release/Reeve.zip
 Esc goes to Claude Code, where it interrupts a turn, so it doesn't close an
 open card. Use ⌘B, the × in the card's header or a click outside it.
 
-Right-click a card, or use the ⋯ in an open card's header, to move it, rename
-it, re-sort it now, put it in VIBES MODE, restart its session or reveal its
-folder.
+Right-click a card, or use the ⋯ in an open card's header, to move it, have
+it wait on another card, rename it, re-sort it now, put it in VIBES MODE,
+restart its session or reveal its folder.
 
 ## Command line
 
@@ -283,7 +298,7 @@ wins (a card's terminal always gets this one).
 reeve board [--stage S] [--lane L] [--repo PATH]  every card, column by column
 reeve card show|plan|diff|worktree|pr [<card>]
 reeve card add [<title…>] [--prompt TEXT] [--mode plan|build|backlog] [--lane L] [--cwd DIR] [--model M] [--effort E]
-reeve card edit <card> [--title TITLE | --no-title] [--vibes | --no-vibes]
+reeve card edit <card> [--title TITLE | --no-title] [--vibes | --no-vibes] [--wait-on CARD | --no-wait-on]
 reeve card move <card> [<stage>] [--lane L] [--in-folder]
 reeve card run <card> [--restart]
 reeve card reply <card> <text…> [--file PATH|-] [--force]
@@ -302,7 +317,9 @@ reeve open [<card>] · status · models · doctor
   a dialog, unless you pass `--force`.
 - **Backlog cards.** `card add --mode backlog` makes one, with `--prompt`
   kept until it starts. `move` to planning or in-progress starts it; `run`
-  and `reply` refuse it until then.
+  and `reply` refuse it until then. `card edit --wait-on <card>` has it wait
+  on another card: `move` refuses to start it (exit 1, naming that card)
+  until that one merges. `card show` says what it depends on.
 - **`close`.** Deletes the worktree, as ⌘W does. It refuses uncommitted
   changes, unmerged commits or an open pull request unless you pass `--force`.
 
@@ -367,7 +384,8 @@ tab's Approve once the plan dialog is up and logs the mode it lands in.
 `REEVE_SMOKE_MODE=repos` checks repos, backlog cards and swimlanes without
 Claude taking a turn: it adds `REEVE_SMOKE_DIR` as a repo, names a card in
 Backlog and checks nothing starts, moves it to a new lane and deletes the
-lane, moves it to Planning and checks it starts there in a worktree, closes
+lane, has it wait on a second card and checks a loop is refused and a move
+to Planning is refused, closes that card, moves it to Planning and checks it starts there in a worktree, closes
 it, and opens Settings to take the repo off and put it back, with a
 picture of each window and a line per check in `timeline.txt`. Run it twice
 on one `REEVE_DATA_DIR` to see the list kept.

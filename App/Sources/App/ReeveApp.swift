@@ -114,6 +114,7 @@ struct BoardCommands: Commands {
                         }
                     }
                 }
+                WaitMenu(card: card).environmentObject(board)
                 Button("Rename…") { Rename.ask(card: card, board: board) }
                 Button("Sort Now") { board.classifyNow(card.id) }
                     .disabled(card.transcriptPath == nil)

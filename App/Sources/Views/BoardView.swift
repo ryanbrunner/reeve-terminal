@@ -399,6 +399,7 @@ struct CardMenu: View {
         if board.lanes.count > 1 {
             LaneMenu(card: card)
         }
+        WaitMenu(card: card)
         Button("Rename…") { Rename.ask(card: card, board: board) }
         Button("Sort Now") { board.classifyNow(card.id) }
             .disabled(card.transcriptPath == nil)
@@ -406,10 +407,11 @@ struct CardMenu: View {
         VibesToggle(card: card)
         Divider()
         if card.queued == true {
+            let held = board.launching.contains(card.id) || board.blocker(of: card.id) != nil
             Button("Start Planning") { board.startQueued(card.id, mode: .plan) }
-                .disabled(board.launching.contains(card.id))
+                .disabled(held)
             Button("Start Building") { board.startQueued(card.id, mode: .build) }
-                .disabled(board.launching.contains(card.id))
+                .disabled(held)
         } else {
             Button(board.live.contains(card.id) ? "Restart Session" : "Resume Session") { board.restart(card.id) }
         }
@@ -503,6 +505,37 @@ struct LaneMenu: View {
                 Button(lane.name) { board.move(card.id, lane: lane.id) }
                     .disabled(lane.id == board.lane(of: card).id)
             }
+        }
+    }
+}
+
+/// The card another waits on: in the backlog it can't start until that one
+/// has merged.
+struct WaitMenu: View {
+    @EnvironmentObject var board: Board
+    let card: Card
+
+    var body: some View {
+        Menu("Wait On") {
+            ForEach(board.ordered.filter { $0.id != card.id }) { other in
+                Toggle(board.displayTitle(other), isOn: Binding(
+                    get: { card.dependsOnId == other.id },
+                    set: { wait($0 ? other.id : nil) }
+                ))
+            }
+            if card.dependsOnId != nil {
+                Divider()
+                Button("Stop Waiting") { wait(nil) }
+            }
+        }
+        .disabled(board.cards.count < 2 && card.dependsOnId == nil)
+    }
+
+    private func wait(_ target: UUID?) {
+        do {
+            try board.waitOn(card.id, target)
+        } catch {
+            board.refuse(error as? APIError ?? APIError(error.localizedDescription))
         }
     }
 }

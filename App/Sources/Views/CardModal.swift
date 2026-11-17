@@ -244,16 +244,25 @@ private struct BacklogPanel: View {
                 .padding(10)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Theme.panel))
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Theme.edge))
+            let blocker = board.blocker(of: card.id)
             HStack(spacing: 10) {
                 Button("Plan it") { board.startQueued(card.id, mode: .plan) }
                     .buttonStyle(SecondaryButtonStyle())
                 Button("Start building") { board.startQueued(card.id, mode: .build) }
                     .buttonStyle(PrimaryButtonStyle())
             }
-            .disabled(launching)
-            Text("Or drag it to Planning or In Progress.")
-                .font(.geist(11))
-                .foregroundStyle(Theme.muted.opacity(0.8))
+            .disabled(launching || blocker != nil)
+            if let blocker {
+                Text("It waits on “\(board.displayTitle(blocker))”, in \(Dependency.status(of: blocker)). It can start once that merges.")
+                    .font(.geist(11))
+                    .foregroundStyle(Theme.amber100.opacity(0.85))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 460)
+            } else {
+                Text("Or drag it to Planning or In Progress.")
+                    .font(.geist(11))
+                    .foregroundStyle(Theme.muted.opacity(0.8))
+            }
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

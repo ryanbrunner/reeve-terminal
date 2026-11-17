@@ -125,6 +125,9 @@ final class Board: ObservableObject {
     /// Backlog cards VIBES MODE couldn't start, left for a person rather than
     /// tried again on every sweep.
     private var vibesStartFailed: Set<UUID> = []
+    /// Cards VIBES MODE has left alone because what they wait on hasn't
+    /// merged, so the ledger says so once rather than at every sweep.
+    private var vibesHeld: Set<UUID> = []
     private let dataDir: URL
     /// Where the board lives, which the command bar's `reeve` is pointed at.
     var dataDirectory: URL { dataDir }
@@ -255,6 +258,8 @@ final class Board: ObservableObject {
     private func withWorktreeFallback(_ make: (_ inFolder: Bool) async throws -> Void) async {
         do {
             try await make(false)
+        } catch let refusal as APIError {
+            refuse(refusal)
         } catch {
             let alert = NSAlert()
             alert.messageText = "Couldn't make a worktree for this card"
@@ -379,6 +384,7 @@ final class Board: ObservableObject {
     /// column stays there; one started where it is goes to the mode's column.
     func launch(_ id: UUID, mode: StartMode, inFolder: Bool) async throws {
         guard let card = card(id), card.queued == true, !launching.contains(id) else { return }
+        if let refusal = startRefusal(id) { throw refusal }
         launching.insert(id)
         defer { launching.remove(id) }
         let start = startingMode(mode, vibes: card.vibes == true)
@@ -407,6 +413,7 @@ final class Board: ObservableObject {
 
     /// `launch`, from the board, asking about the folder if git says no.
     func startQueued(_ id: UUID, mode: StartMode) {
+        if let refusal = startRefusal(id) { return refuseStart(id, refusal) }
         Task {
             await withWorktreeFallback { inFolder in try await self.launch(id, mode: mode, inFolder: inFolder) }
         }
@@ -415,6 +422,8 @@ final class Board: ObservableObject {
     func select(_ id: UUID) {
         selectedId = id
         refreshPullRequest(id)
+        // What it waits on may have merged since the board last asked.
+        if let blocker = blocker(of: id) { refreshPullRequest(blocker.id) }
         // Whatever Claude is asking is in the terminal.
         if card(id)?.activity == .needsInput { tabs[id] = .terminal }
         if let card = card(id), !live.contains(id) {
@@ -505,8 +514,14 @@ final class Board: ObservableObject {
 
     /// A person put the card here. It stays until they next speak to Claude.
     /// A backlog card moved to Planning or In Progress starts, unless
-    /// `launching` is off, for a caller that starts it itself.
+    /// `launching` is off, for a caller that starts it itself. One waiting on
+    /// a card that hasn't merged can't start, so it stays where it is.
     func move(_ id: UUID, to stage: Stage? = nil, lane: UUID? = nil, launching: Bool = true) {
+        if let stage, card(id)?.queued == true, Card.launch(movingTo: stage) != nil, let refusal = startRefusal(id) {
+            // A caller that starts it itself says why in its own words.
+            if launching { refuseStart(id, refusal) }
+            return
+        }
         update(id) { card in
             if let lane, lanes.contains(where: { $0.id == lane }) { card.laneId = lane }
             guard let stage, card.stage != stage else { return }
@@ -515,6 +530,59 @@ final class Board: ObservableObject {
         }
         if launching, let stage, card(id)?.queued == true, let mode = Card.launch(movingTo: stage) {
             startQueued(id, mode: mode)
+        }
+    }
+
+    // MARK: Waiting on another card
+
+    /// The card `id` waits on, while it hasn't merged.
+    func blocker(of id: UUID) -> Card? {
+        card(id).flatMap { Dependency.blocker(of: $0, in: cards) }
+    }
+
+    /// Why the backlog card `id` can't start yet, else nil.
+    func startRefusal(_ id: UUID) -> APIError? {
+        card(id).flatMap { Dependency.refusal($0, in: cards, name: { self.displayTitle($0) }) }
+    }
+
+    /// The card `id` waits on `target`, or on nothing. Refused for itself, a
+    /// card that isn't on the board, or a loop.
+    func waitOn(_ id: UUID, _ target: UUID?) throws {
+        guard let card = card(id) else { throw APIError("no such card") }
+        if let target {
+            guard let waited = self.card(target) else { throw APIError("no such card on the board", detail: target.uuidString) }
+            if let refusal = Dependency.linkRefusal(card, waitingOn: waited, in: cards + archive, name: { self.displayTitle($0) }) { throw refusal }
+        }
+        update(id) { $0.dependsOnId = target }
+        // Let go, it may be VIBES MODE's to push on.
+        if target == nil { vibesSweep() }
+    }
+
+    /// The card `card` waits on, as `reeve` sees it.
+    func dependencyLink(_ card: Card) -> DependencyLink? {
+        guard let id = card.dependsOnId else { return nil }
+        guard let waited = self.card(id) ?? archive.first(where: { $0.id == id }) else {
+            return DependencyLink(id: id, title: "", done: true, status: "closed")
+        }
+        return DependencyLink(id: id, title: displayTitle(waited), done: !Dependency.stillBlocking(waited), status: Dependency.status(of: waited))
+    }
+
+    /// Says why `id` can't start. Merged is only what its badge last said, so
+    /// the card it waits on is asked again, and a try once it has merged goes
+    /// through.
+    private func refuseStart(_ id: UUID, _ refusal: APIError) {
+        if let blocker = blocker(of: id) { refreshPullRequest(blocker.id) }
+        refuse(refusal)
+    }
+
+    /// Says why the board didn't do what was asked. After the gesture that
+    /// asked, since a drop calls in from inside an animation.
+    func refuse(_ refusal: APIError) {
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.messageText = refusal.error.prefix(1).uppercased() + refusal.error.dropFirst()
+            alert.informativeText = refusal.detail ?? ""
+            alert.runModal()
         }
     }
 
@@ -599,8 +667,14 @@ final class Board: ObservableObject {
         answeringPlans.remove(id)
         vibesPrompts[id] = nil
         vibesStartFailed.remove(id)
+        vibesHeld.remove(id)
         launching.remove(id)
         cards.removeAll { $0.id == id }
+        // Gone without merging, it has nothing left to wait for. An archived
+        // one stays linked, and says it merged.
+        if !archiving {
+            for card in cards where card.dependsOnId == id { update(card.id) { $0.dependsOnId = nil } }
+        }
         live.remove(id)
         dialogOpen.remove(id)
         awaitingPrompt.remove(id)
@@ -1075,11 +1149,18 @@ final class Board: ObservableObject {
     /// With the board's switch on, Backlog is where work starts rather than
     /// where it waits: every card in it is started, in the column VIBES MODE
     /// starts in. A worktree git won't make leaves the card for a person, with
-    /// no dialog to ask about the folder: there is nobody to answer one.
+    /// no dialog to ask about the folder: there is nobody to answer one. A
+    /// card waiting on another that hasn't merged is held, and started by the
+    /// sweep once that one merges.
     private func startBacklog() {
         guard vibes != nil, !vibesArming else { return }
         for card in cards where card.queued == true && !launching.contains(card.id) && !vibesStartFailed.contains(card.id) {
             let id = card.id, name = "“\(displayTitle(card))”"
+            if let blocker = blocker(of: id) {
+                if vibesHeld.insert(id).inserted { vibes?.note("Holding \(name) · it waits on “\(displayTitle(blocker))”") }
+                continue
+            }
+            vibesHeld.remove(id)
             Task {
                 do {
                     // Planning, unless VIBES MODE skips it.
@@ -1179,8 +1260,15 @@ final class Board: ObservableObject {
         // Enter from here would send both.
         guard selectedId != id else { return }
         guard card.activity == .needsReview else { return }
-        settled.remove(id)
         let name = "“\(displayTitle(card))”"
+        // Its work builds on a card that hasn't merged: left settled, so the
+        // sweep once that one merges picks it up.
+        if let blocker = blocker(of: id) {
+            if vibesHeld.insert(id).inserted { vibes?.note("Holding \(name) · it waits on “\(displayTitle(blocker))”") }
+            return
+        }
+        vibesHeld.remove(id)
+        settled.remove(id)
         switch Vibes.next(stage: card.stage, waitingOn: leftQuestions.removeValue(forKey: id), nudges: card.vibesNudges, options: vibesOptions) {
         case .answer:
             type(Vibes.noOneHome, into: id)
@@ -1237,6 +1325,8 @@ final class Board: ObservableObject {
         justShipped.insert(id)
         shipBeat += 1
         save()
+        // Whatever waited on it can go on.
+        vibesSweep()
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) { [weak self] in self?.justShipped.remove(id) }
         // It may have been the repo's last card.
         thinkOfIdeas()
@@ -1564,12 +1654,14 @@ final class Board: ObservableObject {
             if let head { card.headBranch = head }
             if card.hasLivePullRequest, !card.stagePinned { card.stage = .release }
         }
+        // Merged, whatever waited on it can go on.
+        if self.card(id)?.pullRequest?.state == .merged, cards.contains(where: { $0.dependsOnId == id }) { vibesSweep() }
     }
 
     /// The card as `reeve` sees it.
     func apiCard(_ card: Card) -> APICard {
         APICard(card: card, live: live.contains(card.id), starting: starting.contains(card.id),
-                dialogOpen: dialogOpen.contains(card.id), displayTitle: displayTitle(card))
+                dialogOpen: dialogOpen.contains(card.id), displayTitle: displayTitle(card), dependsOn: dependencyLink(card))
     }
 
     // MARK: Persistence

@@ -126,6 +126,9 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     /// What a backlog card says to Claude when it starts, when that is more
     /// than its title. Nil once it has started, or when the title says it.
     public var brief: String?
+    /// The card this one waits on. In Backlog it can't start until that one
+    /// has merged (see `Dependency`). Nil waits on nothing.
+    public var dependsOnId: UUID?
     public var activity: Activity
     /// How the session starts. Nil for cards made before there was a choice,
     /// which start in the person's own default mode.

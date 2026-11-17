@@ -479,6 +479,44 @@ enum Smoke {
         board.deleteLane(lane.id)
         check(board.lanes.count == 1 && board.lane(of: board.card(card.id)!).id == board.lanes[0].id, "deleting a lane moves its cards to the one above")
 
+        // Waiting on a card that hasn't merged, it can't start, and says so.
+        let other = try? await board.createCard(cwd: repo.path, title: "Smoke dependency", prompt: nil, mode: nil, model: nil, effort: nil, open: false, inFolder: false)
+        if let other {
+            try? board.waitOn(other.id, card.id)
+            check((try? board.waitOn(card.id, other.id)) == nil && board.card(card.id)?.dependsOnId == nil, "a card can't wait on one that waits on it")
+            board.close(other.id)
+        }
+        let dependency = try? await board.createCard(cwd: repo.path, title: "Smoke dependency", prompt: nil, mode: nil, model: nil, effort: nil, open: false, inFolder: false)
+        if let dependency {
+            try? board.waitOn(card.id, dependency.id)
+            check(board.blocker(of: card.id)?.id == dependency.id, "a card waits on another")
+            await picture("4b-waiting", window)
+            // The alert runs modal, which holds this task until it goes: a
+            // timer, which fires in the alert's run loop mode, takes its
+            // picture and closes it.
+            final class Seen { var alert = false }
+            let seen = Seen()
+            let closer = Timer(timeInterval: 0.5, repeats: true) { timer in
+                MainActor.assumeIsolated {
+                    guard let alert = NSApp.modalWindow else { return }
+                    seen.alert = true
+                    snapshot(to: "\(out)/4c-refused.png", window: alert)
+                    timer.invalidate()
+                    NSApp.abortModal()
+                }
+            }
+            RunLoop.main.add(closer, forMode: .common)
+            board.move(card.id, to: .planning)
+            check(await wait("the refusal", seconds: 5, until: { seen.alert }), "dragging it to Planning says why it can't start")
+            closer.invalidate()
+            try? await Task.sleep(for: .milliseconds(500))
+            let held = board.card(card.id)
+            check(held?.stage == .backlog && held?.queued == true && held?.worktreePath == nil && !board.launching.contains(card.id),
+                  "it stays in Backlog, unstarted, with no worktree")
+            board.close(dependency.id)
+            check(board.card(card.id)?.dependsOnId == nil, "closing the card it waits on lets it go")
+        }
+
         // Without a name, it starts with no prompt, so Claude takes no turn.
         board.rename(card.id, to: "")
         board.move(card.id, to: .planning)
