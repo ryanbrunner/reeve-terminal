@@ -273,8 +273,10 @@ script/release fetch    # once Apple is done → build/release/Reeve.zip
 | ⌥⌘1 / ⌥⌘2 / ⌥⌘3 / ⌥⌘4 / ⌥⌘5 | The open card's Terminal / Plan / Changes / Preview / PRs |
 | ⇧⌘V | VIBES MODE for the whole board |
 
-Esc goes to Claude Code, where it interrupts a turn, so it doesn't close an
-open card. Use ⌘B, the × in the card's header or a click outside it.
+Esc also goes back to the board, except where it is wanted: in a live
+terminal it goes to Claude Code, where it interrupts a turn, and a field
+being typed in or the page in the Preview tab keeps it too. ⌘B, the × in the
+card's header or a click outside it always go back.
 
 Right-click a card, or use the ⋯ in an open card's header, to move it, have
 it wait on another card, rename it, re-sort it now, put it in VIBES MODE,
@@ -385,7 +387,8 @@ tab's Approve once the plan dialog is up and logs the mode it lands in.
 Claude taking a turn: it adds `REEVE_SMOKE_DIR` as a repo, names a card in
 Backlog and checks nothing starts, moves it to a new lane and deletes the
 lane, has it wait on a second card and checks a loop is refused and a move
-to Planning is refused, closes that card, moves it to Planning and checks it starts there in a worktree, closes
+to Planning is refused, closes that card, moves it to Planning and checks it starts there in a worktree, checks
+that Esc closes it, but not from its terminal while it is live, closes
 it, and opens Settings to take the repo off and put it back, with a
 picture of each window and a line per check in `timeline.txt`. Run it twice
 on one `REEVE_DATA_DIR` to see the list kept.
