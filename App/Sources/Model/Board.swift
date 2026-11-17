@@ -49,6 +49,9 @@ final class Board: ObservableObject {
     /// Cards whose plan dialog VIBES MODE has pressed Enter on and not yet
     /// seen go: a key sent before the dialog drew is sent again.
     @Published private(set) var approvingPlans: Set<UUID> = []
+    /// Cards whose plan dialog is being answered with the person's comments
+    /// on the plan, while Reeve picks the option that takes them.
+    @Published private(set) var answeringPlans: Set<UUID> = []
     /// Raised when a card showing its changes may have new ones, so the tab
     /// reads them again. Only for that card, so others' tool calls cost nothing.
     @Published private(set) var changeTicks: [UUID: Int] = [:]
@@ -141,7 +144,7 @@ final class Board: ObservableObject {
         }
 
         do {
-            let server = try LocalServer()
+            let server = try LocalServer(reviewsDir: reviewsDir.path)
             server.onReady = { [weak self, weak server] port in
                 guard let self, let server else { return }
                 self.hookPort = port
@@ -587,6 +590,7 @@ final class Board: ObservableObject {
         approvingPlans.remove(id)
         planDialogs.remove(id)
         acceptingPlans.remove(id)
+        answeringPlans.remove(id)
         vibesPrompts[id] = nil
         launching.remove(id)
         cards.removeAll { $0.id == id }
@@ -599,6 +603,7 @@ final class Board: ObservableObject {
         unseenPlans.remove(id)
         changeTicks[id] = nil
         try? FileManager.default.removeItem(at: reviewURL(id))
+        try? FileManager.default.removeItem(at: reviewURL(id, .plan))
         // Back to the board, rather than opening (and starting) a neighbour.
         if selectedId == id { selectedId = nil }
         save()
@@ -816,6 +821,7 @@ final class Board: ObservableObject {
         live.remove(id)
         planDialogs.remove(id)
         acceptingPlans.remove(id)
+        answeringPlans.remove(id)
         dialogOpen.remove(id)
         awaitingPrompt.remove(id)
         update(id) { card in
@@ -922,8 +928,9 @@ final class Board: ObservableObject {
         if showing == .changes, event.hookEventName == "PostToolUse" || event.hookEventName == "Stop" {
             changeTicks[cardId, default: 0] += 1
         }
-        if event.hookEventName == "Stop" || (event.hookEventName == "PostToolUse" && event.toolInput?.filePath == reviewURL(cardId).path) {
-            readReplies(cardId)
+        for target in [ReviewTarget.changes, .plan] where event.hookEventName == "Stop"
+            || (event.hookEventName == "PostToolUse" && event.toolInput?.filePath == reviewURL(cardId, target).path) {
+            readReplies(cardId, target)
         }
         if effect.classify {
             // Looks up the pull request too: a turn is where Claude opens one.
@@ -1231,47 +1238,64 @@ final class Board: ObservableObject {
 
     // MARK: Review
 
-    func reviewURL(_ id: UUID) -> URL {
-        reviewsDir.appendingPathComponent(id.uuidString + ".json")
+    /// What a review is of: the card's changes, or its plan.
+    enum ReviewTarget {
+        case changes, plan
+    }
+
+    func reviewURL(_ id: UUID, _ target: ReviewTarget = .changes) -> URL {
+        reviewsDir.appendingPathComponent(id.uuidString + (target == .plan ? "-plan" : "") + ".json")
+    }
+
+    /// The card's threads on the target.
+    private func threads(_ card: Card, _ target: ReviewTarget) -> [ReviewThread]? {
+        target == .plan ? card.planReview : card.review
     }
 
     /// Why a review can't go to the card's session right now, if it can't.
-    /// While Claude works it can: Claude Code queues the prompt.
-    func reviewBlocker(_ id: UUID) -> String? {
+    /// While Claude works it can: Claude Code queues the prompt. A plan's
+    /// review can go in plan mode, and answer the plan dialog.
+    func reviewBlocker(_ id: UUID, _ target: ReviewTarget = .changes) -> String? {
         guard let card = card(id) else { return nil }
-        if card.activity == .needsInput { return "Claude is waiting on you in the terminal. Answer it first." }
-        if card.permissionMode == "plan" { return "Claude is in plan mode, where it can't change code. Leave plan mode in the terminal first." }
+        switch target {
+        case .changes:
+            if card.activity == .needsInput { return "Claude is waiting on you in the terminal. Answer it first." }
+            if card.permissionMode == "plan" { return "Claude is in plan mode, where it can't change code. Leave plan mode in the terminal first." }
+        case .plan:
+            if acceptingPlans.contains(id) || approvingPlans.contains(id) || answeringPlans.contains(id) { return "The plan dialog is being answered." }
+            if card.activity == .needsInput, !planDialogs.contains(id) { return "Claude is waiting on you in the terminal. Answer it first." }
+        }
         return nil
     }
 
     /// A new comment on a line. Sent now, or kept as part of a review.
-    func comment(on anchor: ReviewAnchor, _ body: String, in id: UUID, send: Bool) {
+    func comment(on anchor: ReviewAnchor, _ body: String, in id: UUID, _ target: ReviewTarget = .changes, send: Bool) {
         let thread = ReviewThread(anchor: anchor, messages: [ReviewMessage(author: .person, body: body, pending: true)])
-        updateReview(id) { $0.append(thread) }
-        if send { submitReview(id, only: thread.id) }
+        updateReview(id, target) { $0.append(thread) }
+        if send { submitReview(id, target, only: thread.id) }
     }
 
     /// The person answers a thread. Sent now, or kept as part of a review.
-    func reply(to threadId: UUID, _ body: String, in id: UUID, send: Bool) {
-        updateReview(id) { threads in
+    func reply(to threadId: UUID, _ body: String, in id: UUID, _ target: ReviewTarget = .changes, send: Bool) {
+        updateReview(id, target) { threads in
             guard let i = threads.firstIndex(where: { $0.id == threadId }) else { return }
             threads[i].messages.append(ReviewMessage(author: .person, body: body, pending: true))
             threads[i].resolved = false
         }
-        if send { submitReview(id, only: threadId) }
+        if send { submitReview(id, target, only: threadId) }
     }
 
     /// Drops a thread's unsent drafts, and the thread with them if that was all it had.
-    func discardDrafts(_ threadId: UUID, in id: UUID) {
-        updateReview(id) { threads in
+    func discardDrafts(_ threadId: UUID, in id: UUID, _ target: ReviewTarget = .changes) {
+        updateReview(id, target) { threads in
             guard let i = threads.firstIndex(where: { $0.id == threadId }) else { return }
             threads[i].messages.removeAll { $0.pending }
             if threads[i].messages.isEmpty { threads.remove(at: i) }
         }
     }
 
-    func resolve(_ threadId: UUID, _ resolved: Bool, in id: UUID) {
-        updateReview(id) { threads in
+    func resolve(_ threadId: UUID, _ resolved: Bool, in id: UUID, _ target: ReviewTarget = .changes) {
+        updateReview(id, target) { threads in
             guard let i = threads.firstIndex(where: { $0.id == threadId }) else { return }
             threads[i].resolved = resolved
         }
@@ -1279,44 +1303,96 @@ final class Board: ObservableObject {
 
     /// Sends the card's drafts to Claude (or one thread's): writes every
     /// thread waiting on a reply to the review file and asks the session,
-    /// woken if it is asleep, to answer them there.
-    func submitReview(_ id: UUID, only threadId: UUID? = nil) {
-        guard reviewBlocker(id) == nil else { return }
+    /// woken if it is asleep, to answer them there. A plan's review, while
+    /// the plan dialog is open, goes in as the dialog's feedback.
+    func submitReview(_ id: UUID, _ target: ReviewTarget = .changes, only threadId: UUID? = nil) {
+        guard reviewBlocker(id, target) == nil else { return }
         // A reply already in the file would go with the rewrite.
-        readReplies(id)
-        updateReview(id) { threads in
+        readReplies(id, target)
+        updateReview(id, target) { threads in
             for i in threads.indices where threadId == nil || threads[i].id == threadId {
                 for m in threads[i].messages.indices { threads[i].messages[m].pending = false }
             }
         }
-        guard let card = card(id), let threads = card.review, threads.contains(where: { $0.awaitingReply && !$0.resolved }) else { return }
-        let url = reviewURL(id)
+        guard let card = card(id), let threads = threads(card, target), threads.contains(where: { $0.awaitingReply && !$0.resolved }) else { return }
+        let url = reviewURL(id, target)
+        let data = target == .plan ? ReviewFile.encode(plan: threads, planPath: card.planPath) : ReviewFile.encode(threads)
         do {
-            try ReviewFile.encode(threads).write(to: url, options: .atomic)
+            try data.write(to: url, options: .atomic)
         } catch {
             NSLog("Reeve: writing the review for \(id) failed: \(error.localizedDescription)")
             return
         }
-        let prompt = ReviewFile.prompt(path: url.path)
-        if live.contains(id) {
+        let prompt = target == .plan ? ReviewFile.prompt(plan: url.path) : ReviewFile.prompt(path: url.path)
+        if target == .plan, planDialogs.contains(id), live.contains(id) {
+            answeringPlans.insert(id)
+            answerPlanDialog(id, with: prompt, tries: 3)
+        } else if live.contains(id) {
             terminals.send(prompt, to: id)
         } else {
             start(card, prompt: prompt)
         }
     }
 
-    /// Takes in whatever Claude has replied in the card's review file.
-    private func readReplies(_ id: UUID) {
-        guard card(id)?.review?.contains(where: \.awaitingReply) == true,
-              let data = try? Data(contentsOf: reviewURL(id)) else { return }
-        updateReview(id) { $0 = ReviewFile.merge(data, into: $0) }
+    /// Puts `prompt` to Claude through the plan dialog: its last option, the
+    /// one that doesn't approve, as the person would. "Tell Claude what to
+    /// change" takes the text in place; an older "No, keep planning" goes
+    /// back to the prompt, where the text is typed. As with approving, the
+    /// selection is read off the screen before anything is typed, and Enter
+    /// is pressed only once it is on that option: Enter anywhere else would
+    /// approve the plan.
+    private func answerPlanDialog(_ id: UUID, with prompt: String, tries: Int) {
+        guard answeringPlans.contains(id) else { return }
+        guard let dialog = PlanDialog.find(onScreen: terminals.screen(id)), let target = dialog.feedback else {
+            if tries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.answerPlanDialog(id, with: prompt, tries: tries - 1) }
+            } else {
+                answeringPlans.remove(id)
+            }
+            return
+        }
+        let inPlace = !dialog.options[target].hasPrefix("No")
+        let view = terminals.view(for: id)
+        let moves = dialog.moves(to: target)
+        for (i, key) in moves.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08 * Double(i)) { [weak self] in
+                guard self?.answeringPlans.contains(id) == true else { return }
+                view.send(txt: key)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08 * Double(moves.count) + 0.3) { [weak self] in
+            guard let self, self.answeringPlans.contains(id) else { return }
+            guard PlanDialog.find(onScreen: self.terminals.screen(id))?.selected == target else {
+                self.answeringPlans.remove(id)
+                return
+            }
+            if inPlace {
+                // Typed into the option, then submitted from it.
+                self.terminals.send(prompt, to: id)
+            } else {
+                view.send(txt: "\r")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.terminals.send(prompt, to: id) }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.answeringPlans.remove(id) }
+        }
     }
 
-    private func updateReview(_ id: UUID, _ change: (inout [ReviewThread]) -> Void) {
+    /// Takes in whatever Claude has replied in the card's review file.
+    private func readReplies(_ id: UUID, _ target: ReviewTarget) {
+        guard let card = card(id), threads(card, target)?.contains(where: \.awaitingReply) == true,
+              let data = try? Data(contentsOf: reviewURL(id, target)) else { return }
+        updateReview(id, target) { $0 = ReviewFile.merge(data, into: $0) }
+    }
+
+    private func updateReview(_ id: UUID, _ target: ReviewTarget, _ change: (inout [ReviewThread]) -> Void) {
         update(id) { card in
-            var threads = card.review ?? []
+            var threads = (target == .plan ? card.planReview : card.review) ?? []
             change(&threads)
-            card.review = threads.isEmpty ? nil : threads
+            if target == .plan {
+                card.planReview = threads.isEmpty ? nil : threads
+            } else {
+                card.review = threads.isEmpty ? nil : threads
+            }
         }
     }
 

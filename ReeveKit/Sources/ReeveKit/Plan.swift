@@ -112,6 +112,13 @@ public struct PlanDialog: Equatable, Sendable {
             ?? 0
     }
 
+    /// The option that sends Claude back to planning, the last that doesn't
+    /// approve: "Tell Claude what to change", which takes text in place, or
+    /// "No, keep planning". Nil if every option approves.
+    public var feedback: Int? {
+        options.indices.last { !options[$0].hasPrefix("Yes") }
+    }
+
     /// The arrow keys that move the selection to `index`, one a keystroke.
     public func moves(to index: Int) -> [String] {
         Array(repeating: index > selected ? "\u{1b}[B" : "\u{1b}[A", count: abs(index - selected))

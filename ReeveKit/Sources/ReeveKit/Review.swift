@@ -95,6 +95,12 @@ public struct ReviewAnchor: Hashable, Sendable {
         }
     }
 
+    /// The anchor of a block of a plan: where it starts in the plan's file
+    /// and what it said.
+    public init(plan path: String, block: MarkdownBlock.Located) {
+        self.init(path: path, side: .new, line: block.line, code: block.source)
+    }
+
     /// A key that stays the same across reads of the diff, for the line's
     /// threads and its composer.
     public var key: String {
@@ -136,28 +142,83 @@ public struct ReviewPlacement: Equatable, Sendable {
     }
 }
 
+/// Where each comment on a plan shows in the plan as it is now.
+public struct PlanReviewPlacement: Equatable, Sendable {
+    /// Threads on a block still in the plan, by the block's anchor key.
+    public var byBlock: [String: [ReviewThread]] = [:]
+    /// Threads on a block Claude has since rewritten, or on an earlier plan.
+    public var outdated: [ReviewThread] = []
+
+    /// A block that moved, as one does when Claude rewrites the plan above
+    /// it, keeps its threads: they go to the nearest block saying the same.
+    public init(_ threads: [ReviewThread], plan path: String, blocks: [MarkdownBlock.Located]) {
+        let anchors = blocks.map { ReviewAnchor(plan: path, block: $0) }
+        for thread in threads {
+            let moved = anchors.filter { $0.path == thread.path && $0.code == thread.code }
+                .min { abs($0.line - thread.line) < abs($1.line - thread.line) }
+            if let anchor = moved {
+                byBlock[anchor.key, default: []].append(thread)
+            } else {
+                outdated.append(thread)
+            }
+        }
+    }
+}
+
 /// The file a review goes to Claude in, and Claude's replies come back in.
 public enum ReviewFile {
-    /// Every open thread waiting on Claude, not only the newest: a review
-    /// sent before Claude answered the last one mustn't drop it. One the
-    /// person resolved without waiting is done with.
+    /// The review of the card's changes.
     public static func encode(_ threads: [ReviewThread]) -> Data {
-        let comments: [[String: Any]] = threads.filter { $0.awaitingReply && !$0.resolved }.map { thread in
+        let comments: [[String: Any]] = waiting(threads).map { thread in
             [
                 "id": thread.id.uuidString,
                 "file": thread.path,
                 "side": thread.side.rawValue,
                 "line": thread.line,
                 "code": thread.code,
-                "thread": thread.messages.filter { !$0.pending }.map { ["from": $0.author == .person ? "reviewer" : "you", "text": $0.body] },
+                "thread": conversation(thread),
                 "reply": NSNull(),
             ]
         }
-        let doc: [String: Any] = [
+        return json([
             "instructions": "Review comments on your changes. Each is on a line of a file: `side` is `new` for the file as it is now, `old` for a removed line, and `code` is what the line said. `thread` is the conversation so far; you are \"you\". Address each comment: change the code, or explain why not. Then set each comment's `reply` to your answer, as a string, like replying on a GitHub review. Leave everything else as it is.",
             "comments": comments,
+        ])
+    }
+
+    /// The same, for comments on the plan at `planPath` (nil for a plan that
+    /// is only in the conversation). Claude answers them by revising the plan.
+    public static func encode(plan threads: [ReviewThread], planPath: String?) -> Data {
+        let comments: [[String: Any]] = waiting(threads).map { thread in
+            [
+                "id": thread.id.uuidString,
+                "line": thread.line,
+                "text": thread.code,
+                "thread": conversation(thread),
+                "reply": NSNull(),
+            ]
+        }
+        var doc: [String: Any] = [
+            "instructions": "Review comments on your plan. Each is on a part of the plan: `line` is where it starts in the plan, and `text` is what that part said. `thread` is the conversation so far; you are \"you\". Address each comment: revise the plan, or explain why not. Then set each comment's `reply` to your answer, as a string, like replying on a GitHub review. Leave everything else as it is. You may edit this file in plan mode.",
+            "comments": comments,
         ]
-        return (try? JSONSerialization.data(withJSONObject: doc, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])) ?? Data()
+        if let planPath { doc["plan"] = planPath }
+        return json(doc)
+    }
+
+    /// Every open thread waiting on Claude, not only the newest: a review
+    /// sent before Claude answered the last one mustn't drop it. One the
+    /// person resolved without waiting is done with.
+    private static func waiting(_ threads: [ReviewThread]) -> [ReviewThread] {
+        threads.filter { $0.awaitingReply && !$0.resolved }
+    }
+
+    private static func conversation(_ thread: ReviewThread) -> [[String: String]] {
+        thread.messages.filter { !$0.pending }.map { ["from": $0.author == .person ? "reviewer" : "you", "text": $0.body] }
+    }
+
+    private static func json(_ doc: [String: Any]) -> Data {
+        (try? JSONSerialization.data(withJSONObject: doc, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])) ?? Data()
     }
 
     /// Claude's replies, added to the threads still waiting on one. Reading
@@ -185,5 +246,21 @@ public enum ReviewFile {
     /// goes in as a single prompt.
     public static func prompt(path: String) -> String {
         "I left review comments on your changes in \(path). Read it, address each comment (change the code, or explain why not), then write your reply to each into its \"reply\" field in that file, like replying on a GitHub review."
+    }
+
+    public static func prompt(plan path: String) -> String {
+        "I left review comments on your plan in \(path). Read it, address each comment (revise the plan, or explain why not), then write your reply to each into its \"reply\" field in that file, like replying on a GitHub review."
+    }
+
+    /// The hook's answer that lets Claude edit a review file even in plan
+    /// mode, which refuses every edit but the plan's whatever the settings
+    /// allow, so it can reply to comments on its plan. Nil for anything else.
+    public static func permission(for event: HookEvent, reviewsDir: String) -> Data? {
+        guard event.hookEventName == "PreToolUse", ["Edit", "Write", "MultiEdit"].contains(event.toolName ?? ""),
+              let path = event.toolInput?.filePath else { return nil }
+        let file = URL(fileURLWithPath: path).standardizedFileURL
+        let dir = URL(fileURLWithPath: reviewsDir, isDirectory: true).standardizedFileURL
+        guard file.pathExtension == "json", file.deletingLastPathComponent().path == dir.path else { return nil }
+        return Data(#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"Reeve's review file"}}"#.utf8)
     }
 }

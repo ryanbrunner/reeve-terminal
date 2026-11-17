@@ -22,6 +22,10 @@ import ReeveKit
 /// `REEVE_SMOKE_MODEL` and `REEVE_SMOKE_EFFORT` pick the card's model and effort.
 /// `REEVE_SMOKE_APPROVE` presses the Plan tab's Approve once the plan dialog
 /// is up, saving the screen it read, and runs on to the end of the turn.
+/// `REEVE_SMOKE_MODE=planreview` (with `REEVE_SMOKE_START=plan`) comments on
+/// the plan's first paragraph or item once the plan dialog is up
+/// (`REEVE_SMOKE_COMMENT`), sends it through the dialog, and stops once
+/// Claude has replied and put the plan up again.
 /// `REEVE_SMOKE_MODE=preview` checks the Preview tab instead; see `runPreview`.
 /// `REEVE_SMOKE_MODE=repos` checks the repo list and Settings; see `runRepos`.
 @MainActor
@@ -65,6 +69,7 @@ enum Smoke {
         var lastStage: Stage?
         var lastMode: String?
         var approved = false
+        var planReviewed = false
         let vibes = env["REEVE_SMOKE_VIBES"] != nil
 
         func log(_ line: String) {
@@ -232,6 +237,32 @@ enum Smoke {
                 if mode == "review" {
                     let replied = card.review?.contains { $0.messages.last?.author == .claude } == true
                     sorted = replied && card.activity != .running
+                }
+                if mode == "planreview", !planReviewed, board.planDialogs.contains(card.id) {
+                    planReviewed = true
+                    board.show(.plan, for: card.id)
+                    Task {
+                        // Once the dialog has drawn: the hook comes before it.
+                        try? await Task.sleep(for: .seconds(1.5))
+                        guard let text = await board.loadPlan(card.id),
+                              let block = MarkdownBlock.locate(text).first(where: { if case .heading = $0.block { false } else { true } }) else {
+                            log("no plan to comment on")
+                            return
+                        }
+                        let anchor = ReviewAnchor(plan: card.planPath ?? "plan", block: block)
+                        log("commenting on plan line \(anchor.line): \(anchor.code)")
+                        snapshot(to: "\(out)/plan-before.png")
+                        board.comment(on: anchor, env["REEVE_SMOKE_COMMENT"] ?? "Write \"bye\" instead of \"hi\", and tell me what you changed.", in: card.id, .plan, send: true)
+                        try? await Task.sleep(for: .seconds(1))
+                        snapshot(to: "\(out)/plan-sending.png")
+                    }
+                }
+                if mode == "planreview" {
+                    let replied = card.planReview?.contains { $0.messages.last?.author == .claude } == true
+                    if replied, board.planDialogs.contains(card.id) {
+                        try? board.terminals.screen(card.id).joined(separator: "\n").write(toFile: "\(out)/plan-dialog-after.txt", atomically: true, encoding: .utf8)
+                    }
+                    sorted = replied && board.planDialogs.contains(card.id)
                 }
                 let planned = tabs && (card.plan != nil || card.planPath != nil)
                 if sorted || planned || elapsed > limit {

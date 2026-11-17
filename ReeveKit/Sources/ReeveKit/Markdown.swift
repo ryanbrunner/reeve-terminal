@@ -14,26 +14,50 @@ public enum MarkdownBlock: Equatable, Sendable {
     case rule
 
     public static func parse(_ markdown: String) -> [MarkdownBlock] {
-        var blocks: [MarkdownBlock] = []
+        locate(markdown).map(\.block)
+    }
+
+    /// A block and where it came from: what a comment on it is anchored to.
+    public struct Located: Equatable, Sendable {
+        public var block: MarkdownBlock
+        /// The block's first line in the document, from 1.
+        public var line: Int
+        /// The block's lines as written.
+        public var source: String
+    }
+
+    public static func locate(_ markdown: String) -> [Located] {
+        let lines = markdown.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { String($0).replacingOccurrences(of: "\r", with: "") }
+        var located: [Located] = []
         var paragraph: [String] = []
         var quote: [String] = []
         var table: [[String]] = []
         var fence: (marker: String, language: String?, lines: [String])?
+        /// The open block's first line and its latest, as indexes into `lines`.
+        var span = (start: 0, end: 0)
 
+        func add(_ block: MarkdownBlock, _ start: Int, _ end: Int) {
+            located.append(Located(block: block, line: start + 1, source: lines[start...end].joined(separator: "\n")))
+        }
         func flush() {
-            if !paragraph.isEmpty { blocks.append(.paragraph(paragraph.joined(separator: " "))) }
-            if !quote.isEmpty { blocks.append(.quote(quote.joined(separator: " "))) }
-            if !table.isEmpty { blocks.append(.table(table)) }
+            if !paragraph.isEmpty { add(.paragraph(paragraph.joined(separator: " ")), span.start, span.end) }
+            if !quote.isEmpty { add(.quote(quote.joined(separator: " ")), span.start, span.end) }
+            if !table.isEmpty { add(.table(table), span.start, span.end) }
             paragraph = []; quote = []; table = []
         }
+        /// Starts a paragraph, quote or table at `i`, or carries one on to it.
+        func extend(_ i: Int) {
+            if paragraph.isEmpty, quote.isEmpty, table.isEmpty { span.start = i }
+            span.end = i
+        }
 
-        for raw in markdown.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(raw).replacingOccurrences(of: "\r", with: "")
+        for (i, line) in lines.enumerated() {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
 
             if let open = fence {
                 if trimmed.hasPrefix(open.marker) {
-                    blocks.append(.code(language: open.language, text: open.lines.joined(separator: "\n")))
+                    add(.code(language: open.language, text: open.lines.joined(separator: "\n")), span.start, i)
                     fence = nil
                 } else {
                     fence?.lines.append(line)
@@ -45,6 +69,7 @@ public enum MarkdownBlock: Equatable, Sendable {
                 let marker = String(trimmed.prefix(3))
                 let language = trimmed.dropFirst(3).trimmingCharacters(in: .whitespaces)
                 fence = (marker, language.isEmpty ? nil : language, [])
+                span.start = i
                 continue
             }
             if trimmed.isEmpty {
@@ -53,16 +78,17 @@ public enum MarkdownBlock: Equatable, Sendable {
             }
             if let heading = heading(trimmed) {
                 flush()
-                blocks.append(heading)
+                add(heading, i, i)
                 continue
             }
             if trimmed.count >= 3, Set(trimmed.replacingOccurrences(of: " ", with: "")).count == 1, "-*_".contains(trimmed.first!) {
                 flush()
-                blocks.append(.rule)
+                add(.rule, i, i)
                 continue
             }
             if trimmed.hasPrefix("|") {
                 if !paragraph.isEmpty || !quote.isEmpty { flush() }
+                extend(i)
                 let cells = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "|"))
                     .split(separator: "|", omittingEmptySubsequences: false)
                     .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -73,27 +99,30 @@ public enum MarkdownBlock: Equatable, Sendable {
             }
             if trimmed.hasPrefix(">") {
                 if !paragraph.isEmpty || !table.isEmpty { flush() }
+                extend(i)
                 quote.append(trimmed.dropFirst().trimmingCharacters(in: .whitespaces))
                 continue
             }
             if let item = listItem(line) {
                 flush()
-                blocks.append(item)
+                add(item, i, i)
                 continue
             }
             // A line carrying on from a list item belongs to it.
-            if paragraph.isEmpty, quote.isEmpty, table.isEmpty, line.hasPrefix("  "), case let .listItem(marker, indent, text)? = blocks.last {
-                blocks[blocks.count - 1] = .listItem(marker: marker, indent: indent, text: text + " " + trimmed)
+            if paragraph.isEmpty, quote.isEmpty, table.isEmpty, line.hasPrefix("  "), let last = located.last, case let .listItem(marker, indent, text) = last.block {
+                located[located.count - 1].block = .listItem(marker: marker, indent: indent, text: text + " " + trimmed)
+                located[located.count - 1].source += "\n" + line
                 continue
             }
             if !quote.isEmpty || !table.isEmpty { flush() }
+            extend(i)
             paragraph.append(trimmed)
         }
         if let open = fence {
-            blocks.append(.code(language: open.language, text: open.lines.joined(separator: "\n")))
+            add(.code(language: open.language, text: open.lines.joined(separator: "\n")), span.start, lines.count - 1)
         }
         flush()
-        return blocks
+        return located
     }
 
     private static func heading(_ line: String) -> MarkdownBlock? {
