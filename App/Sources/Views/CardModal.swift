@@ -38,7 +38,6 @@ struct CardModal: View {
                 .onTapGesture { board.dismissOpenCard() }
             VStack(spacing: 0) {
                 TerminalHeader(card: card)
-                CardTabBar(card: card, selected: tab)
                 ZStack {
                     // Always mounted, so the terminal keeps its size: every
                     // resize makes `claude` redraw. The other tabs cover it.
@@ -64,6 +63,7 @@ struct CardModal: View {
                         PullRequestsView(card: card).id(card.id)
                     }
                 }
+                CardTabBar(card: card, selected: tab)
             }
             .background(Theme.ink)
             .clipShape(RoundedRectangle(cornerRadius: 10))
@@ -151,7 +151,7 @@ private struct TerminalHeader: View {
     }
 }
 
-/// The open card's tabs, under its header.
+/// The open card's tabs, along the bottom of the card.
 private struct CardTabBar: View {
     @EnvironmentObject var board: Board
     let card: Card
@@ -177,7 +177,7 @@ private struct CardTabBar: View {
                     .foregroundStyle(tab == selected ? Theme.text : Theme.muted)
                     .padding(.horizontal, 10)
                     .frame(maxHeight: .infinity)
-                    .overlay(alignment: .bottom) {
+                    .overlay(alignment: .top) {
                         if tab == selected { Rectangle().fill(Theme.sky400).frame(height: 2) }
                     }
                     .contentShape(Rectangle())
@@ -190,7 +190,7 @@ private struct CardTabBar: View {
         .padding(.horizontal, 6)
         .frame(height: 30)
         .background(Theme.panel)
-        .overlay(alignment: .bottom) { Rectangle().fill(Theme.edge).frame(height: 1) }
+        .overlay(alignment: .top) { Rectangle().fill(Theme.edge).frame(height: 1) }
     }
 }
 
