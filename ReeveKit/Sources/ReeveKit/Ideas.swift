@@ -87,12 +87,14 @@ public enum Ideas {
             case title, body, criteria
         }
 
-        /// What the card says to Claude when it starts. A terminal card has
-        /// nowhere else to keep its acceptance criteria, so they go in the
-        /// brief, where the session reads them.
+        /// What the card says to Claude when it starts, which is all its
+        /// session sees: the title the body was written under, then the body.
+        /// A terminal card has nowhere else to keep its acceptance criteria,
+        /// so they go in too.
         public var brief: String {
-            guard !criteria.isEmpty else { return body }
-            return body + "\n\nDone when:\n" + criteria.map { "- \($0)" }.joined(separator: "\n")
+            let brief = title + "\n\n" + body
+            guard !criteria.isEmpty else { return brief }
+            return brief + "\n\nDone when:\n" + criteria.map { "- \($0)" }.joined(separator: "\n")
         }
     }
 

@@ -1503,8 +1503,8 @@ import Testing
         let out = #"{"type":"result","is_error":false,"result":"","structured_output":{"ideas":[{"title":" Dark mode ","body":"Add it.","criteria":["Toggle in settings"," "]}]}}"#
         let ideas = try Ideas.parse(Data(out.utf8))
         #expect(ideas == [Ideas.Idea(title: "Dark mode", body: "Add it.", criteria: ["Toggle in settings"])])
-        #expect(ideas[0].brief == "Add it.\n\nDone when:\n- Toggle in settings")
-        #expect(Ideas.Idea(title: "T", body: "Just this.").brief == "Just this.")
+        #expect(ideas[0].brief == "Dark mode\n\nAdd it.\n\nDone when:\n- Toggle in settings")
+        #expect(Ideas.Idea(title: "T", body: "Just this.").brief == "T\n\nJust this.")
         let none = #"{"type":"result","is_error":false,"result":"{\"ideas\":[]}"}"#
         #expect(try Ideas.parse(Data(none.utf8)).isEmpty)
     }
@@ -1525,6 +1525,20 @@ import Testing
         #expect(prompt.contains("**app**"))
         #expect(prompt.contains("- Newer (shipped)\n- Older (Release)"))
         #expect(prompt.contains("Added a thing"))
+    }
+
+    /// A brief Claude wrote reaches the card's `claude` as written: backticks
+    /// and `$(` stay text, and nothing runs in the person's checkout.
+    @Test func aBriefSurvivesTheShell() throws {
+        let brief = Ideas.Idea(title: "It's \"quoted\"", body: "Run `ls` and $(touch /tmp/no)\nthen $HOME", criteria: ["'q'"]).brief
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "printf %s " + Launch.shellQuote(brief)]
+        let out = Pipe()
+        process.standardOutput = out
+        try process.run()
+        process.waitUntilExit()
+        #expect(String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self) == brief)
     }
 
     @Test func boardsSavedBeforeIdeasStillLoad() throws {
