@@ -120,6 +120,11 @@ final class Board: ObservableObject {
     /// What VIBES MODE last typed into each card, so its prompt is told apart
     /// from a person's when the hook reports it.
     private var vibesPrompts: [UUID: String] = [:]
+    /// Repos VIBES MODE is asking what to build next, by path.
+    private var thinking: Set<String> = []
+    /// Backlog cards VIBES MODE couldn't start, left for a person rather than
+    /// tried again on every sweep.
+    private var vibesStartFailed: Set<UUID> = []
     /// Cards VIBES MODE has left alone because what they wait on hasn't
     /// merged, so the ledger says so once rather than at every sweep.
     private var vibesHeld: Set<UUID> = []
@@ -325,6 +330,7 @@ final class Board: ObservableObject {
             cards.append(card)
             if open { selectedId = card.id }
             save()
+            startBacklog()
             return card
         }
         let start = startingMode(mode, vibes: vibes)
@@ -660,6 +666,7 @@ final class Board: ObservableObject {
         acceptingPlans.remove(id)
         answeringPlans.remove(id)
         vibesPrompts[id] = nil
+        vibesStartFailed.remove(id)
         vibesHeld.remove(id)
         launching.remove(id)
         cards.removeAll { $0.id == id }
@@ -681,6 +688,8 @@ final class Board: ObservableObject {
         // Back to the board, rather than opening (and starting) a neighbour.
         if selectedId == id { selectedId = nil }
         save()
+        // The repo's last open card may just have gone.
+        thinkOfIdeas()
     }
 
     /// The cards on the board whose pull requests have all merged.
@@ -1130,8 +1139,117 @@ final class Board: ObservableObject {
 
     /// Every card whose turn has ended, given its next push. For when a card
     /// becomes VIBES MODE's to drive with nothing else happening to it.
+    /// Then Backlog started, and a repo that has run dry asked what is next.
     private func vibesSweep() {
         for id in settled { vibesFollowUp(id) }
+        startBacklog()
+        thinkOfIdeas()
+    }
+
+    /// With the board's switch on, Backlog is where work starts rather than
+    /// where it waits: every card in it is started, in the column VIBES MODE
+    /// starts in. A worktree git won't make leaves the card for a person, with
+    /// no dialog to ask about the folder: there is nobody to answer one. A
+    /// card waiting on another that hasn't merged is held, and started by the
+    /// sweep once that one merges.
+    private func startBacklog() {
+        guard vibes != nil, !vibesArming else { return }
+        for card in cards where card.queued == true && !launching.contains(card.id) && !vibesStartFailed.contains(card.id) {
+            let id = card.id, name = "“\(displayTitle(card))”"
+            if let blocker = blocker(of: id) {
+                if vibesHeld.insert(id).inserted { vibes?.note("Holding \(name) · it waits on “\(displayTitle(blocker))”") }
+                continue
+            }
+            vibesHeld.remove(id)
+            Task {
+                do {
+                    // Planning, unless VIBES MODE skips it.
+                    try await launch(id, mode: .plan, inFolder: false)
+                } catch {
+                    vibesStartFailed.insert(id)
+                    vibes?.note("Couldn't start \(name) · left for you")
+                    NSLog("Reeve: VIBES MODE starting \(id) failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    /// Asks every repo that has run dry what should follow the card it
+    /// shipped last. The board's switch only; see `Ideas`.
+    private func thinkOfIdeas() {
+        guard let since = vibes?.since, !vibesArming else { return }
+        let repos = Set((cards + archive).filter { $0.shippedAt.map { $0 > since } ?? false }.map(Ideas.repo(of:)))
+        for repo in repos.subtracting(thinking).sorted() {
+            if let source = Ideas.source(for: repo, board: cards, archive: archive, since: since) {
+                askForIdeas(after: source, in: repo)
+            }
+        }
+    }
+
+    /// One `claude -p` reading the repo and proposing what is next. Marked as
+    /// asked as it starts, so a run that fails or thinks of nothing isn't
+    /// tried again until something else in the repo ships.
+    private func askForIdeas(after source: Card, in repo: String) {
+        guard let env = environment else { return }
+        thinking.insert(repo)
+        markIdeasAsked(source.id)
+        // Its own worktree if that is still there, since it holds the work
+        // that just finished; the repo's checkout if not, which a card merged
+        // and archived no longer has.
+        let directory = [source.worktreePath, source.repoPath, source.cwd].compactMap { $0 }
+            .first { FileManager.default.fileExists(atPath: $0) } ?? repo
+        let history = (cards + archive).filter { Ideas.repo(of: $0) == repo }
+        let prompt = Ideas.prompt(repo: repo, directory: directory, source: source, history: history)
+        let title = source.title.isEmpty ? "New session" : source.title
+        vibes?.note("Asking Claude what to build after “\(title)”")
+        save()
+        Task {
+            defer { thinking.remove(repo) }
+            do {
+                let ideas = try await IdeaGenerator.think(prompt: prompt, in: directory, env: env)
+                landIdeas(ideas, after: source, in: repo)
+            } catch {
+                vibes?.note("Couldn't think of what to build after “\(title)”")
+                NSLog("Reeve: ideas after \(source.id) failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Into Backlog, in the lane of the card they were had after, each
+    /// starting from the repo's own checkout. Nothing is flagged for VIBES
+    /// MODE on its own: these go because the board's switch is on, and if it
+    /// has gone off by the time they land they wait for a person like any
+    /// other card in Backlog.
+    private func landIdeas(_ ideas: [Ideas.Idea], after source: Card, in repo: String) {
+        let history = (cards + archive).filter { Ideas.repo(of: $0) == repo }
+        let accepted = Ideas.accepted(ideas, existingTitles: history.map(\.title))
+        // Read now: a person may have moved it into another lane since.
+        let lane = (card(source.id) ?? source).laneId
+        let folder = repos.first { $0.path == repo }?.path ?? repo
+        var made = 0
+        for idea in accepted {
+            var card = Card(title: idea.title, cwd: folder, stage: .backlog)
+            card.titledByPerson = false
+            card.queued = true
+            card.brief = idea.brief
+            card.laneId = lanes.contains { $0.id == lane } ? lane : nil
+            card.ideaFrom = source.id
+            cards.append(card)
+            made += 1
+        }
+        if vibes != nil { vibes?.ideas = (vibes?.ideas ?? 0) + made }
+        vibes?.note(Ideas.summary(made, after: source.title.isEmpty ? "New session" : source.title))
+        save()
+        startBacklog()
+    }
+
+    private func markIdeasAsked(_ id: UUID) {
+        if card(id) != nil {
+            update(id) { $0.ideasAsked = true }
+        } else if let i = archive.firstIndex(where: { $0.id == id }) {
+            archive[i].ideasAsked = true
+            save()
+        }
     }
 
     /// What VIBES MODE does with a card whose turn just ended: answer the
@@ -1210,6 +1328,8 @@ final class Board: ObservableObject {
         // Whatever waited on it can go on.
         vibesSweep()
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) { [weak self] in self?.justShipped.remove(id) }
+        // It may have been the repo's last card.
+        thinkOfIdeas()
     }
 
     /// The plan dialog, approved unread. Enter takes its first option, a yes,

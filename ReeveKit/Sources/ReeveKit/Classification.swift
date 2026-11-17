@@ -67,6 +67,12 @@ public enum Classifier {
 
     /// Reads `claude -p --output-format json` output.
     public static func parse(_ data: Data) throws -> Classification {
+        try JSONDecoder().decode(Classification.self, from: structuredOutput(data))
+    }
+
+    /// The answer in a `claude -p --output-format json --json-schema` reply,
+    /// as JSON: its structured output, else its result read as JSON.
+    static func structuredOutput(_ data: Data) throws -> Data {
         guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ClassifierError.unreadable
         }
@@ -82,8 +88,7 @@ public enum Classifier {
         } else {
             throw ClassifierError.unreadable
         }
-        let json = try JSONSerialization.data(withJSONObject: structured)
-        return try JSONDecoder().decode(Classification.self, from: json)
+        return try JSONSerialization.data(withJSONObject: structured)
     }
 }
 

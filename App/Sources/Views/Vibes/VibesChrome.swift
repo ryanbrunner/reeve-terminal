@@ -185,6 +185,7 @@ struct VibesArming: View {
             ("Merge to main", options.autoMerge ? "automatic" : "yours (left open)"),
             ("Merge conflicts", "Claude resolves"),
             ("Questions", "Claude answers"),
+            ("New ideas", "run on arrival"),
             ("Tool permissions", "still yours"),
             ("You", "watching"),
         ]
@@ -274,7 +275,7 @@ private struct Line: Shape {
     }
 }
 
-/// The scoreboard along the bottom: five numbers and a running log of what
+/// The scoreboard along the bottom: six numbers and a running log of what
 /// Claude has done to your repositories since you stopped being asked.
 ///
 /// Human input is the one that matters, and it is the only still number here:
@@ -292,6 +293,7 @@ struct VibesHud: View {
             Stat(label: "Reviews skipped", value: ledger.reviewsSkipped)
             Stat(label: "Questions self-answered", value: ledger.questionsSelfAnswered)
             Stat(label: "Moves", value: ledger.moves)
+            Stat(label: "Ideas of its own", value: ledger.ideas ?? 0)
             VStack(alignment: .leading, spacing: 2) {
                 // Two deep: the newest in white, the one before it faded.
                 ForEach(Array(ledger.log.prefix(2).enumerated()), id: \.offset) { i, line in

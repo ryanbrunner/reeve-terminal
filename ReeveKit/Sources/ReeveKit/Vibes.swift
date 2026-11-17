@@ -206,6 +206,9 @@ public struct VibesLedger: Codable, Equatable, Sendable {
     public var questionsSelfAnswered = 0
     /// Cards that changed column by themselves.
     public var moves = 0
+    /// Cards Claude thought of itself, once a repo ran out of work. Optional,
+    /// so a board saved before there were any still loads.
+    public var ideas: Int?
     /// Newest first.
     public var log: [String] = []
 

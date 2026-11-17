@@ -160,6 +160,11 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     public var shippedAt: Date?
     /// Its branch was found on main once it shipped, not just said to be.
     public var merged: Bool?
+    /// VIBES MODE has asked what should follow this card, once its repo ran
+    /// dry. Asked once, whatever came of it.
+    public var ideasAsked: Bool?
+    /// The card VIBES MODE thought of this one after, when it did.
+    public var ideaFrom: UUID?
     /// When the card was cleaned up into the archive. Nil for a card on the board.
     public var archivedAt: Date?
     public var createdAt: Date

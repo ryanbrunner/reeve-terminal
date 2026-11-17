@@ -194,6 +194,20 @@ For a card in VIBES MODE, Reeve does what you would otherwise have to:
   card it waits on. Once that card merges, it is picked up. A waiting card in
   Backlog still waits for you to start it.
 
+With the board's switch on, two more things happen that a card in VIBES MODE
+on its own never does:
+
+- **Backlog runs on arrival.** Every card in Backlog is started, in the
+  column VIBES MODE starts in, including one you name there while the switch
+  is on. One waiting on a card that hasn't merged is held until it does. A
+  card git can't make a worktree for is left for you.
+- **It thinks of what's next.** When the last card in a repo ships, and
+  nothing in it is left short of Release, Reeve asks `claude -p` in that repo
+  what should follow, with nothing but tools that read. Up to three ideas
+  land in Backlog, in that card's lane, and start like any other. Each card
+  is asked once: a repo whose ideas came to nothing waits until something
+  else in it ships. The scoreboard counts them as "Ideas of its own".
+
 Flipping the board's switch arms it for two seconds before anything is
 typed, so flipping it back in that time undoes it. Claude Code's own tool
 permissions stay yours: a permission prompt still waits for a person. Reeve never types into the card you have open, since you
