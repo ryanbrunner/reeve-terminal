@@ -253,8 +253,8 @@ reeve open [<card>] · status · models · doctor
 - **`reply`.** Types into the card's terminal when its session is running,
   or starts the session with the message. It refuses while Claude Code shows
   a dialog, unless you pass `--force`.
-- **`close`.** Deletes the worktree, as ⌘W does. It refuses a live session or
-  uncommitted work unless you pass `--force`.
+- **`close`.** Deletes the worktree, as ⌘W does. It refuses uncommitted
+  changes, unmerged commits or an open pull request unless you pass `--force`.
 
 **Exit codes:**
 
