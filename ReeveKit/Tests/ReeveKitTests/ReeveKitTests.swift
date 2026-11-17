@@ -1200,6 +1200,16 @@ import Testing
         #expect(PlanReviewPlacement([onTests], plan: "/u/.claude/plans/other.md", blocks: after).outdated == [onTests])
     }
 
+    @Test func planCommentsFollowTheirPartWhenItMoves() {
+        let path = "/p.md"
+        let before = MarkdownBlock.locate("# Plan\n\n- Test it")
+        let onTests = ReviewThread(anchor: ReviewAnchor(plan: path, block: before[1]), messages: [ReviewMessage(author: .person, body: "which?")])
+        let after = MarkdownBlock.locate("# Plan\n\nFirst, a new step.\n\n- Test it")
+        let placed = PlanReviewPlacement([onTests], plan: path, blocks: after)
+        #expect(placed.outdated.isEmpty)
+        #expect(placed.byBlock[ReviewAnchor(plan: path, block: after[2]).key] == [onTests])
+    }
+
     @Test func thePlanFileSaysWhatEachCommentIsOn() throws {
         let block = MarkdownBlock.locate("# Plan\n\nUse a cookie.")[1]
         let thread = ReviewThread(anchor: ReviewAnchor(plan: "/p.md", block: block), messages: [ReviewMessage(author: .person, body: "why?")])

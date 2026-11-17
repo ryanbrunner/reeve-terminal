@@ -188,11 +188,12 @@ private struct BlockRow: View {
             BlockView(block: block)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+        // Hovering the margin counts too, or the button goes as it's reached.
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
         // The button sits in the margin, the block where it was.
         .padding(.leading, -28)
         .padding(.top, topSpace)
-        .contentShape(Rectangle())
-        .onHover { hovering = $0 }
     }
 
     /// Room above a heading, outside the row so the button lines up with it.

@@ -149,15 +149,14 @@ public struct PlanReviewPlacement: Equatable, Sendable {
     /// Threads on a block Claude has since rewritten, or on an earlier plan.
     public var outdated: [ReviewThread] = []
 
+    /// A block that moved, as one does when Claude rewrites the plan above
+    /// it, keeps its threads: they go to the nearest block saying the same.
     public init(_ threads: [ReviewThread], plan path: String, blocks: [MarkdownBlock.Located]) {
-        var anchors: [String: ReviewAnchor] = [:]
-        for block in blocks {
-            let anchor = ReviewAnchor(plan: path, block: block)
-            anchors[anchor.key] = anchor
-        }
+        let anchors = blocks.map { ReviewAnchor(plan: path, block: $0) }
         for thread in threads {
-            let anchor = thread.anchor
-            if anchors[anchor.key] == anchor {
+            let moved = anchors.filter { $0.path == thread.path && $0.code == thread.code }
+                .min { abs($0.line - thread.line) < abs($1.line - thread.line) }
+            if let anchor = moved {
                 byBlock[anchor.key, default: []].append(thread)
             } else {
                 outdated.append(thread)
