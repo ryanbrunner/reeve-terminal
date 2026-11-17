@@ -36,13 +36,15 @@ private func path(_ id: UUID) -> String {
 let boardVerb = Verb(
     name: "board",
     usage: """
-    reeve board [--stage STAGE] [--repo PATH] [--json]
+    reeve board [--stage STAGE] [--lane LANE] [--repo PATH] [--json]
 
-    Every card, column by column: id, status, folder, title.
+    Every card, column by column: id, status, folder, title, and its
+    swimlane when there is more than one.
       --stage   just one column
+      --lane    just one swimlane, by name
       --repo    just the cards from the repo or folder at PATH
     """,
-    valued: ["stage", "repo"], flags: ["json"]
+    valued: ["stage", "lane", "repo"], flags: ["json"]
 ) { args in
     let client = try Client.connect()
     var board = try await client.board()
@@ -56,6 +58,13 @@ let boardVerb = Verb(
         let wanted = realpath((repo as NSString).expandingTildeInPath)
         board.cards = board.cards.filter { realpath($0.card.repoPath ?? $0.card.cwd) == wanted }
     }
+    let lanes = board.lanes ?? []
+    if let name = args.value("lane") {
+        guard let lane = Lane.find(name, in: lanes) else {
+            throw CLIError("no lane “\(name)”: " + (lanes.isEmpty ? "this app has no lanes" : lanes.map(\.name).joined(separator: ", ")))
+        }
+        board.cards = board.cards.filter { $0.card.lane(in: lanes) == lane }
+    }
     if args.has("json") {
         try printJSON(board)
         return .ok
@@ -68,7 +77,10 @@ let boardVerb = Verb(
         let cards = board.cards.filter { $0.card.stage == stage }
         var section = "\(stage.label) (\(cards.count))"
         if !cards.isEmpty {
-            section += "\n" + Table.format(cards.map { [$0.short, $0.status, $0.card.folderName, $0.displayTitle] }, indent: "  ")
+            let laned = lanes.count > 1
+            section += "\n" + Table.format(cards.map {
+                [$0.short, $0.status, $0.card.folderName] + (laned ? [$0.card.lane(in: lanes)?.name ?? ""] : []) + [$0.displayTitle]
+            }, indent: "  ")
         }
         sections.append(section)
     }
@@ -331,11 +343,13 @@ let addVerb = Verb(
     reeve card add [<title…>] [options]
 
     Starts a card: a worktree on a new branch when the folder is in git, and
-    claude in it. With no title, Claude names it.
+    claude in it. With no title, Claude names it. In the backlog, nothing
+    starts until the card is moved to planning or in-progress.
       --cwd DIR                  the folder to start in (default: here)
-      --prompt TEXT              the first message to Claude
+      --prompt TEXT              the first message to Claude (a backlog card's waits; else its title)
       --prompt-file PATH|-       … read from a file, or stdin
-      --mode plan|build          plan mode first (default), or straight to work in auto mode
+      --mode plan|build|backlog  plan mode first (default), straight to work in auto mode, or wait in the backlog
+      --lane LANE                the swimlane, by name (default: the first)
       --model MODEL              see `reeve models`
       --effort EFFORT            see `reeve models`
       --in-folder                work in the folder itself if git can't make a worktree
@@ -343,7 +357,7 @@ let addVerb = Verb(
       --vibes                    VIBES MODE drives this card, whatever the board's switch says
       --json | --quiet           the card as JSON | just its id
     """,
-    valued: ["cwd", "prompt", "prompt-file", "mode", "model", "effort"],
+    valued: ["cwd", "prompt", "prompt-file", "mode", "lane", "model", "effort"],
     flags: ["in-folder", "open", "vibes", "json", "quiet"]
 ) { args in
     let title = args.positionals.joined(separator: " ")
@@ -352,11 +366,13 @@ let addVerb = Verb(
         guard prompt == nil else { throw UsageError("--prompt or --prompt-file, not both") }
         prompt = try readText(file)
     }
-    let mode: StartMode
+    var mode = StartMode.plan
+    var backlog = false
     switch args.value("mode") ?? "plan" {
     case "plan": mode = .plan
     case "build", "auto": mode = .build
-    case let other: throw UsageError("unknown mode “\(other)”: plan or build")
+    case "backlog": backlog = true
+    case let other: throw UsageError("unknown mode “\(other)”: plan, build or backlog")
     }
     if let effort = args.value("effort"), !Launch.efforts.contains(effort) {
         throw UsageError("unknown effort “\(effort)”: \(Launch.efforts.joined(separator: ", "))")
@@ -366,7 +382,7 @@ let addVerb = Verb(
                   relativeTo: URL(fileURLWithPath: here, isDirectory: true)).standardizedFileURL.path
     let body = CreateCardBody(cwd: cwd, title: title, prompt: prompt, mode: mode, model: args.value("model"),
                               effort: args.value("effort"), inFolder: args.has("in-folder"), open: args.has("open"),
-                              vibes: args.has("vibes"))
+                              vibes: args.has("vibes"), backlog: backlog, lane: args.value("lane"))
     let client = try Client.connect()
     let card: APICard = try await client.call("POST", "/api/cards", body: body)
     if args.has("json") {
@@ -424,25 +440,37 @@ let editVerb = Verb(
 let moveVerb = Verb(
     name: "move",
     usage: """
-    reeve card move <card> <stage> [--json]
+    reeve card move <card> [<stage>] [--lane LANE] [--in-folder] [--json]
 
     Puts the card in a column, as dragging it does: it stays there until your
-    next prompt to its Claude.
+    next prompt to its Claude. A backlog card that hasn't started starts:
+    in plan mode moved to planning, in auto mode moved to in-progress.
+      --lane LANE    to another swimlane, by name, as well or instead
+      --in-folder    work in the folder itself if git can't make a worktree
     Stages: \(StageName.accepted).
     """,
-    flags: ["json"]
+    valued: ["lane"], flags: ["in-folder", "json"]
 ) { args in
-    guard args.positionals.count == 2 else { throw UsageError("a card and a stage") }
-    guard let stage = StageName.parse(args.positionals[1]) else {
-        throw UsageError("unknown stage “\(args.positionals[1])”: \(StageName.accepted)")
+    let lane = args.value("lane")
+    guard args.positionals.count == 2 || (args.positionals.count == 1 && lane != nil) else {
+        throw UsageError("a card and a stage, or --lane")
+    }
+    var stage: Stage?
+    if args.positionals.count == 2 {
+        guard let parsed = StageName.parse(args.positionals[1]) else {
+            throw UsageError("unknown stage “\(args.positionals[1])”: \(StageName.accepted)")
+        }
+        stage = parsed
     }
     let client = try Client.connect()
     let api = try await client.card(args.positionals[0])
-    let moved: APICard = try await client.call("POST", path(api.card.id) + "/move", body: MoveBody(stage: stage))
+    let moved: APICard = try await client.call("POST", path(api.card.id) + "/move",
+                                               body: MoveBody(stage: stage, lane: lane, inFolder: args.has("in-folder")))
     if args.has("json") {
         try printJSON(moved)
     } else {
-        out("Moved \(moved.short) to \(moved.card.stage.label)")
+        out("Moved \(moved.short) to \(moved.card.stage.label)" + (lane.map { " in \($0)" } ?? "")
+            + (api.card.queued == true && moved.card.queued == nil ? ", and started it" : ""))
     }
     return .ok
 }

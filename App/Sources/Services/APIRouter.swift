@@ -31,7 +31,7 @@ enum APIRouter {
         func part(_ i: Int) -> String? { parts.indices.contains(i) ? parts[i] : nil }
         switch (request.method, part(0), part(1), part(2)) {
         case ("GET", "board"?, nil, nil):
-            return .json(BoardResponse(cards: board.ordered.map(board.apiCard), selectedId: board.selectedId, vibes: board.vibes))
+            return .json(BoardResponse(cards: board.ordered.map(board.apiCard), lanes: board.lanes, selectedId: board.selectedId, vibes: board.vibes))
 
         case ("GET", "vibes"?, nil, nil):
             return .json(vibesState(board))
@@ -53,12 +53,13 @@ enum APIRouter {
             if let effort = body.effort, !Launch.efforts.contains(effort) {
                 throw Failure(status: 400, error: APIError("unknown effort \(effort)", detail: "one of " + Launch.efforts.joined(separator: ", ")))
             }
+            let lane = try body.lane.map { try findLane($0, board) }
             if body.open { activate() }
             let card: Card
             do {
-                card = try await board.createCard(cwd: body.cwd, title: body.title, prompt: body.prompt, mode: body.mode,
+                card = try await board.createCard(cwd: body.cwd, title: body.title, prompt: body.prompt, mode: body.backlog ? nil : body.mode,
                                                   model: body.model?.nilIfEmpty, effort: body.effort?.nilIfEmpty,
-                                                  vibes: body.vibes, open: body.open, inFolder: body.inFolder)
+                                                  vibes: body.vibes, lane: lane?.id, open: body.open, inFolder: body.inFolder)
             } catch {
                 throw Failure(status: 409, error: APIError("couldn't make a worktree for the card",
                                                            detail: error.localizedDescription + " (pass --in-folder to work in the folder itself)"))
@@ -107,11 +108,27 @@ enum APIRouter {
 
         case let ("POST", "cards"?, id?, "move"?):
             let card = try card(id, board)
-            board.move(card.id, to: try decode(MoveBody.self, request).stage)
+            let body = try decode(MoveBody.self, request)
+            guard body.stage != nil || body.lane != nil else {
+                throw Failure(status: 400, error: APIError("nowhere to move it", detail: "give a stage, a lane or both"))
+            }
+            let lane = try body.lane.map { try findLane($0, board) }
+            board.move(card.id, to: body.stage, lane: lane?.id, launching: false)
+            // Leaving the backlog starts it, here rather than in the app, so
+            // a worktree git won't make is this request's error.
+            if card.queued == true, let stage = body.stage, let mode = Card.launch(movingTo: stage) {
+                do {
+                    try await board.launch(card.id, mode: mode, inFolder: body.inFolder)
+                } catch {
+                    throw Failure(status: 409, error: APIError("couldn't make a worktree for the card",
+                                                               detail: error.localizedDescription + " (pass --in-folder to work in the folder itself)"))
+                }
+            }
             return .json(board.apiCard(board.card(card.id) ?? card))
 
         case let ("POST", "cards"?, id?, "run"?):
             let card = try card(id, board)
+            if card.queued == true { throw Board.queuedError }
             if try decode(RunBody.self, request).restart {
                 board.restart(card.id)
             } else {
@@ -153,6 +170,13 @@ enum APIRouter {
             throw Failure(status: 404, error: APIError("no such card", detail: id))
         }
         return card
+    }
+
+    private static func findLane(_ ref: String, _ board: Board) throws -> Lane {
+        guard let lane = board.lane(named: ref) else {
+            throw Failure(status: 404, error: APIError("no such lane", detail: "\(ref); the lanes are " + board.lanes.map(\.name).joined(separator: ", ")))
+        }
+        return lane
     }
 
     private static func decode<T: Decodable>(_ type: T.Type, _ request: HTTPRequest) throws -> T {

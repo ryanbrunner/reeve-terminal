@@ -64,8 +64,11 @@ struct BoardCommands: Commands {
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button("New Card…") { board.showingNewCard = true }
+            Button("New Card") { board.compose() }
                 .keyboardShortcut("n")
+            Button("New Swimlane…") { LaneName.ask(renaming: nil, board: board) }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .disabled(board.vibes != nil)
             Button("Ask Reeve…") {
                 if board.selected != nil { board.dismissOpenCard() }
                 board.commandBar.focus()
@@ -103,10 +106,20 @@ struct BoardCommands: Commands {
                             .disabled(stage == card.stage)
                     }
                 }
+                if board.lanes.count > 1 {
+                    Menu("Move to Lane") {
+                        ForEach(board.lanes) { lane in
+                            Button(lane.name) { board.move(card.id, lane: lane.id) }
+                                .disabled(lane.id == board.lane(of: card).id)
+                        }
+                    }
+                }
                 Button("Rename…") { Rename.ask(card: card, board: board) }
                 Button("Sort Now") { board.classifyNow(card.id) }
                     .disabled(card.transcriptPath == nil)
-                Button(board.live.contains(card.id) ? "Restart Session" : "Resume Session") { board.restart(card.id) }
+                if card.queued != true {
+                    Button(board.live.contains(card.id) ? "Restart Session" : "Resume Session") { board.restart(card.id) }
+                }
             }
         }
         CommandMenu("Vibes") {

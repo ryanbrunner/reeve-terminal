@@ -2,8 +2,9 @@ import ReeveKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The five columns. Cards move between them on their own as their sessions
-/// move on, and can be dragged.
+/// The five columns, crossed by the swimlanes. Cards move between columns on
+/// their own as their sessions move on, and can be dragged between columns
+/// and lanes. New cards are named in place, in Backlog, Planning or In Progress.
 struct BoardView: View {
     @EnvironmentObject var board: Board
 
@@ -11,74 +12,258 @@ struct BoardView: View {
         if board.vibes != nil {
             VibesBoardView()
         } else {
-            HStack(alignment: .top, spacing: 10) {
-                ForEach(Stage.allCases) { stage in
-                    ColumnView(stage: stage)
+            VStack(spacing: 6) {
+                // Each column's heading, once, over every lane.
+                HStack(spacing: 10) {
+                    ForEach(Stage.allCases) { ColumnHeading(stage: $0) }
+                }
+                .padding(.horizontal, 10)
+                GeometryReader { geo in
+                    ScrollView(.vertical) {
+                        VStack(spacing: 10) {
+                            ForEach(board.lanes) { lane in
+                                LaneView(lane: lane, titled: board.lanes.count > 1, minHeight: laneHeight(geo.size.height))
+                            }
+                            AddLaneButton()
+                        }
+                        .padding(.bottom, 4)
+                    }
+                    .scrollIndicators(.automatic)
                 }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .animation(.spring(duration: 0.35, bounce: 0.15), value: board.cards.map { "\($0.id)\($0.stage.rawValue)" })
+            .animation(.spring(duration: 0.35, bounce: 0.15), value: board.cards.map { "\($0.id)\($0.stage.rawValue)\(board.lane(of: $0).id)" })
+        }
+    }
+
+    /// Lanes share the board's height between them, so one lane fills it as
+    /// the columns used to, and a lane never gets too short to drop into.
+    private func laneHeight(_ height: CGFloat) -> CGFloat {
+        let count = CGFloat(board.lanes.count)
+        let titles: CGFloat = board.lanes.count > 1 ? 26 * count : 0
+        let addButton: CGFloat = 28
+        return max(140, (height - titles - addButton - 10 * count) / count)
+    }
+}
+
+/// A column's name, its count across every lane, and its tools.
+private struct ColumnHeading: View {
+    @EnvironmentObject var board: Board
+    let stage: Stage
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            SectionLabel(text: stage.label)
+            Text("\(board.cards(in: stage).count)")
+                .font(.mono(11, .medium))
+                .tracking(0.66)
+                .foregroundStyle(Theme.muted.opacity(0.6))
+            Spacer()
+            if stage == .release { CleanupButton() }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 18)
+    }
+}
+
+/// One swimlane: its name (once there is more than one) and a cell for each column.
+private struct LaneView: View {
+    @EnvironmentObject var board: Board
+    let lane: Lane
+    let titled: Bool
+    let minHeight: CGFloat
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if titled { LaneTitle(lane: lane) }
+            HStack(alignment: .top, spacing: 10) {
+                ForEach(Stage.allCases) { stage in
+                    CellView(spot: NewCardSpot(lane: lane.id, stage: stage), minHeight: minHeight)
+                }
+            }
+            // Every cell as tall as the lane's tallest, so the row reads as one.
+            .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
 
-struct ColumnView: View {
+private struct LaneTitle: View {
     @EnvironmentObject var board: Board
-    let stage: Stage
-    @State private var targeted = false
-    @Namespace private var namespace
+    let lane: Lane
 
     var body: some View {
-        let cards = board.cards(in: stage)
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                SectionLabel(text: stage.label)
-                Text("\(cards.count)")
-                    .font(.mono(11, .medium))
-                    .tracking(0.66)
-                    .foregroundStyle(Theme.muted.opacity(0.6))
-                Spacer()
-                if stage == .backlog {
-                    Button {
-                        board.showingNewCard = true
-                    } label: {
-                        Image(systemName: "plus").font(.system(size: 11, weight: .medium))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Theme.muted)
-                    .help("New card (⌘N)")
-                }
-                if stage == .release { CleanupButton() }
+        let index = board.lanes.firstIndex(of: lane) ?? 0
+        HStack(spacing: 8) {
+            Text(lane.name)
+                .font(.geist(13, .semibold))
+                .foregroundStyle(Theme.text)
+                .lineLimit(1)
+            Text("\(board.cards(inLane: lane.id).count)")
+                .font(.mono(11, .medium))
+                .foregroundStyle(Theme.muted.opacity(0.6))
+            Menu {
+                Button("Rename…") { LaneName.ask(renaming: lane, board: board) }
+                Button("Move Up") { board.moveLane(lane.id, by: -1) }
+                    .disabled(index == 0)
+                Button("Move Down") { board.moveLane(lane.id, by: 1) }
+                    .disabled(index == board.lanes.count - 1)
+                Divider()
+                Button("Delete Lane…") { LaneName.confirmDelete(lane, board: board) }
+            } label: {
+                Image(systemName: "ellipsis").font(.system(size: 11, weight: .medium))
             }
-            .padding(.horizontal, 4)
-            ScrollView(.vertical) {
-                VStack(spacing: 8) {
-                    ForEach(cards) { card in
-                        CardFace(card: card, selected: card.id == board.selectedId)
-                            .onTapGesture { board.select(card.id) }
-                            .draggable(card.id.uuidString) {
-                                CardFace(card: card, dragging: true)
-                                    .frame(width: 220)
-                                    .environmentObject(board)
-                            }
-                            .contextMenu { CardMenu(card: card) }
-                            .transition(.asymmetric(insertion: .scale(scale: 0.92).combined(with: .opacity), removal: .opacity))
-                    }
-                }
-                .padding(4)
-            }
-            .scrollIndicators(.never)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .foregroundStyle(Theme.muted)
+            Spacer()
         }
-        .padding(6)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .padding(.horizontal, 10)
+        .frame(height: 20)
+        .contextMenu {
+            Button("Rename…") { LaneName.ask(renaming: lane, board: board) }
+        }
+    }
+}
+
+/// Where a lane and a column cross: the cards in both, somewhere to drop
+/// one, and in the columns a card can start in, somewhere to name one.
+private struct CellView: View {
+    @EnvironmentObject var board: Board
+    let spot: NewCardSpot
+    let minHeight: CGFloat
+    @State private var targeted = false
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ForEach(board.cards(in: spot.stage, lane: spot.lane)) { card in
+                CardFace(card: card, selected: card.id == board.selectedId)
+                    .onTapGesture { board.select(card.id) }
+                    .draggable(card.id.uuidString) {
+                        CardFace(card: card, dragging: true)
+                            .frame(width: 220)
+                            .environmentObject(board)
+                    }
+                    .contextMenu { CardMenu(card: card) }
+                    .transition(.asymmetric(insertion: .scale(scale: 0.92).combined(with: .opacity), removal: .opacity))
+            }
+            if NewCardSpot.stages.contains(spot.stage) {
+                if board.composing == spot {
+                    NewCardField(spot: spot)
+                } else {
+                    AddCardButton(spot: spot)
+                }
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, minHeight: minHeight, maxHeight: .infinity, alignment: .top)
         .background(RoundedRectangle(cornerRadius: 8).fill(targeted ? Theme.sky950.opacity(0.2) : Theme.panel.opacity(0.4)))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(targeted ? Theme.sky600 : Theme.edge))
         .dropDestination(for: String.self) { items, _ in
             guard let id = items.first.flatMap(UUID.init(uuidString:)) else { return false }
-            withAnimation(.spring(duration: 0.35, bounce: 0.15)) { board.move(id, to: stage) }
+            withAnimation(.spring(duration: 0.35, bounce: 0.15)) { board.move(id, to: spot.stage, lane: spot.lane) }
             return true
         } isTargeted: { targeted = $0 }
+    }
+}
+
+/// Opens the new card field in its cell. Quiet until hovered.
+private struct AddCardButton: View {
+    @EnvironmentObject var board: Board
+    let spot: NewCardSpot
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            board.compose(in: spot.stage, lane: spot.lane)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "plus").font(.system(size: 10, weight: .semibold))
+                Text("New card").font(.geist(12))
+                Spacer()
+            }
+            .foregroundStyle(hovering ? Theme.text : Theme.muted.opacity(0.7))
+            .padding(.horizontal, 6)
+            .frame(height: 26)
+            .background(RoundedRectangle(cornerRadius: 6).fill(hovering ? Theme.edge.opacity(0.5) : .clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(spot.stage == .backlog && spot.lane == board.lanes.first?.id ? "New card (⌘N)" : "New card")
+    }
+}
+
+/// Below the lanes: another one.
+private struct AddLaneButton: View {
+    @EnvironmentObject var board: Board
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            LaneName.ask(renaming: nil, board: board)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "plus").font(.system(size: 10, weight: .semibold))
+                Text("Add swimlane").font(.geist(12))
+            }
+            .foregroundStyle(hovering ? Theme.text : Theme.muted.opacity(0.6))
+            .frame(height: 18)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+    }
+}
+
+/// Naming a lane, new or old, and deleting one.
+enum LaneName {
+    @MainActor
+    static func ask(renaming lane: Lane?, board: Board) {
+        let alert = NSAlert()
+        alert.messageText = lane == nil ? "New swimlane" : "Rename swimlane"
+        alert.informativeText = lane == nil ? "A row across the board. Drag cards into it." : ""
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        field.stringValue = lane?.name ?? ""
+        field.placeholderString = "Name"
+        alert.accessoryView = field
+        alert.addButton(withTitle: lane == nil ? "Add" : "Rename")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        let name = field.stringValue
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let given = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !given.isEmpty, given != name else { return }
+        if let lane {
+            board.renameLane(lane.id, to: given)
+        } else {
+            board.addLane(named: given)
+        }
+    }
+
+    @MainActor
+    static func confirmDelete(_ lane: Lane, board: Board) {
+        let count = board.cards(inLane: lane.id).count
+        let index = board.lanes.firstIndex(of: lane) ?? 0
+        guard count > 0, let heir = board.lanes[safe: index == 0 ? 1 : index - 1] else {
+            board.deleteLane(lane.id)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Delete “\(lane.name)”?"
+        alert.informativeText = "Its \(count == 1 ? "card moves" : "\(count) cards move") to “\(heir.name)”. Nothing else happens to \(count == 1 ? "it" : "them")."
+        alert.addButton(withTitle: "Delete Lane")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn { board.deleteLane(lane.id) }
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }
 
@@ -136,13 +321,23 @@ struct CardMenu: View {
                     .disabled(stage == card.stage)
             }
         }
+        if board.lanes.count > 1 {
+            LaneMenu(card: card)
+        }
         Button("Rename…") { Rename.ask(card: card, board: board) }
         Button("Sort Now") { board.classifyNow(card.id) }
             .disabled(card.transcriptPath == nil)
         Divider()
         VibesToggle(card: card)
         Divider()
-        Button(board.live.contains(card.id) ? "Restart Session" : "Resume Session") { board.restart(card.id) }
+        if card.queued == true {
+            Button("Start Planning") { board.startQueued(card.id, mode: .plan) }
+                .disabled(board.launching.contains(card.id))
+            Button("Start Building") { board.startQueued(card.id, mode: .build) }
+                .disabled(board.launching.contains(card.id))
+        } else {
+            Button(board.live.contains(card.id) ? "Restart Session" : "Resume Session") { board.restart(card.id) }
+        }
         Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: card.cwd)]) }
         if let prs = card.pullRequests, prs.count > 1 {
             Menu("Open Pull Request") {
@@ -215,6 +410,21 @@ enum CloseCard {
         if live { lines.append("This ends its Claude Code session.") }
         lines.append("The worktree is deleted. Anything committed on \(card.branch ?? "its branch") stays in the repo.")
         return lines.joined(separator: " ")
+    }
+}
+
+/// The swimlanes a card can move to.
+struct LaneMenu: View {
+    @EnvironmentObject var board: Board
+    let card: Card
+
+    var body: some View {
+        Menu("Move to Lane") {
+            ForEach(board.lanes) { lane in
+                Button(lane.name) { board.move(card.id, lane: lane.id) }
+                    .disabled(lane.id == board.lane(of: card).id)
+            }
+        }
     }
 }
 

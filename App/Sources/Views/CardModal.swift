@@ -38,32 +38,38 @@ struct CardModal: View {
                 .onTapGesture { board.dismissOpenCard() }
             VStack(spacing: 0) {
                 TerminalHeader(card: card)
-                ZStack {
-                    // Always mounted, so the terminal keeps its size: every
-                    // resize makes `claude` redraw. The other tabs cover it.
-                    TerminalHost(cardId: card.id, focused: tab == .terminal)
-                        .padding(.leading, 10)
-                        .padding(.top, 6)
-                        .background(Theme.ink)
-                        .overlay {
-                            if tab == .terminal, !board.live.contains(card.id) {
-                                SleepingOverlay(card: card)
+                if card.queued == true {
+                    // No worktree and no session: no terminal, plan or
+                    // changes yet, only a way to start it.
+                    BacklogPanel(card: card)
+                } else {
+                    ZStack {
+                        // Always mounted, so the terminal keeps its size: every
+                        // resize makes `claude` redraw. The other tabs cover it.
+                        TerminalHost(cardId: card.id, focused: tab == .terminal)
+                            .padding(.leading, 10)
+                            .padding(.top, 6)
+                            .background(Theme.ink)
+                            .overlay {
+                                if tab == .terminal, !board.live.contains(card.id) {
+                                    SleepingOverlay(card: card)
+                                }
                             }
+                        switch tab {
+                        case .terminal:
+                            EmptyView()
+                        case .plan:
+                            PlanView(card: card).id(card.id)
+                        case .changes:
+                            ChangesView(card: card).id(card.id)
+                        case .preview:
+                            PreviewView(card: card, preview: board.previews.preview(for: card.id)).id(card.id)
+                        case .prs:
+                            PullRequestsView(card: card).id(card.id)
                         }
-                    switch tab {
-                    case .terminal:
-                        EmptyView()
-                    case .plan:
-                        PlanView(card: card).id(card.id)
-                    case .changes:
-                        ChangesView(card: card).id(card.id)
-                    case .preview:
-                        PreviewView(card: card, preview: board.previews.preview(for: card.id)).id(card.id)
-                    case .prs:
-                        PullRequestsView(card: card).id(card.id)
                     }
+                    CardTabBar(card: card, selected: tab)
                 }
-                CardTabBar(card: card, selected: tab)
             }
             .background(Theme.ink)
             .clipShape(RoundedRectangle(cornerRadius: 10))
@@ -216,6 +222,45 @@ private struct SleepingOverlay: View {
     }
 }
 
+/// A backlog card that hasn't started: what it will be told, and the two
+/// ways to start it, which moving it to their columns does too.
+private struct BacklogPanel: View {
+    @EnvironmentObject var board: Board
+    let card: Card
+
+    var body: some View {
+        let launching = board.launching.contains(card.id)
+        VStack(spacing: 14) {
+            Text(launching ? "Making its worktree…" : "In the backlog: nothing has started")
+                .font(.geist(14, .medium))
+                .foregroundStyle(Theme.text)
+            Text("When it starts, Claude gets a worktree of \(card.folderName) and is told:")
+                .font(.geist(12))
+                .foregroundStyle(Theme.muted)
+            Text(card.brief ?? (card.title.isEmpty ? "(nothing: you start the conversation)" : card.title))
+                .font(.mono(12))
+                .foregroundStyle(Theme.textSoft)
+                .frame(maxWidth: 460)
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Theme.panel))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Theme.edge))
+            HStack(spacing: 10) {
+                Button("Plan it") { board.startQueued(card.id, mode: .plan) }
+                    .buttonStyle(SecondaryButtonStyle())
+                Button("Start building") { board.startQueued(card.id, mode: .build) }
+                    .buttonStyle(PrimaryButtonStyle())
+            }
+            .disabled(launching)
+            Text("Or drag it to Planning or In Progress.")
+                .font(.geist(11))
+                .foregroundStyle(Theme.muted.opacity(0.8))
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.ink)
+    }
+}
+
 /// Over an empty board: how to start.
 struct EmptyState: View {
     @EnvironmentObject var board: Board
@@ -226,9 +271,9 @@ struct EmptyState: View {
             Text("No cards yet")
                 .font(.geist(14, .medium))
                 .foregroundStyle(Theme.muted)
-            Button("New card") { board.showingNewCard = true }
+            Button("New card") { board.compose() }
                 .buttonStyle(PrimaryButtonStyle())
-            Text("Each card is a Claude Code session in a folder. It finds its own column as the work moves on. Click one to open its terminal.")
+            Text("Name a card in Backlog to keep it for later, in Planning to have Claude plan it, or in In Progress to have Claude start on it. It finds its own column as the work moves on.")
                 .font(.geist(12))
                 .foregroundStyle(Theme.muted.opacity(0.8))
                 .multilineTextAlignment(.center)

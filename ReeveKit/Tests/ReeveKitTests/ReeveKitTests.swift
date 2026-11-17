@@ -1323,3 +1323,66 @@ import Testing
         #expect(throws: ClassifierError.self) { try CommandBar.parse(Data("nope".utf8)) }
     }
 }
+
+@Suite struct LaneTests {
+    @Test func aCardOutsideEveryLaneIsInTheFirst() {
+        let lanes = [Lane(name: "Web"), Lane(name: "Infra")]
+        var card = Card(cwd: "/r")
+        #expect(card.lane(in: lanes) == lanes[0])
+        card.laneId = lanes[1].id
+        #expect(card.lane(in: lanes) == lanes[1])
+        card.laneId = UUID()
+        #expect(card.lane(in: lanes) == lanes[0])
+        #expect(card.lane(in: []) == nil)
+    }
+
+    @Test func aLaneIsNamedByNameOrId() {
+        let lanes = [Lane(name: "Web"), Lane(name: "Infra")]
+        #expect(Lane.find("infra", in: lanes) == lanes[1])
+        #expect(Lane.find(" Web ", in: lanes) == lanes[0])
+        #expect(Lane.find(lanes[1].id.uuidString, in: lanes) == lanes[1])
+        #expect(Lane.find(String(lanes[1].id.uuidString.prefix(8)).lowercased(), in: lanes) == lanes[1])
+        #expect(Lane.find("Mobile", in: lanes) == nil)
+        #expect(Lane.find("", in: lanes) == nil)
+    }
+
+    @Test func leavingTheBacklogStartsByColumn() {
+        #expect(Card.launch(movingTo: .planning) == .plan)
+        #expect(Card.launch(movingTo: .inProgress) == .build)
+        #expect(Card.launch(movingTo: .backlog) == nil)
+        #expect(Card.launch(movingTo: .testing) == nil)
+        #expect(Card.launch(movingTo: .release) == nil)
+    }
+
+    @Test func aCardSavedBeforeLanesIsInNoneAndStarted() throws {
+        var card = Card(title: "Old", cwd: "/r")
+        card.laneId = UUID()
+        card.queued = true
+        var json = try JSONSerialization.jsonObject(with: API.encoder().encode(card)) as! [String: Any]
+        json["laneId"] = nil
+        json["queued"] = nil
+        let old = try API.decoder().decode(Card.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(old.laneId == nil && old.queued == nil)
+    }
+
+    @Test func createAndMoveBodiesTakeBacklogAndLanes() throws {
+        let plain = try API.decoder().decode(CreateCardBody.self, from: Data(#"{"cwd":"/r"}"#.utf8))
+        #expect(!plain.backlog && plain.lane == nil && plain.mode == .plan)
+        let queued = try API.decoder().decode(CreateCardBody.self, from: Data(#"{"cwd":"/r","backlog":true,"lane":"Web"}"#.utf8))
+        #expect(queued.backlog && queued.lane == "Web")
+
+        // As an older `reeve` sends it.
+        let stageOnly = try API.decoder().decode(MoveBody.self, from: Data(#"{"stage":"testing"}"#.utf8))
+        #expect(stageOnly == MoveBody(stage: .testing))
+        let laneOnly = try API.decoder().decode(MoveBody.self, from: Data(#"{"lane":"Infra","inFolder":true}"#.utf8))
+        #expect(laneOnly.stage == nil && laneOnly.lane == "Infra" && laneOnly.inFolder)
+    }
+
+    @Test func theBoardListsItsLanes() throws {
+        let lanes = [Lane(name: "Web")]
+        let board = BoardResponse(cards: [], lanes: lanes, selectedId: nil)
+        #expect(try API.decoder().decode(BoardResponse.self, from: API.encoder().encode(board)).lanes == lanes)
+        let old = try API.decoder().decode(BoardResponse.self, from: Data(#"{"cards":[]}"#.utf8))
+        #expect(old.lanes == nil)
+    }
+}
