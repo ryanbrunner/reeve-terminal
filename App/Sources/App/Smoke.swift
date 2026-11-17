@@ -78,10 +78,13 @@ enum Smoke {
             board.select(card.id)
         } else {
             if vibes, env["REEVE_SMOKE_START"] == "plan" { board.vibesOptions.skipPlanning = false }
-            board.create(
-                cwd: dir, title: "", prompt: prompt, mode: env["REEVE_SMOKE_START"] == "plan" ? .plan : .build,
-                model: env["REEVE_SMOKE_MODEL"], effort: env["REEVE_SMOKE_EFFORT"], vibes: vibes && env["REEVE_SMOKE_VIBES"] != "board"
-            )
+            Task {
+                _ = try? await board.createCard(
+                    cwd: dir, title: "", prompt: prompt, mode: env["REEVE_SMOKE_START"] == "plan" ? .plan : .build,
+                    model: env["REEVE_SMOKE_MODEL"], effort: env["REEVE_SMOKE_EFFORT"], vibes: vibes && env["REEVE_SMOKE_VIBES"] != "board",
+                    open: true, inFolder: true
+                )
+            }
         }
 
         func showTabs(_ id: UUID, then done: @escaping () -> Void) {
@@ -270,7 +273,7 @@ enum Smoke {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { exit(code) }
         }
 
-        board.create(cwd: dir, title: "Preview smoke", prompt: nil, mode: .build)
+        _ = try? await board.createCard(cwd: dir, title: "Preview smoke", prompt: nil, mode: .build, model: nil, effort: nil, open: true, inFolder: true)
         guard await wait("the card", until: { board.selected != nil && board.environment != nil && board.glossHost(for: board.selected!.id) != nil }),
               let card = board.selected, let env = board.environment, let host = board.glossHost(for: card.id) else { return done(1) }
         guard let gloss = env.glossPath else { log("no gloss"); return done(1) }
@@ -346,8 +349,9 @@ enum Smoke {
         done(0)
     }
 
-    /// Adds `dir` as a repo, twice, and starts a card in it from the new card
-    /// sheet with ⌘↩, as a person would, without Claude taking a turn. Then
+    /// Adds `dir` as a repo, twice, names a card in Backlog in it, checks
+    /// nothing starts, moves it between swimlanes and then to Planning, which
+    /// starts it, without Claude taking a turn. Then
     /// closes the card, opens Settings and takes the repo off and on again,
     /// saving a picture of each window and a line per check in `timeline.txt`.
     /// The repo is left on the list, so a second launch can find it saved.
@@ -386,29 +390,78 @@ enum Smoke {
         let count = board.repos.count
         check(board.addRepo(path: dir + "/").id == repo.id && board.repos.count == count, "adding a repo twice keeps one")
 
-        board.showingNewCard = true
-        var sheet: NSWindow? { NSApp.windows.compactMap(\.attachedSheet).first }
-        guard await wait("the new card sheet", until: { sheet != nil }), let sheet else { return done() }
-        await picture("1-new-card", sheet)
-        // Pick the repo just added: what its item in the sheet's menu does.
+        let window = NSApp.windows.first { $0.isVisible }
+        board.compose(in: .backlog)
+        // Pick the repo just added: what its item in the field's menu does.
         board.pickedRepoId = repo.id
-        await picture("2-new-card-picked", sheet)
+        await picture("1-new-card", window)
+        check(board.composing == NewCardSpot(lane: board.lanes[0].id, stage: .backlog), "⌘N opens the new card field in the first lane's Backlog")
 
-        let cards = Set(board.cards.map(\.id))
-        let start = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0, windowNumber: sheet.windowNumber,
-                                     context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!
-        if !sheet.performKeyEquivalent(with: start) { NSApp.postEvent(start, atStart: false) }
-        guard await wait("a card", until: { board.cards.contains { !cards.contains($0.id) } }),
-              let card = board.cards.first(where: { !cards.contains($0.id) }) else { return done() }
-        log("card in \(card.cwd), repo \(card.repoPath ?? "-"), worktree \(card.worktreePath ?? "-")")
-        check(card.worktreePath.map { $0.hasSuffix(Worktree.name(for: card.id)) } == true, "⌘↩ starts a card in a worktree of the picked repo")
-        check(card.repoPath.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path } == URL(fileURLWithPath: repo.path).resolvingSymlinksInPath().path,
+        // Typed into the field: key events handed to the window, which sends
+        // them to whatever has focus, as it would a person's.
+        func post(_ code: UInt16, _ text: String) {
+            guard let window else { return }
+            for type in [NSEvent.EventType.keyDown, .keyUp] {
+                if let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                windowNumber: window.windowNumber, context: nil, characters: text,
+                                                charactersIgnoringModifiers: text, isARepeat: false, keyCode: code) {
+                    window.sendEvent(event)
+                }
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(300))
+        let typedBefore = Set(board.cards.map(\.id))
+        for ch in "Typed card" { post(0, String(ch)); try? await Task.sleep(for: .milliseconds(30)) }
+        post(36, "\r")
+        let typedOk = await wait("the typed card", seconds: 5, until: { board.cards.contains { !typedBefore.contains($0.id) } })
+        let typed = board.cards.first { !typedBefore.contains($0.id) }
+        check(typedOk && typed?.title == "Typed card" && typed?.queued == true && typed?.stage == .backlog, "typing a name and Return makes a backlog card")
+        check(board.composing != nil, "the field stays open for the next card")
+        await picture("1b-typed", window)
+        post(53, "\u{1b}")
+        check(await wait("the field to close", seconds: 3, until: { board.composing == nil }), "Esc puts the field away")
+        if let typed { board.close(typed.id) }
+
+        // What Return in the field does, from here on directly.
+        board.compose(in: .backlog)
+        let before = Set(board.cards.map(\.id))
+        board.create(name: "Smoke backlog card", in: board.composing!, cwd: repo.path)
+        guard await wait("a card", until: { board.cards.contains { !before.contains($0.id) } }),
+              let card = board.cards.first(where: { !before.contains($0.id) }) else { return done() }
+        await picture("2-backlog-card", window)
+        log("card in \(card.cwd), stage \(card.stage.rawValue), worktree \(card.worktreePath ?? "-")")
+        check(card.stage == .backlog && card.queued == true && card.title == "Smoke backlog card", "a card named in Backlog waits there, named")
+        check(card.worktreePath == nil && card.cwd == repo.path, "a backlog card has no worktree yet")
+        try? await Task.sleep(for: .seconds(1))
+        check(!board.live.contains(card.id) && !board.starting.contains(card.id), "a backlog card starts no session")
+        board.select(card.id)
+        try? await Task.sleep(for: .milliseconds(500))
+        check(!board.live.contains(card.id) && !board.starting.contains(card.id), "opening a backlog card starts no session")
+        await picture("3-backlog-open", window)
+        board.dismissOpenCard()
+
+        // Swimlanes: a second lane, a card moved to it, and the lane deleted under it.
+        let lane = board.addLane(named: "Smoke lane")
+        board.move(card.id, lane: lane.id)
+        check(board.lane(of: board.card(card.id)!).id == lane.id && board.card(card.id)?.stagePinned == false, "a card moves to another lane, without pinning its column")
+        await picture("4-lanes", window)
+        board.deleteLane(lane.id)
+        check(board.lanes.count == 1 && board.lane(of: board.card(card.id)!).id == board.lanes[0].id, "deleting a lane moves its cards to the one above")
+
+        // Without a name, it starts with no prompt, so Claude takes no turn.
+        board.rename(card.id, to: "")
+        board.move(card.id, to: .planning)
+        check(await wait("the session", until: { board.live.contains(card.id) }), "moving a backlog card to Planning starts its session")
+        let started = board.card(card.id)
+        log("started in \(started?.cwd ?? "-"), worktree \(started?.worktreePath ?? "-"), mode \(started?.startMode?.rawValue ?? "-")")
+        check(started?.worktreePath.map { $0.hasSuffix(Worktree.name(for: card.id)) } == true, "it gets a worktree of the picked repo once it starts")
+        check(started?.repoPath.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path } == URL(fileURLWithPath: repo.path).resolvingSymlinksInPath().path,
               "the card's repo is the picked one")
-        check(board.pickedRepo?.id == repo.id && Preferences.store.string(forKey: "newCardRepo") == repo.id.uuidString, "the sheet remembers the repo")
-        check(sheet.isVisible == false, "the sheet closes")
-        await picture("3-board", NSApp.windows.first { $0.isVisible })
+        check(started?.queued == nil && started?.startMode == .plan && started?.stage == .planning, "it starts in plan mode, in Planning")
+        check(board.pickedRepo?.id == repo.id && Preferences.store.string(forKey: "newCardRepo") == repo.id.uuidString, "the field remembers the repo")
+        await picture("5-board", window)
         board.close(card.id)
-        if let worktree = card.worktreePath {
+        if let worktree = started?.worktreePath {
             check(await wait("the worktree to go", until: { !FileManager.default.fileExists(atPath: worktree) }), "closing the card removes its worktree")
         }
 
@@ -420,12 +473,12 @@ enum Smoke {
         var settings: NSWindow? { NSApp.windows.first { $0.isVisible && $0.identifier?.rawValue.contains("Settings") == true || ($0.isVisible && $0.title.contains("Settings")) } }
         check(await wait("Settings", until: { settings != nil }), "Settings opens")
         log("windows: \(NSApp.windows.filter(\.isVisible).map { "\($0.title) [\($0.identifier?.rawValue ?? "-")]" })")
-        await picture("4-settings", settings)
+        await picture("6-settings", settings)
         board.removeRepo(repo.id)
         check(!board.repos.contains { $0.id == repo.id }, "removing a repo takes it off the list")
-        await picture("5-settings-removed", settings)
+        await picture("7-settings-removed", settings)
         board.addRepo(path: dir)
-        await picture("6-settings-added", settings)
+        await picture("8-settings-added", settings)
         done()
     }
 

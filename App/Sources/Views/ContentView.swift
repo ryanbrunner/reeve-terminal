@@ -21,7 +21,7 @@ struct ContentView: View {
                 if vibes { VibesTicker(options: board.vibesOptions) }
                 ZStack {
                     BoardView()
-                    if board.cards.isEmpty {
+                    if board.cards.isEmpty, board.composing == nil, board.vibes == nil {
                         EmptyState()
                     }
                 }
@@ -48,9 +48,6 @@ struct ContentView: View {
         .background(vibes ? Vibe.ground : Theme.ink)
         .ignoresSafeArea(.container, edges: .top)
         .environment(\.vibesStill, reduceMotion || board.selectedId != nil)
-        .sheet(isPresented: $board.showingNewCard) {
-            NewCardSheet().environmentObject(board)
-        }
         .sheet(isPresented: $board.showingArchive) {
             ArchiveView().environmentObject(board)
         }
@@ -86,7 +83,7 @@ private struct Header: View {
             VibesSwitch(on: vibes) { board.toggleVibes() }
             Button(board.archive.isEmpty ? "Archive" : "Archive \(board.archive.count)") { board.showingArchive = true }
                 .buttonStyle(SecondaryButtonStyle())
-            Button("New Card") { board.showingNewCard = true }
+            Button("New Card") { board.compose() }
                 .buttonStyle(PrimaryButtonStyle())
         }
         // Clear of the traffic lights, which sit over the header.

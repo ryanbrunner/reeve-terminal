@@ -116,6 +116,14 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     /// Nil leaves it to the person's own settings.
     public var effort: String?
     public var stage: Stage
+    /// The swimlane the card is in. Nil, or a lane that has gone, is the first.
+    public var laneId: UUID?
+    /// Made in Backlog and not started: no worktree, no session, nothing runs
+    /// until a person moves it to Planning or In Progress. Nil once it starts.
+    public var queued: Bool?
+    /// What a backlog card says to Claude when it starts, when that is more
+    /// than its title. Nil once it has started, or when the title says it.
+    public var brief: String?
     public var activity: Activity
     /// How the session starts. Nil for cards made before there was a choice,
     /// which start in the person's own default mode.

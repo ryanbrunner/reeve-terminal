@@ -217,7 +217,7 @@ public enum CLIUsage {
 reeve — Reeve Terminal's board from a shell
 
 Reading
-  reeve board [--stage S] [--repo PATH]       every card, column by column
+  reeve board [--stage S] [--lane L] [--repo PATH]  every card, column by column
   reeve card show [<card>]                    a card: where it is, what it's doing, its plan
   reeve card plan [<card>]                    the card's plan, as Markdown
   reeve card diff [<card>] [--stat]           what the card has changed since it started
@@ -228,9 +228,9 @@ Reading
   reeve doctor                                check git, claude and gh
 
 Driving
-  reeve card add [<title…>] [--prompt TEXT] [--mode plan|build] [--cwd DIR] …
+  reeve card add [<title…>] [--prompt TEXT] [--mode plan|build|backlog] [--lane L] [--cwd DIR] …
   reeve card edit <card> [--title TITLE | --no-title] [--vibes | --no-vibes]
-  reeve card move <card> <stage>
+  reeve card move <card> [<stage>] [--lane L]
   reeve card run <card> [--restart]
   reeve card reply <card> <text…> [--file PATH|-]
   reeve card wait [<card>] [--timeout SECONDS]
@@ -240,7 +240,10 @@ Driving
 
 <card> is a card's id or its first characters (as in its branch, reeve/<id>),
 or its title. Left out, it is the card whose terminal or worktree you're in.
-Stages: \(StageName.accepted).
+Stages: \(StageName.accepted). Swimlanes (L) are rows across the columns,
+named by the person; `reeve board --json` lists them under "lanes".
+A backlog card made with --mode backlog starts nothing until it's moved to
+planning or in-progress.
 --json prints the API's answer and nothing else. `reeve card <command> --help`
 says more.
 
