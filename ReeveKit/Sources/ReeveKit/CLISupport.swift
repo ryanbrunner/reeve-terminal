@@ -177,6 +177,31 @@ public struct Arguments: Equatable, Sendable {
 
 /// Lines of columns padded to line up, two spaces apart. The last column is
 /// left as it is, since it is free text that would only pad the line.
+/// What `reeve doctor` reads out of `gh auth status`.
+public enum GhAuth {
+    /// The token's OAuth scopes, from its "Token scopes: 'repo', 'workflow'"
+    /// line. With more than one account logged in, the active one's. Nil when
+    /// it names none: a fine-grained token or `GH_TOKEN` says `none` or leaves
+    /// the line out, and has no scopes to lack.
+    public static func scopes(in status: String) -> [String]? {
+        // Each account's lines follow its "Logged in to" line.
+        var accounts: [[Substring]] = []
+        for line in status.split(separator: "\n") {
+            if line.contains("Logged in to") || accounts.isEmpty { accounts.append([]) }
+            accounts[accounts.count - 1].append(line)
+        }
+        let account = accounts.first { $0.contains { $0.contains("Active account: true") } } ?? accounts.first ?? []
+        guard let line = account.first(where: { $0.contains("Token scopes:") }),
+              let list = line.split(separator: ":", maxSplits: 1).last?.trimmingCharacters(in: .whitespaces),
+              !list.isEmpty, list != "none" else { return nil }
+        return list.split(separator: ",").map { $0.trimmingCharacters(in: CharacterSet(charactersIn: " '\"")) }
+    }
+
+    /// GitHub refuses a push or merge that touches `.github/workflows/`
+    /// without this scope, and says so only then.
+    public static let workflowFix = "gh auth refresh -h github.com -s workflow"
+}
+
 public enum Table {
     public static func format(_ rows: [[String]], indent: String = "") -> String {
         guard let width = rows.map(\.count).max(), width > 0 else { return "" }
@@ -225,7 +250,7 @@ Reading
   reeve card pr [<card>]                      the URL of the card's pull request
   reeve status                                is the app running? (exit 0 or 1)
   reeve models                                models and efforts a card can start with
-  reeve doctor                                check git, claude and gh
+  reeve doctor                                check git, claude, gh and its workflow scope
 
 Driving
   reeve card add [<title…>] [--prompt TEXT] [--mode plan|build|backlog] [--lane L] [--cwd DIR] …
@@ -234,6 +259,7 @@ Driving
   reeve card run <card> [--restart]
   reeve card reply <card> <text…> [--file PATH|-]
   reeve card wait [<card>] [--timeout SECONDS]
+  reeve card merge <card>                     merge a Release card's pull request on GitHub
   reeve card close <card> [--force]
   reeve open [<card>]
   reeve vibes [on | off]                      the board's VIBES MODE switch

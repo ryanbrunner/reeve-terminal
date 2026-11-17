@@ -64,6 +64,14 @@ struct CardFace: View {
                     .lineLimit(2)
             }
             footer
+            if !vibes, card.pullRequest?.state == .open, let error = board.mergeErrors[card.id] {
+                Text(error)
+                    .font(.mono(10))
+                    .foregroundStyle(Color(hex: 0xFCA5A5))
+                    .lineLimit(4)
+                    .textSelection(.enabled)
+                    .help(error)
+            }
         }
         .padding(10)
         .frame(height: vibes ? VibesBoardView.cardHeight : nil)
@@ -106,6 +114,12 @@ struct CardFace: View {
         .help(help)
         .accessibilityElement(children: .combine)
         .accessibilityLabel([board.displayTitle(card), label, card.pullRequest?.spoken, card.morePullRequestsSpoken].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityActions {
+            // Combined into one element, the card would otherwise hide its button.
+            if !vibes, card.canMergePullRequest, let pr = card.pullRequest {
+                Button("Merge pull request #\(pr.number)") { Task { try? await board.mergePullRequest(card.id) } }
+            }
+        }
     }
 
     @ViewBuilder
@@ -154,6 +168,9 @@ struct CardFace: View {
                     .help("You put this card here. It stays until you next prompt Claude.")
             }
             Spacer(minLength: 0)
+            if card.canMergePullRequest || board.merging.contains(card.id) {
+                MergeButton(card: card)
+            }
         }
     }
 
@@ -188,6 +205,56 @@ struct CardFace: View {
         if let more = card.morePullRequestsSpoken { lines.append(more) }
         if let error = board.classifyErrors[card.id] { lines.append("Couldn't sort: \(error)") }
         return lines.joined(separator: "\n")
+    }
+}
+
+/// Merges a Release card's pull request on GitHub, offered only once GitHub
+/// has said it merges cleanly. It sits on the card because it is the one
+/// thing left to do with it.
+///
+/// The first press arms it and the second merges. A card can be dragged
+/// back, but a merge can't be taken back from the board, and a stray click
+/// on a card should not land anything. It disarms on its own after three
+/// seconds, so a first press left standing isn't waiting on the next click.
+/// Emerald, the open badge's colour, rather than Claude's sky: this is not
+/// Claude's work.
+private struct MergeButton: View {
+    @EnvironmentObject var board: Board
+    let card: Card
+    @State private var armed = false
+
+    private static let emerald = Color(hex: 0x34D399)
+
+    var body: some View {
+        let merging = board.merging.contains(card.id)
+        let number = card.pullRequest.map { "#\($0.number)" } ?? ""
+        Button {
+            if armed {
+                armed = false
+                Task { try? await board.mergePullRequest(card.id) }
+            } else {
+                board.clearMergeError(card.id)
+                armed = true
+            }
+        } label: {
+            Text(merging ? "Merging…" : armed ? "Confirm" : "Merge")
+                .font(.mono(10))
+                .foregroundStyle(armed ? Color(hex: 0xA7F3D0) : Color(hex: 0x6EE7B7))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(RoundedRectangle(cornerRadius: 4).fill(Self.emerald.opacity(armed ? 0.2 : 0)))
+                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Self.emerald.opacity(armed ? 0.8 : 0.4)))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(merging)
+        .opacity(merging ? 0.5 : 1)
+        .help(armed ? "Press again to merge the pull request on GitHub" : "Merge PR \(number): GitHub says it merges cleanly")
+        .task(id: armed) {
+            guard armed else { return }
+            try? await Task.sleep(for: .seconds(3))
+            if !Task.isCancelled { armed = false }
+        }
     }
 }
 

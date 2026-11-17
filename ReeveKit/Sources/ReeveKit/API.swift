@@ -246,6 +246,19 @@ public struct ReplyResponse: Codable, Equatable, Sendable {
     }
 }
 
+/// `POST /api/cards/:id/merge`: the card's pull request, merged on GitHub.
+public struct MergeResponse: Codable, Equatable, Sendable {
+    /// Where the pull request stands after gh merged it: `merged`, or `open`
+    /// when the repo queued it to land later.
+    public var state: PullRequest.State
+    public var card: APICard
+
+    public init(state: PullRequest.State, card: APICard) {
+        self.state = state
+        self.card = card
+    }
+}
+
 /// `GET /api/cards/:id/plan`.
 public struct PlanResponse: Codable, Equatable, Sendable {
     public var text: String?
