@@ -44,10 +44,10 @@ public struct HookEvent: Decodable, Sendable {
         case agentId = "agent_id"
     }
 
-    /// The background work that keeps a session going after its turn ends:
-    /// agents, not shells or monitors, which are as often a dev server or a
-    /// watcher that never finishes.
-    public static let wakingTaskTypes: Set<String> = ["subagent", "workflow", "teammate", "cloud session", "MCP task"]
+    /// The background work a card shows as waiting on after the turn ends:
+    /// shells, like a build or a test run Claude will pick up when it exits.
+    /// Background agents, workflows and monitors don't count.
+    public static let wakingTaskTypes: Set<String> = ["shell"]
 
     public var wakingTasks: [BackgroundWork] {
         (backgroundTasks ?? []).filter { Self.wakingTaskTypes.contains($0.type) }
@@ -221,7 +221,7 @@ extension HookEvent {
             let blocking = notificationType.map(blockingNotifications.contains) ?? (message?.contains("waiting for your input") != true)
             return blocking ? HookEffect(activity: .needsInput, waitingOn: .some(message)) : HookEffect()
         case "Stop":
-            // Background agents will wake Claude when they finish: the turn is
+            // A background shell will wake Claude when it exits: the turn is
             // over, but the work isn't.
             let waking = wakingTasks
             if !waking.isEmpty {

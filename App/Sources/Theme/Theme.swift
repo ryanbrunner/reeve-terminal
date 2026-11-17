@@ -131,7 +131,7 @@ enum GlowTone {
         }
     }
 
-    /// How brightly the glow burns. A card waiting on its agents holds a
+    /// How brightly the glow burns. A card waiting on its shells holds a
     /// dimmer light than one that wants something from you.
     var intensity: Double { self == .waiting ? 0.7 : 1 }
 

@@ -44,7 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        // A card waiting on its agents is still working: quitting stops them too.
+        // A card waiting on its shells is still working: quitting stops them too.
         let running = board.cards.filter { board.live.contains($0.id) && ($0.activity == .running || $0.activity == .waiting) }
         guard !running.isEmpty else { return .terminateNow }
         let alert = NSAlert()
