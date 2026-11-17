@@ -407,7 +407,7 @@ final class Board: ObservableObject {
 
     /// `launch`, from the board, asking about the folder if git says no.
     func startQueued(_ id: UUID, mode: StartMode) {
-        if let refusal = startRefusal(id) { return refuse(refusal) }
+        if let refusal = startRefusal(id) { return refuseStart(id, refusal) }
         Task {
             await withWorktreeFallback { inFolder in try await self.launch(id, mode: mode, inFolder: inFolder) }
         }
@@ -416,6 +416,8 @@ final class Board: ObservableObject {
     func select(_ id: UUID) {
         selectedId = id
         refreshPullRequest(id)
+        // What it waits on may have merged since the board last asked.
+        if let blocker = blocker(of: id) { refreshPullRequest(blocker.id) }
         // Whatever Claude is asking is in the terminal.
         if card(id)?.activity == .needsInput { tabs[id] = .terminal }
         if let card = card(id), !live.contains(id) {
@@ -511,7 +513,7 @@ final class Board: ObservableObject {
     func move(_ id: UUID, to stage: Stage? = nil, lane: UUID? = nil, launching: Bool = true) {
         if let stage, card(id)?.queued == true, Card.launch(movingTo: stage) != nil, let refusal = startRefusal(id) {
             // A caller that starts it itself says why in its own words.
-            if launching { refuse(refusal) }
+            if launching { refuseStart(id, refusal) }
             return
         }
         update(id) { card in
@@ -557,6 +559,14 @@ final class Board: ObservableObject {
             return DependencyLink(id: id, title: "", done: true, status: "closed")
         }
         return DependencyLink(id: id, title: displayTitle(waited), done: !Dependency.stillBlocking(waited), status: Dependency.status(of: waited))
+    }
+
+    /// Says why `id` can't start. Merged is only what its badge last said, so
+    /// the card it waits on is asked again, and a try once it has merged goes
+    /// through.
+    private func refuseStart(_ id: UUID, _ refusal: APIError) {
+        if let blocker = blocker(of: id) { refreshPullRequest(blocker.id) }
+        refuse(refusal)
     }
 
     /// Says why the board didn't do what was asked. After the gesture that

@@ -125,7 +125,7 @@ struct CardFace: View {
         if vibes {
             HStack(spacing: 6) {
                 Text(Vibes.chip(stage: card.stage, activity: card.activity, shipped: card.shippedAt != nil, merged: card.merged == true,
-                                blocked: blocker != nil, options: board.vibesOptions))
+                                waitingOn: blocker.map { "“\(board.displayTitle($0))”" }, options: board.vibesOptions))
                     .font(.mono(10))
                     .tracking(0.4)
                     .foregroundStyle(.white)

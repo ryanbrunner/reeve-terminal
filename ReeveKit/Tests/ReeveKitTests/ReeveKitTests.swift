@@ -1537,7 +1537,7 @@ import Testing
     }
 
     @Test func heldCardsSayWhyInVibesMode() {
-        #expect(Vibes.chip(stage: .backlog, activity: .idle, shipped: false, merged: false, blocked: true, options: VibesOptions()) == "waits on a merge")
+        #expect(Vibes.chip(stage: .backlog, activity: .idle, shipped: false, merged: false, waitingOn: "“Login”", options: VibesOptions()) == "waits on “Login”")
         #expect(Vibes.chip(stage: .backlog, activity: .idle, shipped: false, merged: false, options: VibesOptions()) == "auto-run")
     }
 

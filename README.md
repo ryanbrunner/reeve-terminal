@@ -39,8 +39,8 @@ feature parity. What Reeve adds is the board.
   ("Testing", "Release, PR not merged"). Its face says the same in amber.
   Merged means its pull request merged, its branch found on main, or archived.
   Closing the card it waits on lets it go, and a link that would make a loop
-  is refused. VIBES MODE leaves a waiting card where it is, and pushes it on
-  once what it waits on merges.
+  is refused. VIBES MODE never starts a backlog card, waiting or not; one
+  already started that waits on another is held (below).
 - **Activity is live.** Each card's `claude` starts with hooks layered on
   through `--settings`, which leaves your own settings alone. The hooks post
   to a small server Reeve runs on 127.0.0.1. A prompt or a tool call turns
@@ -189,9 +189,10 @@ For a card in VIBES MODE, Reeve does what you would otherwise have to:
   checked-out branch or its pull request merged (or, with Merge to Main off,
   when its pull request is up). Otherwise it is told to ship again. A card
   pushed from the same column three times running is left for you.
-- **Waiting still means waiting.** A card waiting on another that hasn't
-  merged isn't pushed on, and its chip says it waits on a merge. When the
-  card it waits on ships, it is picked up.
+- **Waiting still means waiting.** A started card waiting on another that
+  hasn't merged isn't pushed on when its turn ends, and its chip names the
+  card it waits on. Once that card merges, it is picked up. A waiting card in
+  Backlog still waits for you to start it.
 
 Flipping the board's switch arms it for two seconds before anything is
 typed, so flipping it back in that time undoes it. Claude Code's own tool
