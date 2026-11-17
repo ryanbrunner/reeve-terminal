@@ -110,6 +110,10 @@ final class Board: ObservableObject {
     /// Stopped cards that have been sorted since: the only ones VIBES MODE may
     /// type into, and it knows which column they are in.
     private var settled: Set<UUID> = []
+    /// The question a stopped card's last message left, as the classifier
+    /// read it. Not the card's: only a dialog makes a card wait on a person.
+    /// VIBES MODE answers it, as it would have been answered in the terminal.
+    private var leftQuestions: [UUID: String] = [:]
     /// What VIBES MODE last typed into each card, so its prompt is told apart
     /// from a person's when the hook reports it.
     private var vibesPrompts: [UUID: String] = [:]
@@ -834,6 +838,7 @@ final class Board: ObservableObject {
         } else if effect.activity != nil {
             stopped.remove(cardId)
             settled.remove(cardId)
+            leftQuestions[cardId] = nil
         }
         if let reply { noteVibesReply(reply, on: before) }
         if Vibes.showsPlanDialog(event) {
@@ -949,16 +954,14 @@ final class Board: ObservableObject {
                 if !card.titledByPerson, !result.title.isEmpty { card.title = result.title }
                 card.summary = result.summary
                 // Only while nothing newer has happened: a prompt sent since
-                // means the session has moved on from what was read. A card
-                // waiting on its agents is never a question, whatever Claude
-                // said as it launched them.
-                if current, card.activity == .needsReview || card.activity == .needsInput {
-                    if let waiting = result.waitingOn {
-                        card.activity = .needsInput
-                        card.waitingOn = waiting
-                    } else if card.activity == .needsReview {
-                        card.waitingOn = nil
-                    }
+                // means the session has moved on from what was read. A
+                // question asked in text leaves the card ready for review;
+                // only a dialog waits on a person. A card waiting on its
+                // agents has no question, whatever Claude said as it
+                // launched them.
+                if current, card.activity == .needsReview {
+                    card.waitingOn = nil
+                    leftQuestions[id] = result.waitingOn
                 }
             }
             updateBadge()
@@ -1032,12 +1035,10 @@ final class Board: ObservableObject {
         // A person may have something half-typed in the open card; text and an
         // Enter from here would send both.
         guard selectedId != id else { return }
-        // After a Stop, amber is only ever the classifier's: a question Claude
-        // left in its message.
-        guard card.activity == .needsReview || (card.activity == .needsInput && card.waitingOn != nil) else { return }
+        guard card.activity == .needsReview else { return }
         settled.remove(id)
         let name = "“\(displayTitle(card))”"
-        switch Vibes.next(stage: card.stage, waitingOn: card.activity == .needsInput ? card.waitingOn : nil, nudges: card.vibesNudges, options: vibesOptions) {
+        switch Vibes.next(stage: card.stage, waitingOn: leftQuestions.removeValue(forKey: id), nudges: card.vibesNudges, options: vibesOptions) {
         case .answer:
             type(Vibes.noOneHome, into: id)
             update(id) { $0.vibesNudges = ($0.vibesNudges ?? VibesNudges(stage: $0.stage)).answering(in: $0.stage) }
