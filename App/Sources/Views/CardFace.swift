@@ -37,7 +37,7 @@ struct CardFace: View {
             if vibes {
                 Spacer(minLength: 0)
             } else if let line = card.backgroundLine {
-                // Waiting on its own agents: nothing for you to do yet.
+                // Waiting on its own shells: nothing for you to do yet.
                 Text(line)
                     .font(.geist(12))
                     .foregroundStyle(Theme.indigo200.opacity(0.85))

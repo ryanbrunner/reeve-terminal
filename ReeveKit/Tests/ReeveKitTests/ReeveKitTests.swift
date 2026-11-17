@@ -76,17 +76,18 @@ import Testing
         #expect(e.effect.background == [])
     }
 
-    @Test func stopWithBackgroundAgentsIsWaiting() throws {
-        let e = try event(#"{"session_id":"s","hook_event_name":"Stop","last_assistant_message":"I'll report back.","background_tasks":[{"id":"a1","type":"subagent","status":"running","description":"Explore hooks","agent_type":"Explore"},{"id":"b1","type":"shell","status":"running","description":"npm run dev","command":"npm run dev"}]}"#)
+    @Test func stopWithBackgroundShellsIsWaiting() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"Stop","last_assistant_message":"I'll report back.","background_tasks":[{"id":"a1","type":"subagent","status":"running","description":"Explore hooks","agent_type":"Explore"},{"id":"b1","type":"shell","status":"running","description":"swift test","command":"swift test"}]}"#)
         #expect(e.effect.activity == .waiting)
         #expect(e.effect.classify)
         #expect(e.effect.waitingOn == .some(nil))
-        #expect(e.effect.background == [BackgroundWork(id: "a1", type: "subagent", description: "Explore hooks", agentType: "Explore")])
+        #expect(e.effect.background == [BackgroundWork(id: "b1", type: "shell", description: "swift test")])
     }
 
-    @Test func stopWithOnlyShellsAndMonitorsIsReview() throws {
-        let e = try event(#"{"session_id":"s","hook_event_name":"Stop","background_tasks":[{"id":"b1","type":"shell","status":"running","description":"npm run dev"},{"id":"m1","type":"monitor","status":"running","description":"watch logs"}]}"#)
+    @Test func stopWithOnlyAgentsAndMonitorsIsReview() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"Stop","background_tasks":[{"id":"a1","type":"subagent","status":"running","description":"Explore hooks","agent_type":"Explore"},{"id":"w1","type":"workflow","status":"running"},{"id":"m1","type":"monitor","status":"running","description":"watch logs"}]}"#)
         #expect(e.effect.activity == .needsReview)
+        #expect(e.effect.background == [])
     }
 
     @Test func subagentToolsLeaveTheActivityAlone() throws {
@@ -134,11 +135,12 @@ import Testing
 
     @Test func aWaitingCardSaysWhatItWaitsOn() {
         var card = Card(cwd: "/tmp", activity: .waiting)
-        card.background = [BackgroundWork(id: "a", type: "subagent"), BackgroundWork(id: "b", type: "subagent")]
-        #expect(card.backgroundLine == "Waiting on 2 subagents")
-        card.background = [BackgroundWork(id: "w", type: "workflow")]
-        #expect(card.backgroundLine == "Waiting on 1 workflow")
-        card.background = [BackgroundWork(id: "a", type: "subagent"), BackgroundWork(id: "w", type: "workflow")]
+        card.background = [BackgroundWork(id: "a", type: "shell"), BackgroundWork(id: "b", type: "shell")]
+        #expect(card.backgroundLine == "Waiting on 2 shells")
+        card.background = [BackgroundWork(id: "a", type: "shell")]
+        #expect(card.backgroundLine == "Waiting on 1 shell")
+        // A card saved while agents counted still reads sensibly.
+        card.background = [BackgroundWork(id: "a", type: "shell"), BackgroundWork(id: "s", type: "subagent")]
         #expect(card.backgroundLine == "Waiting on 2 tasks")
         card.activity = .running
         #expect(card.backgroundLine == nil)
