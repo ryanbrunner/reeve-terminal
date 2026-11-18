@@ -26,6 +26,8 @@ final class Terminals: NSObject, LocalProcessTerminalViewDelegate {
         let view = CardTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 400))
         view.cardId = cardId
         view.processDelegate = self
+        // Clicks and drags select text here rather than going to `claude`.
+        view.allowMouseReporting = false
         TerminalStyle.apply(to: view)
         view.terminal.changeHistorySize(10_000)
         views[cardId] = view
@@ -175,25 +177,30 @@ final class Terminals: NSObject, LocalProcessTerminalViewDelegate {
 /// A card's terminal. Knows which card it belongs to and whether it has ever
 /// started a process, so a restart can say so in the scrollback.
 ///
-/// SwiftTerm's own `scrollWheel` only scrolls the view's history, and can't be
-/// overridden from here, so a wheel event meant for a program that turned
-/// mouse tracking on (as `claude`'s fullscreen mode does) is reported to it by
-/// a monitor instead. Everything else is left to SwiftTerm.
+/// Mouse reporting is off, so clicks and drags select text rather than reach
+/// a program that turned mouse tracking on (as `claude`'s fullscreen mode
+/// does). The wheel still goes to it, so it can scroll: SwiftTerm's own
+/// `scrollWheel` only scrolls the view's history, and can't be overridden from
+/// here, so a monitor reports it instead. The same monitor drops the pointer's
+/// motion, which SwiftTerm reports whether reporting is off or not.
 final class CardTerminalView: LocalProcessTerminalView {
     var cardId: UUID?
     var hasRun = false
-    private var wheelMonitor: Any?
+    private var mouseMonitor: Any?
     /// Scroll distance, in lines, not yet sent: a trackpad drag moves a fraction
     /// of a line per event, and sending a whole line for each made it race.
     private var wheelRemainder: CGFloat = 0
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if let wheelMonitor { NSEvent.removeMonitor(wheelMonitor) }
-        wheelMonitor = nil
+        if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
+        mouseMonitor = nil
         guard window != nil else { return }
-        wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
-            MainActor.assumeIsolated { self?.reportWheel(event) ?? event }
+        mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .mouseMoved]) { [weak self] event in
+            MainActor.assumeIsolated {
+                guard let self else { return event }
+                return event.type == .mouseMoved ? self.dropMotion(event) : self.reportWheel(event)
+            }
         }
     }
 
@@ -211,16 +218,28 @@ final class CardTerminalView: LocalProcessTerminalView {
         return true
     }
 
+    /// Whether the pointer is over this terminal and not over something drawn
+    /// on top of it (the Plan and Changes tabs).
+    private func isUnderPointer(_ event: NSEvent) -> Bool {
+        event.window === window && !isHidden
+            && window?.contentView?.hitTest(event.locationInWindow)?.isDescendant(of: self) == true
+    }
+
+    /// Returns nil for motion over the terminal that SwiftTerm would report to
+    /// the program, so `claude` sees no hovering.
+    private func dropMotion(_ event: NSEvent) -> NSEvent? {
+        guard let terminal, terminal.mouseMode.sendMotionEvent(), isUnderPointer(event) else { return event }
+        return nil
+    }
+
     /// Sends the wheel event to the program as mouse button 4 or 5 and returns
     /// nil, or returns the event if SwiftTerm should handle it: the program
     /// isn't tracking the mouse, Shift or Option asks for the local behaviour,
-    /// or something drawn over the terminal (the Plan and Changes tabs) is under
-    /// the pointer.
+    /// or the terminal isn't what's under the pointer.
     private func reportWheel(_ event: NSEvent) -> NSEvent? {
-        guard event.window === window, !isHidden, let terminal,
-              allowMouseReporting, terminal.mouseMode != .off,
+        guard let terminal, terminal.mouseMode != .off,
               event.modifierFlags.isDisjoint(with: [.shift, .option]),
-              window?.contentView?.hitTest(event.locationInWindow)?.isDescendant(of: self) == true
+              isUnderPointer(event)
         else { return event }
 
         let point = convert(event.locationInWindow, from: nil)
