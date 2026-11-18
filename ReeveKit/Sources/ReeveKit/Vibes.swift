@@ -45,7 +45,7 @@ public enum Vibes {
 
     /// What VIBES MODE does once a card's turn has ended and it has been sorted.
     ///
-    /// The column says how far the work got — Planning in plan mode, In
+    /// The column says how far the work got — Design, Planning in plan mode, In
     /// Progress with nothing changed, Testing with changes, Release with a
     /// pull request — but not whether it was tested, so the card remembers
     /// what it was told. Once told to ship, whether it did is git's to say,
@@ -60,6 +60,8 @@ public enum Vibes {
         switch stage {
         case .backlog, .inProgress:
             return .nudge(build, step: .build)
+        case .design:
+            return .nudge(options.skipPlanning ? build : planDesign, step: .build)
         case .planning:
             return .nudge(implement, step: .build)
         case .testing where !options.skipTesting && nudges?.askedToTest != true:
@@ -70,6 +72,7 @@ public enum Vibes {
     }
 
     static let build = "VIBES MODE is on and nobody is reviewing. Decide what this should be yourself and build it. Don't ask, keep the work moving."
+    static let planDesign = "The design is done. Nobody reviewed it. Enter plan mode and plan how to build it, without stopping to ask."
     static let implement = "The plan is approved. Nobody read it. Implement it now, without stopping to ask."
     static let test = "Now test it: run the tests, check it really works, and fix whatever doesn't. Don't ask, keep going."
 
@@ -90,6 +93,7 @@ public enum Vibes {
         if let waitingOn, !shipped { return "waits on \(waitingOn)" }
         switch stage {
         case .backlog: return "auto-run"
+        case .design: return "self-approved"
         case .planning: return "self-answered"
         case .inProgress: return options.skipTesting ? "no tests" : "no review"
         case .testing: return "auto-approved"

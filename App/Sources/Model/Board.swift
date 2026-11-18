@@ -40,6 +40,8 @@ final class Board: ObservableObject {
     @Published private(set) var tabs: [UUID: CardTab] = [:]
     /// Cards with a plan nobody has looked at in the Plan tab yet.
     @Published private(set) var unseenPlans: Set<UUID> = []
+    /// Cards with a design nobody has looked at in the Design tab yet.
+    @Published private(set) var unseenDesigns: Set<UUID> = []
     /// Cards whose terminal has the plan dialog open: Claude asked for its
     /// plan to be approved, and nothing has happened since.
     @Published private(set) var planDialogs: Set<UUID> = []
@@ -350,9 +352,10 @@ final class Board: ObservableObject {
         return card
     }
 
-    /// VIBES MODE flies over Planning unless its options say otherwise.
+    /// VIBES MODE flies over Planning unless its options say otherwise. A
+    /// card started in Design was asked for a design, and gets one.
     private func startingMode(_ mode: StartMode, vibes: Bool) -> StartMode {
-        (vibes || self.vibes != nil) && vibesOptions.skipPlanning ? .build : mode
+        mode == .plan && (vibes || self.vibes != nil) && vibesOptions.skipPlanning ? .build : mode
     }
 
     /// The card's worktree, or nil for a folder outside git, or when git
@@ -460,6 +463,7 @@ final class Board: ObservableObject {
     func show(_ tab: CardTab, for id: UUID) {
         tabs[id] = tab
         if tab == .plan { unseenPlans.remove(id) }
+        if tab == .design { unseenDesigns.remove(id) }
         // Checks and reviews move on their own, so the tab is never stale.
         if tab == .prs { refreshPullRequest(id) }
     }
@@ -484,6 +488,18 @@ final class Board: ObservableObject {
             if let text, !text.isEmpty { return text }
         }
         return card.plan
+    }
+
+    /// Fills in the card's designs from its transcript, for a card that
+    /// missed the hooks or was made before Reeve kept them.
+    func backfillDesigns(_ id: UUID) async {
+        guard let card = card(id), card.designs == nil, let transcript = card.transcriptPath else { return }
+        let links = await Task.detached { DesignSighting.all(inTranscriptAt: transcript) }.value
+        guard !links.isEmpty else { return }
+        // Oldest first in the transcript; the newest goes to the top.
+        let now = Date()
+        let found = links.enumerated().map { DesignArtifact(url: $1, at: now.addingTimeInterval(Double($0 - links.count))) }
+        update(id) { card in card.designs = DesignSighting.merged(found, over: card.designs) }
     }
 
     /// The card's `GLOSS_HOST`, once the hook server is up.
@@ -682,6 +698,7 @@ final class Board: ObservableObject {
         terminalTitles[id] = nil
         tabs[id] = nil
         unseenPlans.remove(id)
+        unseenDesigns.remove(id)
         changeTicks[id] = nil
         try? FileManager.default.removeItem(at: reviewURL(id))
         try? FileManager.default.removeItem(at: reviewURL(id, .plan))
@@ -810,7 +827,7 @@ final class Board: ObservableObject {
 
     /// What `reeve` hears for a backlog card that hasn't started.
     static let queuedError = APIError("the card is in the backlog and hasn't started",
-                                      detail: "move it to planning or in-progress to start it")
+                                      detail: "move it to design, planning or in-progress to start it")
 
     /// The card is busy from the moment a prompt goes out, until its hooks say otherwise.
     private func sendingPrompt(_ id: UUID) {
@@ -977,6 +994,7 @@ final class Board: ObservableObject {
         if effect.activity != nil {
             if event.hookEventName == "Notification" { notifiedInput.insert(cardId) } else { notifiedInput.remove(cardId) }
         }
+        var newDesign = false
         update(cardId) { card in
             // A subagent working again means the prompt that stopped it was answered.
             if effect.bySubagent, let activity = HookEvent.activityAfterSubagentWork(card.activity, askedByNotification: askedByNotification, waitingOnBackground: card.background != nil) {
@@ -998,6 +1016,17 @@ final class Board: ObservableObject {
             if let mode = event.permissionMode { card.permissionMode = mode }
             if effect.editsFiles { card.lastEditAt = Date() }
             if effect.working { card.stage = card.stage(running: true, hasChanges: false) }
+            // Told to build, a design session starts changing the worktree:
+            // the design is done with.
+            if card.stage == .design, !card.stagePinned, effect.editsFiles, !effect.bySubagent,
+               let path = event.toolInput?.filePath, DesignSighting.movesToBuild(path: path, cwd: card.cwd) {
+                card.stage = .inProgress
+            }
+            if let designs = effect.designs {
+                let known = Set((card.designs ?? []).map(\.url))
+                newDesign = designs.contains { !known.contains($0.url) }
+                card.designs = DesignSighting.merged(designs, over: card.designs)
+            }
             if let plan = effect.plan {
                 let merged = plan.merged(over: PlanSighting(text: card.plan, path: card.planPath))
                 card.plan = merged.text
@@ -1008,6 +1037,7 @@ final class Board: ObservableObject {
         }
         let showing = selectedId == cardId ? tab(cardId) : nil
         if effect.plan != nil, showing != .plan { unseenPlans.insert(cardId) }
+        if newDesign, showing != .design { unseenDesigns.insert(cardId) }
         if showing == .changes, event.hookEventName == "PostToolUse" || event.hookEventName == "Stop" {
             changeTicks[cardId, default: 0] += 1
         }

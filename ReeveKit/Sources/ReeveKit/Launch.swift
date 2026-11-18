@@ -61,7 +61,9 @@ public enum Launch {
             args += ["--permission-mode", mode.permissionMode]
         }
         if let prompt, !prompt.isEmpty {
-            args.append(prompt)
+            // A fresh design session hands its brief to `/design`.
+            let mode = card.hasConversation ? nil : card.startMode
+            args.append(mode?.firstPrompt(prompt) ?? prompt)
         }
         return args
     }

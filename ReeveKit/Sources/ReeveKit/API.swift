@@ -127,7 +127,7 @@ public struct CreateCardBody: Codable, Equatable, Sendable {
     /// In VIBES MODE on its own, whatever the board's switch says.
     public var vibes: Bool
     /// Put it in Backlog and start nothing: `mode` is ignored, and the card
-    /// starts when it is moved to Planning or In Progress.
+    /// starts when it is moved to Design, Planning or In Progress.
     public var backlog: Bool
     /// The swimlane, by id or name. Nil is the first.
     public var lane: String?

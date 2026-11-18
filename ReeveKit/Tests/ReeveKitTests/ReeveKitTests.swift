@@ -210,6 +210,27 @@ import Testing
         #expect(Stage.allCases == Stage.allCases.sorted())
     }
 
+    @Test func designIsLeftOnlyByPlanModeOrAPerson() {
+        // Designing in auto mode, with or without changes: still in Design.
+        for (running, changes) in [(true, false), (false, false), (true, true), (false, true)] {
+            #expect(card(.design, mode: "auto").stage(running: running, hasChanges: changes) == .design)
+        }
+        // Told to plan, Claude goes into plan mode.
+        #expect(card(.design, mode: "plan").stage(running: true, hasChanges: false) == .planning)
+        #expect(card(.design, mode: "auto", pr: .open).stage(running: false, hasChanges: true) == .release)
+        // And never back again.
+        #expect(card(.planning, mode: "auto").stage(running: false, hasChanges: false) == .inProgress)
+        #expect(Stage.design < .planning && Stage.backlog < .design)
+    }
+
+    @Test func aDesignCardStartsBuildingWhenItChangesTheWorktree() {
+        #expect(DesignSighting.movesToBuild(path: "/r/w/App/Login.swift", cwd: "/r/w"))
+        #expect(DesignSighting.movesToBuild(path: "App/Login.swift", cwd: "/r/w"))
+        #expect(!DesignSighting.movesToBuild(path: "/r/w/.claude/plans/x.md", cwd: "/r/w"))
+        #expect(!DesignSighting.movesToBuild(path: "/tmp/scratch/mock.html", cwd: "/r/w"))
+        #expect(!DesignSighting.movesToBuild(path: "/r/w2/a.swift", cwd: "/r/w"))
+    }
+
     @Test func aPersonMovingItBackStartsItFromThere() {
         // Dragged back to In Progress: it stays while pinned, then moves on
         // from there once the person speaks to Claude.
@@ -326,6 +347,16 @@ import Testing
         #expect(Launch.claudeArguments(for: card).suffix(2) == ["--permission-mode", "auto"])
         card.hasConversation = true
         #expect(!Launch.claudeArguments(for: card).contains("--permission-mode"))
+    }
+
+    @Test func aDesignSessionStartsWithSlashDesign() {
+        var card = Card(cwd: "/tmp")
+        card.startMode = .design
+        #expect(Launch.claudeArguments(for: card, prompt: "a login page").suffix(3) == ["--permission-mode", "auto", "/design a login page"])
+        // Picked up again, it is told what it is told.
+        card.hasConversation = true
+        #expect(Launch.claudeArguments(for: card, prompt: "go on").last == "go on")
+        #expect(StartMode.design.stage == .design)
     }
 
     @Test func modelAndEffortRideAlongWhenSet() {
@@ -546,6 +577,22 @@ import Testing
     }
 
     @Test func answersAQuestionLeftInTheMessage() {
+        #expect(Vibes.next(stage: .design, waitingOn: "Which colours?", nudges: nil, options: VibesOptions()) == .answer("Which colours?"))
+    }
+
+    @Test func aFinishedDesignIsPlannedOrBuilt() {
+        guard case .nudge(let plan, .build) = Vibes.next(stage: .design, waitingOn: nil, nudges: nil, options: VibesOptions(skipPlanning: false)) else {
+            Issue.record("planning on: plan it"); return
+        }
+        #expect(plan.contains("plan mode"))
+        guard case .nudge(let build, .build) = Vibes.next(stage: .design, waitingOn: nil, nudges: nil, options: VibesOptions(skipPlanning: true)) else {
+            Issue.record("planning skipped: build it"); return
+        }
+        #expect(!build.contains("plan mode"))
+        #expect(Vibes.chip(stage: .design, activity: .running, shipped: false, merged: false, options: VibesOptions()) == "self-approved")
+    }
+
+    @Test func answersAQuestionLeftInTheMessageInPlanning() {
         #expect(Vibes.next(stage: .planning, waitingOn: "Go ahead?", nudges: nil, options: VibesOptions()) == .answer("Go ahead?"))
     }
 
@@ -927,6 +974,7 @@ import Testing
 @Suite struct StageNameTests {
     @Test func acceptsWhatPeopleType() {
         #expect(StageName.parse("backlog") == .backlog)
+        #expect(StageName.parse("design") == .design)
         #expect(StageName.parse("in-progress") == .inProgress)
         #expect(StageName.parse("in_progress") == .inProgress)
         #expect(StageName.parse("In Progress") == .inProgress)
@@ -1415,6 +1463,7 @@ import Testing
 
     @Test func leavingTheBacklogStartsByColumn() {
         #expect(Card.launch(movingTo: .planning) == .plan)
+        #expect(Card.launch(movingTo: .design) == .design)
         #expect(Card.launch(movingTo: .inProgress) == .build)
         #expect(Card.launch(movingTo: .backlog) == nil)
         #expect(Card.launch(movingTo: .testing) == nil)
@@ -1646,5 +1695,59 @@ import Testing
         let back = try API.decoder().decode(APICard.self, from: API.encoder().encode(api))
         #expect(back.dependsOn == api.dependsOn)
         #expect(back.card.dependsOnId == target.id)
+    }
+}
+
+@Suite struct DesignTests {
+    private func event(_ json: String) throws -> HookEvent {
+        try HookEvent.decode(Data(json.utf8))
+    }
+
+    @Test func findsDesignLinksInText() {
+        let text = "Made it: https://claude.ai/design/p/abc_123-x. Also https://claude.ai/code/artifact/9f8e and again https://claude.ai/design/p/abc_123-x, not https://claude.ai/chat/1."
+        #expect(DesignSighting.links(in: text) == ["https://claude.ai/design/p/abc_123-x", "https://claude.ai/code/artifact/9f8e"])
+    }
+
+    @Test func aToolResponseOrAClosingMessageSharesDesigns() throws {
+        let post = try event(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"DesignSync","tool_input":{"operation":"create_project"},"tool_response":{"project":{"url":"https:\/\/claude.ai\/design\/p\/p1"}}}"#)
+        #expect(post.effect.designs?.map(\.url) == ["https://claude.ai/design/p/p1"])
+        let stop = try event(#"{"session_id":"s","hook_event_name":"Stop","last_assistant_message":"Your design: https://claude.ai/design/p/p2"}"#)
+        #expect(stop.effect.designs?.map(\.url) == ["https://claude.ai/design/p/p2"])
+        let bySubagent = try event(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Bash","agent_id":"a","tool_response":"https://claude.ai/design/p/p3"}"#)
+        #expect(bySubagent.effect.designs == nil)
+        // A file with a link in it, read or grepped, is no design.
+        let read = try event(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Read","tool_response":"see https://claude.ai/design/p/p4"}"#)
+        #expect(read.effect.designs == nil)
+        let bash = try event(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Bash","tool_response":"https://claude.ai/design/p/p5"}"#)
+        #expect(bash.effect.designs == nil)
+    }
+
+    @Test func mergingKeepsOneOfEachNewestFirst() {
+        let old = [DesignArtifact(url: "https://claude.ai/design/p/a", title: "Login", at: Date(timeIntervalSince1970: 1))]
+        let new = [DesignArtifact(url: "https://claude.ai/design/p/a", at: Date(timeIntervalSince1970: 5)),
+                   DesignArtifact(url: "https://claude.ai/design/p/b", at: Date(timeIntervalSince1970: 3))]
+        let merged = DesignSighting.merged(new, over: old)
+        #expect(merged.map(\.url) == ["https://claude.ai/design/p/a", "https://claude.ai/design/p/b"])
+        #expect(merged[0].title == "Login")
+        #expect(merged[0].shortName == "a")
+    }
+
+    @Test func findsDesignsInATranscript() {
+        let jsonl = """
+        {"type":"user","message":{"content":"/design a login page"}}
+        {"type":"assistant","message":{"content":[{"type":"text","text":"Here: https://claude.ai/design/p/one"}]}}
+        {"type":"assistant","isSidechain":true,"message":{"content":[{"type":"text","text":"https://claude.ai/design/p/sub"}]}}
+        {"type":"user","message":{"content":[{"type":"tool_result","content":"https://claude.ai/design/p/read"}]}}
+        {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"https://claude.ai/design/p/input"}},{"type":"text","text":"And https://claude.ai/design/p/two"}]}}
+        """
+        #expect(DesignSighting.all(inTranscript: jsonl) == ["https://claude.ai/design/p/one", "https://claude.ai/design/p/two"])
+    }
+
+    @Test func aCardSavedBeforeDesignsLoads() throws {
+        let card = Card(cwd: "/r")
+        var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(card)) as! [String: Any]
+        json["designs"] = nil
+        let decoded = try JSONDecoder().decode(Card.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(decoded.designs == nil)
     }
 }

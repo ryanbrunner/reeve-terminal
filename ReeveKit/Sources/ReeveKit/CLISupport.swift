@@ -27,7 +27,7 @@ public struct UsageError: Error, Equatable, Sendable {
 
 /// A column by the names a person might type it.
 public enum StageName {
-    public static let accepted = "backlog, planning, in-progress, testing, release (or done)"
+    public static let accepted = "backlog, design, planning, in-progress, testing, release (or done)"
 
     public static func parse(_ text: String) -> Stage? {
         let key = text.lowercased().replacingOccurrences(of: " ", with: "_").replacingOccurrences(of: "-", with: "_")
@@ -228,7 +228,7 @@ Reading
   reeve doctor                                check git, claude and gh
 
 Driving
-  reeve card add [<title…>] [--prompt TEXT] [--mode plan|build|backlog] [--lane L] [--cwd DIR] …
+  reeve card add [<title…>] [--prompt TEXT] [--mode plan|design|build|backlog] [--lane L] [--cwd DIR] …
   reeve card edit <card> [--title TITLE | --no-title] [--vibes | --no-vibes] [--wait-on CARD | --no-wait-on]
   reeve card move <card> [<stage>] [--lane L]
   reeve card run <card> [--restart]
@@ -243,7 +243,7 @@ or its title. Left out, it is the card whose terminal or worktree you're in.
 Stages: \(StageName.accepted). Swimlanes (L) are rows across the columns,
 named by the person; `reeve board --json` lists them under "lanes".
 A backlog card made with --mode backlog starts nothing until it's moved to
-planning or in-progress.
+design, planning or in-progress.
 --json prints the API's answer and nothing else. `reeve card <command> --help`
 says more.
 

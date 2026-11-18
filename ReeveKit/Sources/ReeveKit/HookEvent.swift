@@ -27,6 +27,9 @@ public struct HookEvent: Decodable, Sendable {
     public let prompt: String?
     /// Tool events: set when a subagent made the call, not the main thread.
     public let agentId: String?
+    /// The whole payload, as it came. A tool's response is read from here
+    /// for the design links in it, whatever its shape.
+    public internal(set) var raw: String = ""
 
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
@@ -74,7 +77,25 @@ public struct HookEvent: Decodable, Sendable {
     }
 
     public static func decode(_ data: Data) throws -> HookEvent {
-        try JSONDecoder().decode(HookEvent.self, from: data)
+        var event = try JSONDecoder().decode(HookEvent.self, from: data)
+        event.raw = String(decoding: data, as: UTF8.self)
+        return event
+    }
+
+    /// The Claude Design projects and artifacts this event shows the main
+    /// thread sharing: in the response of a tool that makes them, or in what
+    /// Claude said at the end of its turn. Other tools' responses don't
+    /// count: reading a file with a link in it makes no design. Nil when
+    /// there are none.
+    public var designs: [DesignArtifact]? {
+        let text: String
+        switch hookEventName {
+        case "PostToolUse" where agentId == nil && designTools.contains(toolName ?? ""): text = raw.replacingOccurrences(of: "\\/", with: "/")
+        case "Stop": text = lastAssistantMessage ?? ""
+        default: return nil
+        }
+        let links = DesignSighting.links(in: text)
+        return links.isEmpty ? nil : links.map { DesignArtifact(url: $0) }
     }
 }
 
@@ -117,6 +138,8 @@ public struct HookEffect: Equatable, Sendable {
     public var classify = false
     /// Claude wrote a plan, or asked for one to be approved.
     public var plan: PlanSighting?
+    /// Claude shared Claude Design projects or artifacts.
+    public var designs: [DesignArtifact]?
     /// Set to replace the background work the card is waiting on.
     public var background: [BackgroundWork]?
     /// A subagent used a tool: it is getting on with its work.
@@ -137,6 +160,9 @@ public struct HookEffect: Equatable, Sendable {
 
 /// Tools that stop the turn to ask a person something.
 private let askingTools: Set<String> = ["AskUserQuestion", "ExitPlanMode"]
+
+/// Tools that make designs: `/design`'s Claude Design projects, and artifacts.
+private let designTools: Set<String> = ["DesignSync", "Artifact"]
 
 /// Tools that change files.
 private let editingTools: Set<String> = ["Edit", "MultiEdit", "Write", "NotebookEdit"]
@@ -182,6 +208,12 @@ extension HookEvent {
 
     /// The card's new activity, and what else changes, for this event.
     public var effect: HookEffect {
+        var effect = sessionEffect
+        effect.designs = designs
+        return effect
+    }
+
+    private var sessionEffect: HookEffect {
         switch hookEventName {
         case "UserPromptSubmit":
             return HookEffect(activity: .running, waitingOn: .some(nil), startsConversation: true, unpinsStage: true, working: true, background: [])

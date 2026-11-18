@@ -8,10 +8,11 @@ struct NewCardSpot: Equatable {
     var stage: Stage
 
     /// The columns a card can be made in, and what each does with it.
-    static let stages: [Stage] = [.backlog, .planning, .inProgress]
+    static let stages: [Stage] = [.backlog, .design, .planning, .inProgress]
 
     var hint: String {
         switch stage {
+        case .design: "Claude designs it first, with /design"
         case .planning: "Claude plans it first"
         case .inProgress: "Claude starts on it right away"
         default: "Waits here until you move it"

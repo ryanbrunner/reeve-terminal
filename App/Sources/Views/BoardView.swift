@@ -189,11 +189,12 @@ private struct LaneBar: View {
     }
 }
 
-private extension Stage {
+extension Stage {
     /// Cool to warm to done, as a card travels the board.
     var tint: Color {
         switch self {
         case .backlog: Theme.slate500
+        case .design: Theme.pink400
         case .planning: Theme.indigo400
         case .inProgress: Theme.sky400
         case .testing: Color(hex: 0xFBBF24)
@@ -408,6 +409,8 @@ struct CardMenu: View {
         Divider()
         if card.queued == true {
             let held = board.launching.contains(card.id) || board.blocker(of: card.id) != nil
+            Button("Start Design") { board.startQueued(card.id, mode: .design) }
+                .disabled(held)
             Button("Start Planning") { board.startQueued(card.id, mode: .plan) }
                 .disabled(held)
             Button("Start Building") { board.startQueued(card.id, mode: .build) }
