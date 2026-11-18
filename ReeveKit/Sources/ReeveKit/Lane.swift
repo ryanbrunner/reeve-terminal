@@ -34,9 +34,11 @@ extension Card {
     }
 
     /// The start a backlog card gets from being moved to `stage`: planning
-    /// plans, in progress builds, and anywhere else leaves it waiting.
+    /// designs, planning plans, in progress builds, and anywhere else leaves
+    /// it waiting.
     public static func launch(movingTo stage: Stage) -> StartMode? {
         switch stage {
+        case .design: .design
         case .planning: .plan
         case .inProgress: .build
         default: nil

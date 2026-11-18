@@ -128,6 +128,9 @@ let showVerb = Verb(
     if let summary = card.summary, !summary.isEmpty {
         text += "\n\nSummary\n  " + summary
     }
+    if let designs = card.designs, !designs.isEmpty {
+        text += "\n\nDesigns\n" + designs.map { "  " + ($0.title.map { "\($0) · " } ?? "") + $0.url }.joined(separator: "\n")
+    }
     let plan: PlanResponse = try await client.get(path(card.id) + "/plan")
     if let plan = plan.text, !plan.isEmpty {
         text += "\n\nPlan\n" + plan.split(separator: "\n", omittingEmptySubsequences: false).map { "  " + $0 }.joined(separator: "\n")
@@ -409,11 +412,12 @@ let addVerb = Verb(
 
     Starts a card: a worktree on a new branch when the folder is in git, and
     claude in it. With no title, Claude names it. In the backlog, nothing
-    starts until the card is moved to planning or in-progress.
+    starts until the card is moved to design, planning or in-progress.
       --cwd DIR                  the folder to start in (default: here)
       --prompt TEXT              the first message to Claude (a backlog card's waits; else its title)
       --prompt-file PATH|-       … read from a file, or stdin
-      --mode plan|build|backlog  plan mode first (default), straight to work in auto mode, or wait in the backlog
+      --mode MODE                plan: plan mode first (default); design: /design first;
+                                 build: straight to work in auto mode; backlog: wait in the backlog
       --lane LANE                the swimlane, by name (default: the first)
       --model MODEL              see `reeve models`
       --effort EFFORT            see `reeve models`
@@ -435,9 +439,10 @@ let addVerb = Verb(
     var backlog = false
     switch args.value("mode") ?? "plan" {
     case "plan": mode = .plan
+    case "design": mode = .design
     case "build", "auto": mode = .build
     case "backlog": backlog = true
-    case let other: throw UsageError("unknown mode “\(other)”: plan, build or backlog")
+    case let other: throw UsageError("unknown mode “\(other)”: plan, design, build or backlog")
     }
     if let effort = args.value("effort"), !Launch.efforts.contains(effort) {
         throw UsageError("unknown effort “\(effort)”: \(Launch.efforts.joined(separator: ", "))")
@@ -529,7 +534,8 @@ let moveVerb = Verb(
 
     Puts the card in a column, as dragging it does: it stays there until your
     next prompt to its Claude. A backlog card that hasn't started starts:
-    in plan mode moved to planning, in auto mode moved to in-progress. One
+    with /design moved to design, in plan mode moved to planning, in auto
+    mode moved to in-progress. One
     waiting on a card that hasn't merged (`card edit --wait-on`) is refused.
       --lane LANE    to another swimlane, by name, as well or instead
       --in-folder    work in the folder itself if git can't make a worktree

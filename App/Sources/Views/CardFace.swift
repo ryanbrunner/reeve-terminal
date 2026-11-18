@@ -43,7 +43,7 @@ struct CardFace: View {
                 Spacer(minLength: 0)
             } else if card.queued == true, board.launching.contains(card.id) || card.stage != .backlog {
                 // The footer already says it hasn't started.
-                Text(board.launching.contains(card.id) ? "Making its worktree…" : "Move to Planning or In Progress to start")
+                Text(board.launching.contains(card.id) ? "Making its worktree…" : "Move to Design, Planning or In Progress to start")
                     .font(.mono(11))
                     .foregroundStyle(Theme.muted.opacity(0.8))
                     .lineLimit(2)

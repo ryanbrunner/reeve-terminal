@@ -5,21 +5,26 @@ running the real `claude`, in a folder. The board fills the window; click a
 card and its terminal opens over the board. Close it and you're back on the
 board, with the session still running.
 
-    backlog → planning → in_progress → testing → release
+    backlog → design → planning → in_progress → testing → release
 
 Reeve doesn't talk to Claude itself, so the terminal is Claude Code at full
 feature parity. What Reeve adds is the board.
 
-- **Name a card where it goes.** Each of Backlog, Planning and In Progress
+- **Name a card where it goes.** Each of Backlog, Design, Planning and In Progress
   has a New card field (⌘N opens the one in the top lane's Backlog). Type a
   name and press Return; the field stays open for the next one, and Esc puts
   it away. The name is the card's title and the first thing Claude is told.
   Which column you name it in decides what happens:
   - **Backlog**: nothing. The card waits with no worktree and no session
-    until you move it. Drag it to Planning and it starts in plan mode; to
-    In Progress and it starts in auto mode. Its worktree is made then, from
-    HEAD as it is then. An open backlog card has Plan it and Start building
-    buttons that do the same.
+    until you move it. Drag it to Design and it starts with `/design`; to
+    Planning and it starts in plan mode; to In Progress and it starts in
+    auto mode. Its worktree is made then, from HEAD as it is then. An open
+    backlog card has Design it, Plan it and Start building buttons that do
+    the same.
+  - **Design**: Claude starts in auto mode on `/design <name>`, Claude
+    Code's built-in command for Claude Design, which mocks it up as a
+    Claude Design project on claude.ai before anything is built. Run
+    `/design login` once if Claude says Design isn't connected.
   - **Planning**: Claude starts in plan mode on it straight away.
   - **In Progress**: Claude starts in auto mode on it straight away.
 
@@ -33,8 +38,8 @@ feature parity. What Reeve adds is the board.
   shows every card in one set of columns.
 - **A card can wait on another.** Wait On in a card's context menu picks
   the card it waits on (or `reeve card edit --wait-on`). While that card
-  hasn't merged, a waiting card in Backlog can't start: a drag to Planning or
-  In Progress, Plan it and Start building, and `reeve card move` are all
+  hasn't merged, a waiting card in Backlog can't start: a drag to Design,
+  Planning or In Progress, its start buttons, and `reeve card move` are all
   refused, saying which card it waits on and how far off that one is
   ("Testing", "Release, PR not merged"). Its face says the same in amber.
   Merged means its pull request merged, its branch found on main, or archived.
@@ -56,6 +61,12 @@ feature parity. What Reeve adds is the board.
     commits since the worktree was made) → **Testing**
   - an open, draft or merged pull request for the card's branch (see the
     badge below) → **Release**
+
+  A card in **Design** stays there while Claude designs, whatever mode it
+  is in: it leaves when you drag it, when Claude goes into plan mode (tell
+  it to start planning) → **Planning**, or when Claude starts changing the
+  worktree (tell it to build) → **In Progress**. Files under `.claude/`
+  don't count.
 
   A pull request wins over everything else. A card only moves forward on its
   own: one in Testing stays there while Claude works on it again, and going
@@ -110,7 +121,7 @@ feature parity. What Reeve adds is the board.
   card whose worktree has uncommitted changes stays on the board. The Archive
   lists each card with a link to its pull request, and you can remove entries
   from it.
-- **Each open card has five tabs.** Terminal is the session. Plan shows the
+- **Each open card has six tabs.** Terminal is the session. Plan shows the
   plan Claude wrote in plan mode, read from its file so later edits show,
   with a dot on the tab when a new one arrives. While Claude Code's plan
   dialog is open, **Approve** answers it for you: Reeve reads the dialog off
@@ -126,8 +137,11 @@ feature parity. What Reeve adds is the board.
   [Gloss](https://github.com/ryanbrunner/gloss) (below). PRs lists every
   pull request the card has opened, newest first, each with its state, its
   checks (passing, running or failing) and its review; it asks GitHub again
-  when it shows, and every 30 seconds while a check is running. ⌥⌘1–5
-  switch between them.
+  when it shows, and every 30 seconds while a check is running. Design
+  lists the Claude Design projects and claude.ai artifacts the session has
+  shared, newest first, picked out of its tool results and messages (or its
+  transcript), with a dot on the tab when a new one arrives; click one to
+  open it in your browser. ⌥⌘1–6 switch between them.
 - **Review the changes like a pull request.** Hover a line in Changes and
   click + to comment on it. **Comment now** sends it straight away; **Add to
   review** keeps it as pending until you **Submit review**. Reeve writes the
@@ -224,7 +238,9 @@ open it, as any card does, and VIBES MODE picks it up from its next turn.
 The Vibes menu sets what it skips and whether it merges: Planning skipped,
 Testing run and every pull request merged, out of the box. A skipped column
 is taped off on the board, and a new card skips planning by starting
-straight in auto mode. Every number on the scoreboard is counted from when
+straight in auto mode. A card started in Design still designs; once a turn
+ends there, VIBES MODE tells Claude to plan it, or to build it when Planning
+is skipped. Every number on the scoreboard is counted from when
 the switch was flipped and kept with the board.
 
 Under Reduce Motion the colours stay and the movement stops, except that a
@@ -276,7 +292,7 @@ script/release fetch    # once Apple is done → build/release/Reeve.zip
 | ⇧⌘] / ⇧⌘[ | Next / previous card |
 | ⌘↩ | In a card's terminal: a new line in the prompt, rather than sending it |
 | ⌘B | Back to the board (the session keeps running) |
-| ⌥⌘1 / ⌥⌘2 / ⌥⌘3 / ⌥⌘4 / ⌥⌘5 | The open card's Terminal / Plan / Changes / Preview / PRs |
+| ⌥⌘1 / ⌥⌘2 / ⌥⌘3 / ⌥⌘4 / ⌥⌘5 / ⌥⌘6 | The open card's Terminal / Plan / Changes / Preview / PRs / Design |
 | ⇧⌘V | VIBES MODE for the whole board |
 
 Esc also goes back to the board, except where it is wanted: in a live
@@ -305,7 +321,7 @@ wins (a card's terminal always gets this one).
 ```
 reeve board [--stage S] [--lane L] [--repo PATH]  every card, column by column
 reeve card show|plan|diff|worktree|pr [<card>]
-reeve card add [<title…>] [--prompt TEXT] [--mode plan|build|backlog] [--lane L] [--cwd DIR] [--model M] [--effort E]
+reeve card add [<title…>] [--prompt TEXT] [--mode plan|design|build|backlog] [--lane L] [--cwd DIR] [--model M] [--effort E]
 reeve card edit <card> [--title TITLE | --no-title] [--vibes | --no-vibes] [--wait-on CARD | --no-wait-on]
 reeve card move <card> [<stage>] [--lane L] [--in-folder]
 reeve card run <card> [--restart]
@@ -325,7 +341,7 @@ reeve open [<card>] · status · models · doctor
   or starts the session with the message. It refuses while Claude Code shows
   a dialog, unless you pass `--force`.
 - **Backlog cards.** `card add --mode backlog` makes one, with `--prompt`
-  kept until it starts. `move` to planning or in-progress starts it; `run`
+  kept until it starts. `move` to design, planning or in-progress starts it; `run`
   and `reply` refuse it until then. `card edit --wait-on <card>` has it wait
   on another card: `move` refuses to start it (exit 1, naming that card)
   until that one merges. `card show` says what it depends on.

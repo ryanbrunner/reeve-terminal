@@ -1,10 +1,11 @@
 import Foundation
 
-/// The board's five columns, left to right. A card's column is where its work
+/// The board's six columns, left to right. A card's column is where its work
 /// is; the card works that out itself from the session's state (see
 /// `Card.stage(running:hasChanges:)`), and a person can drag it somewhere else.
 public enum Stage: String, Codable, CaseIterable, Identifiable, Comparable, Sendable {
     case backlog
+    case design
     case planning
     case inProgress = "in_progress"
     case testing
@@ -20,6 +21,7 @@ public enum Stage: String, Codable, CaseIterable, Identifiable, Comparable, Send
     public var label: String {
         switch self {
         case .backlog: "Backlog"
+        case .design: "Design"
         case .planning: "Planning"
         case .inProgress: "In Progress"
         case .testing: "Testing"
@@ -46,8 +48,11 @@ public enum Activity: String, Codable, Sendable {
     case error
 }
 
-/// How a new card's session begins: planning first, or straight to work.
+/// How a new card's session begins: designing first, planning first, or
+/// straight to work.
 public enum StartMode: String, Codable, CaseIterable, Sendable {
+    /// Claude starts with `/design`, in auto mode, and the card in Design.
+    case design
     /// Claude starts in plan mode, and the card in Planning.
     case plan
     /// Claude starts in auto mode, and the card in In Progress.
@@ -57,15 +62,22 @@ public enum StartMode: String, Codable, CaseIterable, Sendable {
     public var permissionMode: String {
         switch self {
         case .plan: "plan"
-        case .build: "auto"
+        case .design, .build: "auto"
         }
     }
 
     public var stage: Stage {
         switch self {
+        case .design: .design
         case .plan: .planning
         case .build: .inProgress
         }
+    }
+
+    /// The first prompt a new session in this mode is given for `brief`:
+    /// a design session hands it to Claude Code's `/design`.
+    public func firstPrompt(_ brief: String) -> String {
+        self == .design ? "/design \(brief)" : brief
     }
 }
 
@@ -111,6 +123,9 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     public var review: [ReviewThread]?
     /// The comments a person left on the card's plan, and Claude's replies.
     public var planReview: [ReviewThread]?
+    /// The Claude Design projects and artifacts the session has shared,
+    /// newest first. Nil until there is one.
+    public var designs: [DesignArtifact]?
     /// The model the card's `claude` runs, as `--model` takes it. Nil leaves
     /// it to the person's own settings.
     public var model: String?
@@ -121,7 +136,7 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     /// The swimlane the card is in. Nil, or a lane that has gone, is the first.
     public var laneId: UUID?
     /// Made in Backlog and not started: no worktree, no session, nothing runs
-    /// until a person moves it to Planning or In Progress. Nil once it starts.
+    /// until a person moves it to Design, Planning or In Progress. Nil once it starts.
     public var queued: Bool?
     /// What a backlog card says to Claude when it starts, when that is more
     /// than its title. Nil once it has started, or when the title says it.
@@ -240,12 +255,15 @@ extension Card {
     ///
     /// - a pull request is open, draft or merged: release
     /// - Claude is in plan mode: planning
+    /// - the card is in Design: it stays there (see below)
     /// - Claude is working in any other mode: in progress
     /// - Claude's turn is over and the code has changed: testing (ready to try)
     ///
     /// Otherwise the card stays put, apart from leaving backlog or planning
     /// once the session is out of plan mode. A card a person put somewhere
-    /// stays there.
+    /// stays there. Design is left only by a person's say: a drag, Claude
+    /// put into plan mode, or Claude starting to change the code (see
+    /// `DesignSighting.movesToBuild`), never just by Claude working.
     ///
     /// It only ever moves forward: a card in Testing stays there while Claude
     /// works on it again, and only a person moves it back. From the column
@@ -259,6 +277,7 @@ extension Card {
         if hasLivePullRequest { return .release }
         guard let permissionMode else { return stage }
         if permissionMode == "plan" { return .planning }
+        if stage == .design { return .design }
         if running { return .inProgress }
         if hasChanges { return .testing }
         return stage == .backlog || stage == .planning ? .inProgress : stage

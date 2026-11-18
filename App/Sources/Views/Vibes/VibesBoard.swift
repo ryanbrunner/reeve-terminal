@@ -25,7 +25,8 @@ struct VibesBoardView: View {
     var body: some View {
         GeometryReader { geo in
             let width = geo.size.width - 28
-            let column = (width - Self.spacing * 4) / 5
+            let columns = CGFloat(Stage.allCases.count)
+            let column = (width - Self.spacing * (columns - 1)) / columns
             ZStack(alignment: .topLeading) {
                 HStack(alignment: .top, spacing: Self.spacing) {
                     ForEach(Stage.allCases) { stage in

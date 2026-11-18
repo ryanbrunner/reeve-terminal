@@ -28,6 +28,7 @@ enum Theme {
     static let amber100 = Color(hex: 0xFEF3C6)
     static let indigo200 = Color(hex: 0xC6D2FF)
     static let indigo400 = Color(hex: 0x818CF8)
+    static let pink400 = Color(hex: 0xF472B6)
 
     /// Registers the bundled Geist fonts (SIL OFL) for this process.
     static func registerFonts() {

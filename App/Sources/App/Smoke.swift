@@ -102,7 +102,7 @@ enum Smoke {
                 let number = CardTab.allCases.firstIndex(of: tab)! + 1
                 let source = CGEventSource(stateID: .hidSystemState)
                 for down in [true, false] {
-                    let event = CGEvent(keyboardEventSource: source, virtualKey: [18, 19, 20, 21, 23][number - 1], keyDown: down)
+                    let event = CGEvent(keyboardEventSource: source, virtualKey: [18, 19, 20, 21, 23, 22][number - 1], keyDown: down)
                     event?.flags = [.maskCommand, .maskAlternate]
                     event?.postToPid(getpid())
                 }

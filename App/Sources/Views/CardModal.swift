@@ -3,10 +3,10 @@ import ReeveKit
 import SwiftUI
 
 /// What an open card shows: the session itself, the plan it made, what it
-/// has changed, the app it is building, under review in Gloss, or the pull
-/// requests it has opened.
+/// has changed, the app it is building, under review in Gloss, the pull
+/// requests it has opened, or the designs `/design` made.
 enum CardTab: String, CaseIterable, Identifiable {
-    case terminal, plan, changes, preview, prs
+    case terminal, plan, changes, preview, prs, design
 
     var id: String { rawValue }
 
@@ -17,6 +17,7 @@ enum CardTab: String, CaseIterable, Identifiable {
         case .changes: "Changes"
         case .preview: "Preview"
         case .prs: "PRs"
+        case .design: "Design"
         }
     }
 }
@@ -68,6 +69,8 @@ struct CardModal: View {
                             PreviewView(card: card, preview: board.previews.preview(for: card.id)).id(card.id)
                         case .prs:
                             PullRequestsView(card: card).id(card.id)
+                        case .design:
+                            DesignView(card: card).id(card.id)
                         }
                     }
                 }
@@ -228,6 +231,10 @@ private struct CardTabBar: View {
                             Circle().fill(Theme.sky400).frame(width: 6, height: 6)
                                 .help("A new plan")
                         }
+                        if tab == .design, board.unseenDesigns.contains(card.id) {
+                            Circle().fill(Stage.design.tint).frame(width: 6, height: 6)
+                                .help("A new design")
+                        }
                         if tab == .prs, let count = card.pullRequests?.count, count > 1 {
                             Text("\(count)").font(.mono(10)).foregroundStyle(Theme.muted)
                         }
@@ -275,7 +282,7 @@ private struct SleepingOverlay: View {
     }
 }
 
-/// A backlog card that hasn't started: what it will be told, and the two
+/// A backlog card that hasn't started: what it will be told, and the three
 /// ways to start it, which moving it to their columns does too.
 private struct BacklogPanel: View {
     @EnvironmentObject var board: Board
@@ -299,6 +306,8 @@ private struct BacklogPanel: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Theme.edge))
             let blocker = board.blocker(of: card.id)
             HStack(spacing: 10) {
+                Button("Design it") { board.startQueued(card.id, mode: .design) }
+                    .buttonStyle(SecondaryButtonStyle())
                 Button("Plan it") { board.startQueued(card.id, mode: .plan) }
                     .buttonStyle(SecondaryButtonStyle())
                 Button("Start building") { board.startQueued(card.id, mode: .build) }
@@ -312,7 +321,7 @@ private struct BacklogPanel: View {
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 460)
             } else {
-                Text("Or drag it to Planning or In Progress.")
+                Text("Or drag it to Design, Planning or In Progress.")
                     .font(.geist(11))
                     .foregroundStyle(Theme.muted.opacity(0.8))
             }
@@ -335,7 +344,7 @@ struct EmptyState: View {
                 .foregroundStyle(Theme.muted)
             Button("New card") { board.compose() }
                 .buttonStyle(PrimaryButtonStyle())
-            Text("Name a card in Backlog to keep it for later, in Planning to have Claude plan it, or in In Progress to have Claude start on it. It finds its own column as the work moves on.")
+            Text("Name a card in Backlog to keep it for later, in Design to have Claude design it with /design, in Planning to have Claude plan it, or in In Progress to have Claude start on it. It finds its own column as the work moves on.")
                 .font(.geist(12))
                 .foregroundStyle(Theme.muted.opacity(0.8))
                 .multilineTextAlignment(.center)
