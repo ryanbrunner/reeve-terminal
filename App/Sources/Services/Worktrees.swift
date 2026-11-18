@@ -200,4 +200,38 @@ enum PullRequests {
         ), result.status == 0 else { return nil }
         return try? PullRequest.parseAll(result.stdout)
     }
+
+    /// gh's refusal, in its own words.
+    struct Refusal: Error {
+        let message: String
+    }
+
+    /// Where the pull request at `url` stands now, asked fresh.
+    static func view(url: String, in directory: String, env: ShellEnvironment?) async throws -> (state: PullRequest.State, mergeable: PullRequest.Mergeable) {
+        try PullRequest.parseView(try await gh(PullRequest.viewArguments(url: url), in: directory, env: env, timeout: 20))
+    }
+
+    /// Lands the pull request at `url`, or throws why GitHub wouldn't:
+    /// branch protection, a required review, a token without `workflow`.
+    static func merge(url: String, in directory: String, env: ShellEnvironment?) async throws {
+        _ = try await gh(PullRequest.mergeArguments(url: url), in: directory, env: env, timeout: 90)
+    }
+
+    private static func gh(_ args: [String], in directory: String, env: ShellEnvironment?, timeout: TimeInterval) async throws -> Data {
+        let environment = (env?.baseEnvironment ?? ProcessInfo.processInfo.environment).filter { !$0.key.hasPrefix("GIT_") }
+        let result: Subprocess.Result
+        do {
+            result = try await Subprocess.run("/usr/bin/env", ["gh"] + args, environment: environment, currentDirectory: directory, timeout: timeout)
+        } catch is Subprocess.Timeout {
+            throw Refusal(message: "gh \(args.prefix(2).joined(separator: " ")) took longer than \(Int(timeout))s")
+        }
+        guard result.status == 0 else {
+            let err = String(decoding: result.stderr, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            let out = String(decoding: result.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            let said = err.isEmpty ? out : err
+            throw Refusal(message: result.status == 127 ? "gh isn't installed, or isn't on the app's PATH"
+                          : said.isEmpty ? "gh \(args.prefix(2).joined(separator: " ")) exited \(result.status)" : said)
+        }
+        return result.stdout
+    }
 }

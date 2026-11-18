@@ -176,6 +176,14 @@ enum APIRouter {
             await board.findPullRequest(card.id)
             return .json(board.apiCard(board.card(card.id) ?? card))
 
+        case let ("POST", "cards"?, id?, "merge"?):
+            let card = try card(id, board)
+            // Looked up first: the board may not have seen this card's pull
+            // request since Claude opened it.
+            await board.findPullRequest(card.id)
+            let state = try await board.mergePullRequest(card.id)
+            return .json(MergeResponse(state: state, card: board.apiCard(board.card(card.id) ?? card)))
+
         default:
             throw Failure(status: 404, error: APIError("not found", detail: "\(request.method) \(request.path)"))
         }

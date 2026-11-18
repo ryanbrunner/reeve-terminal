@@ -18,7 +18,7 @@ let topVerbs: [Verb] = [boardVerb, statusVerb, openVerb, vibesVerb, modelsVerb, 
 /// `reeve card <name>`.
 let cardVerbs: [Verb] = [
     addVerb, showVerb, planVerb, editVerb, moveVerb, runVerb, replyVerb,
-    waitVerb, closeVerb, worktreeVerb, prVerb, diffVerb,
+    waitVerb, closeVerb, worktreeVerb, prVerb, mergeVerb, diffVerb,
 ]
 
 /// The card a verb names as its only positional, or none for the current card.
@@ -235,6 +235,36 @@ let prVerb = Verb(
     return .ok
 }
 
+let mergeVerb = Verb(
+    name: "merge",
+    usage: """
+    reeve card merge <card> [--json]
+
+    Merges a Release card's pull request on GitHub, squashed, as the card's
+    Merge button does. Only once GitHub says it merges cleanly: a draft, a
+    conflict, or a verdict GitHub hasn't reached yet is refused. Branch
+    protection still applies; when gh refuses, this says why and exits 1.
+    """,
+    flags: ["json"]
+) { args in
+    guard args.positionals.count == 1 else { throw UsageError("which card?") }
+    let client = try Client.connect()
+    let api = try await client.card(args.positionals[0])
+    let merged: MergeResponse = try await client.call("POST", path(api.card.id) + "/merge", body: [String: String]())
+    if args.has("json") {
+        try printJSON(merged)
+        return .ok
+    }
+    let pr = merged.card.card.pullRequest
+    let name = pr.map { "#\($0.number)" } ?? "the pull request"
+    if merged.state == .merged {
+        out("Merged \(name) from \(merged.card.short)" + (pr.map { "  \($0.url)" } ?? ""))
+    } else {
+        out("GitHub took \(name) from \(merged.card.short) but hasn't landed it yet (a merge queue?)" + (pr.map { "  \($0.url)" } ?? ""))
+    }
+    return .ok
+}
+
 let modelsVerb = Verb(
     name: "models",
     usage: """
@@ -288,8 +318,8 @@ let doctorVerb = Verb(
     reeve doctor [--json]
 
     Checks what Reeve Terminal needs: git and claude (required), gh (for pull
-    request badges), and whether the app is running. Exits 1 only when
-    something required is missing.
+    request badges and merging) and its token's `workflow` scope, and whether
+    the app is running. Exits 1 only when something required is missing.
     """,
     flags: ["json"]
 ) { args in
@@ -298,28 +328,58 @@ let doctorVerb = Verb(
         var level: String
         var status: String
         var detail: String
+        /// What to do about it; nil when there's nothing to do.
+        var fix: String?
     }
-    func version(_ tool: String, _ flag: String = "--version") -> String? {
+    /// The command's output, stdout and stderr together, and whether it
+    /// succeeded; nil when it couldn't run at all.
+    func output(_ args: [String]) -> (text: String, ok: Bool)? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = [tool, flag]
+        process.arguments = args
         let pipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = Pipe()
+        // `gh auth status` writes to stderr in some versions and stdout in others.
+        process.standardError = pipe
         guard (try? process.run()) != nil else { return nil }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return nil }
-        return String(decoding: data, as: UTF8.self).split(separator: "\n").first.map(String.init)
+        return (String(decoding: data, as: UTF8.self), process.terminationStatus == 0)
+    }
+    func version(_ tool: String) -> String? {
+        guard let found = output([tool, "--version"]), found.ok else { return nil }
+        return found.text.split(separator: "\n").first.map(String.init)
     }
     var checks: [Check] = []
+    var hasGh = false
     for (tool, required) in [("git", true), ("claude", true), ("gh", false)] {
         if let found = version(tool) {
             checks.append(Check(name: tool, level: required ? "required" : "optional", status: "ok", detail: found))
+            if tool == "gh" { hasGh = true }
         } else {
             checks.append(Check(name: tool, level: required ? "required" : "optional", status: required ? "fail" : "warn",
                                 detail: "not found on PATH"))
         }
+    }
+    // Without `workflow`, GitHub refuses to merge or push a change under
+    // .github/workflows/, and only says so once a card's diff reaches there.
+    let scope = "gh workflow scope"
+    if !hasGh {
+        checks.append(Check(name: scope, level: "optional", status: "info", detail: "skipped: gh isn't installed"))
+    } else if let status = output(["gh", "auth", "status", "--hostname", "github.com"])?.text, status.contains("Logged in to") {
+        // Read whatever it exits with: gh fails the whole command when any
+        // account on the host has a problem, and still lists the active one.
+        if let scopes = GhAuth.scopes(in: status) {
+            let has = scopes.contains("workflow")
+            checks.append(Check(name: scope, level: "optional", status: has ? "ok" : "warn",
+                                detail: "token scopes: " + scopes.joined(separator: ", "),
+                                fix: has ? nil : "only merging or pushing a change under .github/workflows/ needs it: `\(GhAuth.workflowFix)`"))
+        } else {
+            checks.append(Check(name: scope, level: "optional", status: "info", detail: "no scopes reported by gh auth status"))
+        }
+    } else {
+        checks.append(Check(name: scope, level: "optional", status: "info", detail: "skipped: gh isn't logged in to github.com",
+                            fix: "`gh auth login`"))
     }
     let app: Check
     do {
@@ -337,6 +397,8 @@ let doctorVerb = Verb(
         try printJSON(Report(ok: ok, checks: checks))
     } else {
         out(Table.format(checks.map { [$0.status == "fail" ? "FAIL" : $0.status, $0.name, $0.detail] }))
+        let fixes = checks.compactMap { check in check.fix.map { "  \(check.name): \($0)" } }
+        if !fixes.isEmpty { out("\nTo fix\n" + fixes.joined(separator: "\n")) }
     }
     return ok ? .ok : .error
 }

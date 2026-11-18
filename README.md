@@ -84,8 +84,9 @@ feature parity. What Reeve adds is the board.
   in testing?", "move the icon card to release", "tell the PRs card to rebase".
   Claude carries it out with `reeve` (below) and answers under the header.
   It runs `claude -p` on your Claude login in the repo new cards start in,
-  with Bash as its only tool and `reeve` the only command it may run; closing
-  a card and `--force` are refused. No session is saved, and none of your
+  with Bash as its only tool and `reeve` the only command it may run. It can
+  close a card you name, but not one that would lose work (see `close`
+  below), and `--force` is refused. No session is saved, and none of your
   settings, hooks or MCP servers are loaded.
 - **You can still drag.** A card you drag is pinned in its new column until
   your next prompt, so the board never undoes your move behind your back.
@@ -107,6 +108,11 @@ feature parity. What Reeve adds is the board.
   shows `+N` for the ones from other branches. Reeve asks your own `gh`
   at launch, when a turn ends and when you open the card. Without `gh` or a
   GitHub remote there is simply no badge.
+- **Merge from the card.** A Release card whose open pull request GitHub
+  says merges cleanly wears a Merge button. Press it, then Confirm within
+  three seconds, and Reeve asks GitHub once more and squash-merges it with
+  your `gh`. A draft, a conflict or branch protection leaves it unmerged:
+  what gh said shows under the card. `reeve card merge` does the same.
 - **Clean up merged cards into the Archive.** The archive button in the
   Release column's header archives every card whose pull requests have merged
   (the one on its current branch is merged and none it opened is still open
@@ -289,8 +295,10 @@ script/release fetch    # once Apple is done → build/release/Reeve.zip
 | ⌥⌘1 / ⌥⌘2 / ⌥⌘3 / ⌥⌘4 / ⌥⌘5 / ⌥⌘6 | The open card's Terminal / Plan / Changes / Preview / PRs / Design |
 | ⇧⌘V | VIBES MODE for the whole board |
 
-Esc goes to Claude Code, where it interrupts a turn, so it doesn't close an
-open card. Use ⌘B, the × in the card's header or a click outside it.
+Esc also goes back to the board, except where it is wanted: in a live
+terminal it goes to Claude Code, where it interrupts a turn, and a field
+being typed in or the page in the Preview tab keeps it too. ⌘B, the × in the
+card's header or a click outside it always go back.
 
 Right-click a card, or use the ⋯ in an open card's header, to move it, have
 it wait on another card, rename it, re-sort it now, put it in VIBES MODE,
@@ -319,6 +327,7 @@ reeve card move <card> [<stage>] [--lane L] [--in-folder]
 reeve card run <card> [--restart]
 reeve card reply <card> <text…> [--file PATH|-] [--force]
 reeve card wait [<card>] [--timeout SECONDS]
+reeve card merge <card>
 reeve card close <card> [--force]
 reeve vibes [on | off]                      the board's VIBES MODE switch
 reeve open [<card>] · status · models · doctor
@@ -336,6 +345,11 @@ reeve open [<card>] · status · models · doctor
   and `reply` refuse it until then. `card edit --wait-on <card>` has it wait
   on another card: `move` refuses to start it (exit 1, naming that card)
   until that one merges. `card show` says what it depends on.
+- **`merge`.** Merges a Release card's pull request on GitHub, squashed, as
+  the card's Merge button does, once GitHub says it merges cleanly. Branch
+  protection still applies: when gh refuses, it says why. Merging a change
+  under `.github/workflows/` needs gh's token to have the `workflow` scope,
+  which `reeve doctor` checks (`gh auth refresh -h github.com -s workflow`).
 - **`close`.** Deletes the worktree, as ⌘W does. It refuses uncommitted
   changes, unmerged commits or an open pull request unless you pass `--force`.
 
@@ -401,7 +415,8 @@ tab's Approve once the plan dialog is up and logs the mode it lands in.
 Claude taking a turn: it adds `REEVE_SMOKE_DIR` as a repo, names a card in
 Backlog and checks nothing starts, moves it to a new lane and deletes the
 lane, has it wait on a second card and checks a loop is refused and a move
-to Planning is refused, closes that card, moves it to Planning and checks it starts there in a worktree, closes
+to Planning is refused, closes that card, moves it to Planning and checks it starts there in a worktree, checks
+that Esc closes it, but not from its terminal while it is live, closes
 it, and opens Settings to take the repo off and put it back, with a
 picture of each window and a line per check in `timeline.txt`. Run it twice
 on one `REEVE_DATA_DIR` to see the list kept.

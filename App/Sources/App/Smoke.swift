@@ -428,15 +428,15 @@ enum Smoke {
         await picture("1-new-card", window)
         check(board.composing == NewCardSpot(lane: board.lanes[0].id, stage: .backlog), "⌘N opens the new card field in the first lane's Backlog")
 
-        // Typed into the field: key events handed to the window, which sends
-        // them to whatever has focus, as it would a person's.
+        // Typed into the field: key events handed to the app, which sends
+        // them through its key monitors to whatever has focus, as it would a person's.
         func post(_ code: UInt16, _ text: String) {
             guard let window else { return }
             for type in [NSEvent.EventType.keyDown, .keyUp] {
                 if let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                                 windowNumber: window.windowNumber, context: nil, characters: text,
                                                 charactersIgnoringModifiers: text, isARepeat: false, keyCode: code) {
-                    window.sendEvent(event)
+                    NSApp.sendEvent(event)
                 }
             }
         }
@@ -469,7 +469,8 @@ enum Smoke {
         try? await Task.sleep(for: .milliseconds(500))
         check(!board.live.contains(card.id) && !board.starting.contains(card.id), "opening a backlog card starts no session")
         await picture("3-backlog-open", window)
-        board.dismissOpenCard()
+        post(53, "\u{1b}")
+        check(await wait("the card to close", seconds: 3, until: { board.selected == nil }), "Esc closes an open backlog card")
 
         // Swimlanes: a second lane, a card moved to it, and the lane deleted under it.
         let lane = board.addLane(named: "Smoke lane")
@@ -529,6 +530,21 @@ enum Smoke {
         check(started?.queued == nil && started?.startMode == .plan && started?.stage == .planning, "it starts in plan mode, in Planning")
         check(board.pickedRepo?.id == repo.id && Preferences.store.string(forKey: "newCardRepo") == repo.id.uuidString, "the field remembers the repo")
         await picture("5-board", window)
+        // In a live terminal Esc is Claude Code's; on another tab it closes the card.
+        board.select(card.id)
+        let focused = await wait("the terminal to take the keyboard", seconds: 5, until: { window?.firstResponder is CardTerminalView })
+        post(53, "\u{1b}")
+        try? await Task.sleep(for: .milliseconds(500))
+        check(focused && board.selectedId == card.id, "Esc in a live terminal leaves the card open")
+        board.terminals.stop(card.id)
+        let stopped = await wait("the session to stop", seconds: 10, until: { !board.live.contains(card.id) && window?.firstResponder is CardTerminalView })
+        post(53, "\u{1b}")
+        check(await wait("the card to close", seconds: 3, until: { board.selected == nil }) && stopped, "Esc in a stopped session's terminal closes the card")
+        board.select(card.id)
+        board.show(.changes, for: card.id)
+        try? await Task.sleep(for: .milliseconds(500))
+        post(53, "\u{1b}")
+        check(await wait("the card to close", seconds: 3, until: { board.selected == nil }), "Esc on the Changes tab closes the card")
         board.close(card.id)
         if let worktree = started?.worktreePath {
             check(await wait("the worktree to go", until: { !FileManager.default.fileExists(atPath: worktree) }), "closing the card removes its worktree")

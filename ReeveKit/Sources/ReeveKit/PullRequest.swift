@@ -34,6 +34,20 @@ public struct PullRequest: Codable, Equatable, Sendable {
         case approved, changesRequested, required
     }
 
+    /// Whether GitHub can merge it as it stands. GitHub works this out lazily:
+    /// the first ask after a push is usually `unknown`, and starts the sum.
+    public enum Mergeable: String, Codable, Sendable {
+        case mergeable, conflicting, unknown
+
+        public init(gh value: String?) {
+            self = switch value {
+            case "MERGEABLE": .mergeable
+            case "CONFLICTING": .conflicting
+            default: .unknown
+            }
+        }
+    }
+
     public var number: Int
     public var state: State
     public var url: String
@@ -47,8 +61,10 @@ public struct PullRequest: Codable, Equatable, Sendable {
     /// When it was opened, which tells one the card's session opened from one
     /// it only came across by checking a branch out.
     public var createdAt: Date?
+    /// GitHub's last word on merging it. Nil from a board saved before Reeve asked.
+    public var mergeable: Mergeable?
 
-    public init(number: Int, state: State, url: String, title: String = "", branch: String = "", checks: Checks? = nil, review: Review? = nil, createdAt: Date? = nil) {
+    public init(number: Int, state: State, url: String, title: String = "", branch: String = "", checks: Checks? = nil, review: Review? = nil, createdAt: Date? = nil, mergeable: Mergeable? = nil) {
         self.number = number
         self.state = state
         self.url = url
@@ -57,6 +73,7 @@ public struct PullRequest: Codable, Equatable, Sendable {
         self.checks = checks
         self.review = review
         self.createdAt = createdAt
+        self.mergeable = mergeable
     }
 
     /// `gh`'s arguments for the pull requests opened from `branch`, in any
@@ -64,7 +81,7 @@ public struct PullRequest: Codable, Equatable, Sendable {
     /// branch usually has no upstream for gh to follow.
     public static func listArguments(branch: String) -> [String] {
         ["pr", "list", "--head", branch, "--state", "all",
-         "--json", "number,state,isDraft,url,title,headRefName,statusCheckRollup,reviewDecision,createdAt", "--limit", "10"]
+         "--json", "number,state,isDraft,url,title,headRefName,statusCheckRollup,reviewDecision,createdAt,mergeable", "--limit", "10"]
     }
 
     /// Every pull request in `gh pr list --json` output, newest first.
@@ -87,6 +104,7 @@ public struct PullRequest: Codable, Equatable, Sendable {
             var statusCheckRollup: [Check]?
             var reviewDecision: String?
             var createdAt: String?
+            var mergeable: String?
         }
         let failures: Set = ["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"]
         func checks(_ rollup: [Check]?) -> Checks? {
@@ -126,8 +144,40 @@ public struct PullRequest: Codable, Equatable, Sendable {
                 }
                 return PullRequest(number: listed.number, state: state, url: listed.url, title: listed.title ?? "",
                                    branch: listed.headRefName ?? "", checks: checks(listed.statusCheckRollup), review: review,
-                                   createdAt: listed.createdAt.flatMap { try? Date($0, strategy: .iso8601) })
+                                   createdAt: listed.createdAt.flatMap { try? Date($0, strategy: .iso8601) },
+                                   mergeable: listed.mergeable.map(Mergeable.init(gh:)))
             }
+    }
+
+    /// `gh`'s arguments for where one pull request stands now, asked just
+    /// before merging it rather than trusting the board's last look.
+    public static func viewArguments(url: String) -> [String] {
+        ["pr", "view", url, "--json", "state,isDraft,mergeable"]
+    }
+
+    /// `gh pr view --json state,isDraft,mergeable` output, as `parseAll` reads a listing's.
+    public static func parseView(_ data: Data) throws -> (state: State, mergeable: Mergeable) {
+        struct Viewed: Decodable {
+            var state: String
+            var isDraft: Bool?
+            var mergeable: String?
+        }
+        let viewed = try JSONDecoder().decode(Viewed.self, from: data)
+        let state: State = switch viewed.state {
+        case "OPEN": viewed.isDraft == true ? .draft : .open
+        case "MERGED": .merged
+        default: .closed
+        }
+        return (state, Mergeable(gh: viewed.mergeable))
+    }
+
+    /// `gh`'s arguments for landing it: squashed, as the web board does.
+    /// `--squash` names a method so gh never asks for one. Never `--admin`:
+    /// the repository's branch protection is not the board's to waive, so gh
+    /// refuses and says why. Never `--delete-branch`, either: the card's
+    /// worktree still has the branch checked out.
+    public static func mergeArguments(url: String) -> [String] {
+        ["pr", "merge", url, "--squash"]
     }
 
     /// The pull request a card on `branch` stands for: of those opened from
@@ -151,10 +201,15 @@ public struct PullRequest: Codable, Equatable, Sendable {
     }
 
     /// `tracked` with what gh just `found`: a pull request found again is
-    /// replaced, one not asked about this time is kept. Newest first.
+    /// replaced, one not asked about this time is kept. Newest first. One
+    /// already seen merged stays merged: a look that started before the Merge
+    /// button landed it may answer after, with what it was.
     public static func merge(_ tracked: [PullRequest], _ found: [PullRequest]) -> [PullRequest] {
         var byNumber = Dictionary(tracked.map { ($0.number, $0) }, uniquingKeysWith: { _, last in last })
-        for pr in found { byNumber[pr.number] = pr }
+        for var pr in found {
+            if byNumber[pr.number]?.state == .merged { pr.state = .merged }
+            byNumber[pr.number] = pr
+        }
         return byNumber.values.sorted { $0.number > $1.number }
     }
 

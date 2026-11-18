@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 
 /// The five columns, crossed by the swimlanes. Cards move between columns on
 /// their own as their sessions move on, and can be dragged between columns
-/// and lanes. New cards are named in place, in Backlog, Planning or In Progress.
+/// and lanes. New cards are named in place, in Backlog, Design, Planning or In Progress.
 struct BoardView: View {
     @EnvironmentObject var board: Board
 

@@ -755,7 +755,52 @@ import Testing
     @Test func listsByHeadBranch() {
         let arguments = PullRequest.listArguments(branch: "reeve/1a2b3c4d")
         #expect(arguments.prefix(4) == ["pr", "list", "--head", "reeve/1a2b3c4d"])
-        #expect(arguments.contains("number,state,isDraft,url,title,headRefName,statusCheckRollup,reviewDecision,createdAt"))
+        #expect(arguments.contains("number,state,isDraft,url,title,headRefName,statusCheckRollup,reviewDecision,createdAt,mergeable"))
+    }
+
+    @Test func readsWhetherGitHubCanMergeIt() throws {
+        let prs = try parse(#"[{"number":3,"state":"OPEN","url":"u3","headRefName":"a","mergeable":"MERGEABLE"},{"number":2,"state":"OPEN","url":"u2","headRefName":"b","mergeable":"CONFLICTING"},{"number":1,"state":"OPEN","url":"u1","headRefName":"c","mergeable":"UNKNOWN"},{"number":0,"state":"OPEN","url":"u0","headRefName":"d"}]"#)
+        #expect(prs.map(\.mergeable) == [.mergeable, .conflicting, .unknown, nil])
+    }
+
+    @Test func readsAFreshLookBeforeMerging() throws {
+        #expect(PullRequest.viewArguments(url: "https://x/1") == ["pr", "view", "https://x/1", "--json", "state,isDraft,mergeable"])
+        let open = try PullRequest.parseView(Data(#"{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE"}"#.utf8))
+        #expect(open.state == .open && open.mergeable == .mergeable)
+        let draft = try PullRequest.parseView(Data(#"{"state":"OPEN","isDraft":true,"mergeable":"MERGEABLE"}"#.utf8))
+        #expect(draft.state == .draft)
+        let merged = try PullRequest.parseView(Data(#"{"state":"MERGED","isDraft":false,"mergeable":"UNKNOWN"}"#.utf8))
+        #expect(merged.state == .merged && merged.mergeable == .unknown)
+    }
+
+    @Test func aMergedPullRequestIsNotTakenBackByALateLook() {
+        let tracked = [PullRequest(number: 5, state: .merged, url: "u5", branch: "b")]
+        let late = [PullRequest(number: 5, state: .open, url: "u5", branch: "b", mergeable: .mergeable)]
+        #expect(PullRequest.merge(tracked, late).first?.state == .merged)
+    }
+
+    @Test func mergesBySquashWithoutWaivingAnything() {
+        let arguments = PullRequest.mergeArguments(url: "https://x/1")
+        #expect(arguments == ["pr", "merge", "https://x/1", "--squash"])
+        #expect(!arguments.contains("--admin"))
+        #expect(!arguments.contains("--delete-branch"))
+    }
+
+    @Test func onlyAReleaseCardsCleanOpenPullRequestIsOfferedForMerging() {
+        func card(_ stage: Stage, _ state: PullRequest.State, _ mergeable: PullRequest.Mergeable?) -> Card {
+            var card = Card(cwd: "/tmp", stage: stage)
+            card.branch = "b"
+            card.pullRequests = [PullRequest(number: 1, state: state, url: "u", branch: "b", mergeable: mergeable)]
+            return card
+        }
+        #expect(card(.release, .open, .mergeable).canMergePullRequest)
+        #expect(!card(.testing, .open, .mergeable).canMergePullRequest)
+        #expect(!card(.release, .draft, .mergeable).canMergePullRequest)
+        #expect(!card(.release, .merged, .mergeable).canMergePullRequest)
+        #expect(!card(.release, .open, .conflicting).canMergePullRequest)
+        #expect(!card(.release, .open, .unknown).canMergePullRequest)
+        #expect(!card(.release, .open, nil).canMergePullRequest)
+        #expect(!Card(cwd: "/tmp", stage: .release).canMergePullRequest)
     }
 
     @Test func aCardSavedWithOnePullRequestStillLoads() throws {
@@ -1047,6 +1092,40 @@ import Testing
 
     @Test func aDashAloneIsStdin() throws {
         #expect(try Arguments(["-"], valued: [], flags: []).positionals == ["-"])
+    }
+}
+
+@Suite struct GhAuthTests {
+    @Test func readsTheTokensScopes() {
+        let status = """
+        github.com
+          ✓ Logged in to github.com account someone (keyring)
+          - Active account: true
+          - Git operations protocol: ssh
+          - Token: gho_************************************
+          - Token scopes: 'admin:public_key', 'gist', 'read:org', 'repo'
+        """
+        #expect(GhAuth.scopes(in: status) == ["admin:public_key", "gist", "read:org", "repo"])
+    }
+
+    @Test func readsTheActiveAccountsWhenThereAreSeveral() {
+        let status = """
+        github.com
+          ✓ Logged in to github.com account work (keyring)
+          - Active account: false
+          - Token scopes: 'repo'
+
+          ✓ Logged in to github.com account home (keyring)
+          - Active account: true
+          - Token scopes: 'repo', 'workflow'
+        """
+        #expect(GhAuth.scopes(in: status) == ["repo", "workflow"])
+    }
+
+    @Test func aTokenWithoutScopesHasNoneToLack() {
+        #expect(GhAuth.scopes(in: "github.com\n  ✓ Logged in to github.com account a (GH_TOKEN)\n  - Token scopes: none") == nil)
+        #expect(GhAuth.scopes(in: "github.com\n  ✓ Logged in to github.com account a (GH_TOKEN)\n  - Active account: true") == nil)
+        #expect(GhAuth.scopes(in: "") == nil)
     }
 }
 
@@ -1407,7 +1486,7 @@ import Testing
         #expect(value(after: "--tools") == "Bash")
         #expect(value(after: "--allowedTools") == "Bash(reeve *)")
         let denied = args.firstIndex(of: "--disallowedTools").map { Array(args[($0 + 1)...].prefix { !$0.hasPrefix("--") }) }
-        #expect(denied == ["Bash(reeve card close*)", "Bash(reeve *--force*)"])
+        #expect(denied == ["Bash(reeve *--force*)"])
         #expect(value(after: "--permission-mode") == "dontAsk")
         #expect(value(after: "--setting-sources") == "")
         #expect(value(after: "--output-format") == "json")
@@ -1421,15 +1500,16 @@ import Testing
         #expect(prompt.contains("Always pass --cwd"))
         #expect(prompt.contains(CLIUsage.text))
         #expect(CommandBar.systemPrompt(repos: [], startRepo: nil).contains("no repos on the list"))
+        #expect(prompt.contains("Never retry with --force"))
     }
 
     @Test func readsTheReplyAndWhatWasRefused() throws {
         let json = """
         {"type":"result","subtype":"success","is_error":false,"result":"  Added “Fix login”. \\n",
-         "permission_denials":[{"tool_name":"Bash","tool_use_id":"t1","tool_input":{"command":"reeve card close abc"}}]}
+         "permission_denials":[{"tool_name":"Bash","tool_use_id":"t1","tool_input":{"command":"reeve card close abc --force"}}]}
         """
         let answer = try CommandBar.parse(Data(json.utf8))
-        #expect(answer == CommandBarAnswer(reply: "Added “Fix login”.", refused: ["reeve card close abc"]))
+        #expect(answer == CommandBarAnswer(reply: "Added “Fix login”.", refused: ["reeve card close abc --force"]))
     }
 
     @Test func anErrorIsThrown() {
