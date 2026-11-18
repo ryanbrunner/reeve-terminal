@@ -1,3 +1,4 @@
+import AppKit
 import ReeveKit
 import SwiftUI
 
@@ -23,8 +24,8 @@ enum CardTab: String, CaseIterable, Identifiable {
 /// The open card, over the board: the real Claude Code, where the work
 /// happens, with its plan, its changes and its preview a tab away.
 ///
-/// Esc belongs to Claude Code (it interrupts a turn), so nothing here takes it.
-/// The close button, ⌘B or a click outside goes back to the board.
+/// Esc, the close button, ⌘B or a click outside goes back to the board. In a
+/// live terminal Esc belongs to Claude Code, where it interrupts a turn.
 struct CardModal: View {
     @EnvironmentObject var board: Board
     let card: Card
@@ -86,6 +87,58 @@ struct CardModal: View {
             .shadow(color: .black.opacity(0.5), radius: 24, y: 8)
             .padding(28)
         }
+        .modifier(EscapeGoesBack())
+    }
+}
+
+/// Esc goes back to the board, unless what has the keyboard has a use for it:
+/// a live terminal, where it interrupts Claude; a field being typed in; or the
+/// page in the Preview tab.
+private struct EscapeGoesBack: ViewModifier {
+    @EnvironmentObject var board: Board
+    @State private var monitor: Any?
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                // A field on the board, behind the card, has nothing more to
+                // be typed into it, and would otherwise take Esc for its own.
+                if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "board" }),
+                   window.firstResponder is NSTextView {
+                    window.makeFirstResponder(nil)
+                }
+                let board = board
+                monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                    MainActor.assumeIsolated { Self.goesBack(event, board: board) ? nil : event }
+                }
+            }
+            .onDisappear {
+                if let monitor { NSEvent.removeMonitor(monitor) }
+                monitor = nil
+            }
+    }
+
+    @MainActor
+    private static func goesBack(_ event: NSEvent, board: Board) -> Bool {
+        // The board's own window: not a sheet, alert or popover over it.
+        guard event.keyCode == 53, let card = board.selected,
+              event.modifierFlags.isDisjoint(with: [.command, .shift, .option, .control]),
+              let window = event.window, window.identifier?.rawValue == "board", window.attachedSheet == nil
+        else { return false }
+        switch window.firstResponder {
+        case let terminal as CardTerminalView:
+            if let id = terminal.cardId, board.live.contains(id) { return false }
+        case is NSTextView:
+            return false
+        case let view as NSView where board.previews.existing(card.id).map { view.isDescendant(of: $0.webView) } == true:
+            return false
+        default:
+            break
+        }
+        // Offered first to anything in the card bound to Esc.
+        if window.performKeyEquivalent(with: event) { return true }
+        board.dismissOpenCard()
+        return true
     }
 }
 
