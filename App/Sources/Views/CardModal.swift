@@ -70,7 +70,7 @@ struct CardModal: View {
                         case .prs:
                             PullRequestsView(card: card).id(card.id)
                         case .design:
-                            DesignView(card: card).id(card.id)
+                            DesignView(card: card, viewer: board.designViews.preview(for: card.id)).id(card.id)
                         }
                     }
                 }
@@ -133,7 +133,7 @@ private struct EscapeGoesBack: ViewModifier {
             if let id = terminal.cardId, board.live.contains(id) { return false }
         case is NSTextView:
             return false
-        case let view as NSView where board.previews.existing(card.id).map { view.isDescendant(of: $0.webView) } == true:
+        case let view as NSView where [board.previews, board.designViews].contains(where: { $0.existing(card.id).map { view.isDescendant(of: $0.webView) } == true }):
             return false
         default:
             break

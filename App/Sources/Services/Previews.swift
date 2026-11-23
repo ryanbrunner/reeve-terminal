@@ -7,10 +7,17 @@ import WebKit
 @MainActor
 final class Previews {
     private var previews: [UUID: Preview] = [:]
+    /// The Gloss session each card's page is reviewed in: none for the
+    /// Preview tab's, `design` for the Design tab's, so both can run at once.
+    let sessionName: String
+
+    init(sessionName: String = "") {
+        self.sessionName = sessionName
+    }
 
     func preview(for cardId: UUID) -> Preview {
         if let preview = previews[cardId] { return preview }
-        let preview = Preview()
+        let preview = Preview(sessionName: sessionName)
         previews[cardId] = preview
         return preview
     }
@@ -57,6 +64,8 @@ final class Preview: NSObject, ObservableObject {
     @Published private(set) var session: Session = .none
     /// The page the view shows now.
     @Published private(set) var url: URL?
+    /// The page last asked for, wherever it went from there (a sign-in, say).
+    @Published private(set) var requested: URL?
     @Published private(set) var loading = false
     /// Why the last page didn't load, until one does.
     @Published private(set) var loadError: String?
@@ -64,6 +73,8 @@ final class Preview: NSObject, ObservableObject {
     let webView: WKWebView
     /// The folder the session runs in: the one its `gloss` commands find it from.
     private(set) var cwd: String?
+    /// The session's `--name`: its `gloss` commands name it too.
+    let sessionName: String
 
     /// The bar's world: the page's own scripts can't see into it.
     let world = WKContentWorld.world(name: "gloss")
@@ -77,7 +88,8 @@ final class Preview: NSObject, ObservableObject {
     private var stderrTail = ""
     private var observations: [NSKeyValueObservation] = []
 
-    override init() {
+    init(sessionName: String = "") {
+        self.sessionName = sessionName
         let config = WKWebViewConfiguration()
         // The default store, so a sign-in to the app under review lasts.
         config.websiteDataStore = .default()
@@ -105,6 +117,7 @@ final class Preview: NSObject, ObservableObject {
     /// page is shown on its own. `done` hears when the session is up, or why not.
     func open(_ url: URL, cwd: String, live: Bool = false, env: ShellEnvironment, done: ((String?) -> Void)? = nil) {
         loadError = nil
+        requested = url
         if isRunning {
             guard self.cwd == cwd else {
                 done?("the preview is already reviewing \(self.cwd ?? "another folder")")
@@ -127,6 +140,7 @@ final class Preview: NSObject, ObservableObject {
     /// Goes to `url`, in the session if there is one.
     func navigate(_ url: URL) {
         loadError = nil
+        requested = url
         webView.load(URLRequest(url: url))
     }
 
@@ -149,7 +163,7 @@ final class Preview: NSObject, ObservableObject {
         signal(SIGPIPE, SIG_IGN)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: gloss)
-        process.arguments = Gloss.sessionArguments(cwd: cwd, url: url.absoluteString, live: live)
+        process.arguments = Gloss.sessionArguments(cwd: cwd, url: url.absoluteString, live: live, name: sessionName)
         process.environment = env.baseEnvironment.filter { $0.key != "GLOSS_HOST" }
         process.currentDirectoryURL = URL(fileURLWithPath: cwd)
         let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
@@ -214,8 +228,7 @@ final class Preview: NSObject, ObservableObject {
     private func answer(_ id: Int, _ request: Gloss.Request) {
         switch request {
         case let .navigate(url):
-            loadError = nil
-            webView.load(URLRequest(url: url))
+            navigate(url)
             send(Gloss.reply(id: id))
         case .reload:
             reload()
