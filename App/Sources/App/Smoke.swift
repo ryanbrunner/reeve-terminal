@@ -533,6 +533,7 @@ enum Smoke {
         // In a live terminal Esc is Claude Code's; on another tab it closes the card.
         board.select(card.id)
         let focused = await wait("the terminal to take the keyboard", seconds: 5, until: { window?.firstResponder is CardTerminalView })
+        await picture("5b-card-page", window)
         post(53, "\u{1b}")
         try? await Task.sleep(for: .milliseconds(500))
         check(focused && board.selectedId == card.id, "Esc in a live terminal leaves the card open")
@@ -540,6 +541,8 @@ enum Smoke {
         let stopped = await wait("the session to stop", seconds: 10, until: { !board.live.contains(card.id) && window?.firstResponder is CardTerminalView })
         post(53, "\u{1b}")
         check(await wait("the card to close", seconds: 3, until: { board.selected == nil }) && stopped, "Esc in a stopped session's terminal closes the card")
+        check(board.cameBackFrom == card.id, "going back rings the card it came from")
+        await picture("5c-back", window)
         board.select(card.id)
         board.show(.changes, for: card.id)
         try? await Task.sleep(for: .milliseconds(500))

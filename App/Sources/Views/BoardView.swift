@@ -214,7 +214,7 @@ private struct CellView: View {
     var body: some View {
         VStack(spacing: 8) {
             ForEach(board.cards(in: spot.stage, lane: spot.lane)) { card in
-                CardFace(card: card, selected: card.id == board.selectedId)
+                CardFace(card: card, selected: card.id == board.cameBackFrom)
                     .onTapGesture { board.select(card.id) }
                     .draggable(card.id.uuidString) {
                         CardFace(card: card, dragging: true)

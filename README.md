@@ -2,8 +2,8 @@
 
 A native macOS kanban board of Claude Code sessions. Each card is a terminal
 running the real `claude`, in a folder. The board fills the window; click a
-card and its terminal opens over the board. Close it and you're back on the
-board, with the session still running.
+card and its page takes the board's place, terminal and all. Board, at the
+top left of the page, takes you back, with the session still running.
 
     backlog → design → planning → in_progress → testing → release
 
@@ -297,10 +297,12 @@ script/release fetch    # once Apple is done → build/release/Reeve.zip
 
 Esc also goes back to the board, except where it is wanted: in a live
 terminal it goes to Claude Code, where it interrupts a turn, and a field
-being typed in or the page in the Preview tab keeps it too. ⌘B, the × in the
-card's header or a click outside it always go back.
+being typed in or the page in the Preview tab keeps it too. ⌘B, Board in the
+card's bar, or its column's name next to it always go back, and the board is
+as you left it, with the card you came from ringed for a moment. The arrows
+at the right of the bar step to the previous or next card, as ⇧⌘[ and ⇧⌘] do.
 
-Right-click a card, or use the ⋯ in an open card's header, to move it, have
+Right-click a card, or use the ⋯ in an open card's bar, to move it, have
 it wait on another card, rename it, re-sort it now, put it in VIBES MODE,
 restart its session or reveal its folder.
 
@@ -416,7 +418,8 @@ Claude taking a turn: it adds `REEVE_SMOKE_DIR` as a repo, names a card in
 Backlog and checks nothing starts, moves it to a new lane and deletes the
 lane, has it wait on a second card and checks a loop is refused and a move
 to Planning is refused, closes that card, moves it to Planning and checks it starts there in a worktree, checks
-that Esc closes it, but not from its terminal while it is live, closes
+that Esc closes it, but not from its terminal while it is live, and that
+going back rings it on the board, closes
 it, and opens Settings to take the repo off and put it back, with a
 picture of each window and a line per check in `timeline.txt`. Run it twice
 on one `REEVE_DATA_DIR` to see the list kept.

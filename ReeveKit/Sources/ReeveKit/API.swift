@@ -74,7 +74,7 @@ public struct BoardResponse: Codable, Equatable, Sendable {
     public var cards: [APICard]
     /// The swimlanes, top to bottom. Nil from an app older than lanes.
     public var lanes: [Lane]?
-    /// The card open over the board, if any.
+    /// The open card, in place of the board, if any.
     public var selectedId: UUID?
     /// What VIBES MODE has done since it went on; nil while it is off.
     public var vibes: VibesLedger?
@@ -122,7 +122,7 @@ public struct CreateCardBody: Codable, Equatable, Sendable {
     public var effort: String?
     /// Work in `cwd` itself when a worktree can't be made, rather than fail.
     public var inFolder: Bool
-    /// Open the card over the board, as the new card sheet does.
+    /// Open the card's page, as the new card sheet does.
     public var open: Bool
     /// In VIBES MODE on its own, whatever the board's switch says.
     public var vibes: Bool
