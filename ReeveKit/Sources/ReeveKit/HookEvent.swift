@@ -56,6 +56,15 @@ public struct HookEvent: Decodable, Sendable {
         (backgroundTasks ?? []).filter { Self.wakingTaskTypes.contains($0.type) }
     }
 
+    /// The background work that keeps a card running after the turn ends:
+    /// subagents, and the workflows that run them, are Claude still at work.
+    public static let workingTaskTypes: Set<String> = ["subagent", "workflow"]
+
+    /// Background agents still running as the turn ends.
+    public var hasWorkingAgents: Bool {
+        (backgroundTasks ?? []).contains { Self.workingTaskTypes.contains($0.type) }
+    }
+
     /// The parts of a tool's input that say what Claude is asking a person,
     /// or where it is writing its plan.
     public struct ToolInput: Decodable, Sendable {
@@ -253,6 +262,10 @@ extension HookEvent {
             let blocking = notificationType.map(blockingNotifications.contains) ?? (message?.contains("waiting for your input") != true)
             return blocking ? HookEffect(activity: .needsInput, waitingOn: .some(message)) : HookEffect()
         case "Stop":
+            // Subagents still at work: the turn is over, but Claude isn't.
+            if hasWorkingAgents {
+                return HookEffect(activity: .running, waitingOn: .some(nil), classify: true, background: [])
+            }
             // A background shell will wake Claude when it exits: the turn is
             // over, but the work isn't.
             let waking = wakingTasks

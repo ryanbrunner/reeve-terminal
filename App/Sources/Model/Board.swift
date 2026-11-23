@@ -946,12 +946,14 @@ final class Board: ObservableObject {
     /// Claude Code spins a glyph at the front of its title while it works and
     /// puts ✳ there when it stops. No hook fires when a person presses Esc
     /// mid-turn, so the title is how a card learns its turn was interrupted.
+    /// A card still running after its Stop is running on its subagents, with
+    /// ✳ up while they work.
     private func titleChanged(_ id: UUID, _ title: String) {
         terminalTitles[id] = title
-        guard title.hasPrefix("\u{2733}"), card(id)?.activity == .running, !awaitingPrompt.contains(id) else { return }
+        guard title.hasPrefix("\u{2733}"), card(id)?.activity == .running, !awaitingPrompt.contains(id), !stopped.contains(id) else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             guard let self, self.terminalTitles[id]?.hasPrefix("\u{2733}") == true, self.card(id)?.activity == .running,
-                  !self.awaitingPrompt.contains(id) else { return }
+                  !self.awaitingPrompt.contains(id), !self.stopped.contains(id) else { return }
             self.update(id) { card in
                 card.activity = .idle
                 card.waitingOn = nil
