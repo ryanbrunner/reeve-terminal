@@ -138,10 +138,14 @@ feature parity. What Reeve adds is the board.
   pull request the card has opened, newest first, each with its state, its
   checks (passing, running or failing) and its review; it asks GitHub again
   when it shows, and every 30 seconds while a check is running. Design
-  lists the Claude Design projects and claude.ai artifacts the session has
-  shared, newest first, picked out of its tool results and messages (or its
-  transcript), with a dot on the tab when a new one arrives; click one to
-  open it in your browser. ⌥⌘1–6 switch between them.
+  shows the Claude Design projects and claude.ai artifacts the session has
+  shared, picked out of its tool results and messages (or its transcript),
+  with a dot on the tab when a new one arrives. The newest is on show in a
+  web view of Reeve's own, and the menu in its bar picks another; a new one
+  goes on show as it is published, and one published over reloads. Sign in
+  to claude.ai there once and it lasts (Google may refuse an app's web
+  view; email works). Open and Copy link take it to your browser. ⌥⌘1–6
+  switch between them.
 - **Review the changes like a pull request.** Hover a line in Changes and
   click + to comment on it. **Comment now** sends it straight away; **Add to
   review** keeps it as pending until you **Submit review**. Reeve writes the
@@ -175,7 +179,24 @@ feature parity. What Reeve adds is the board.
   pins (with their pictures), Submit and Approve all work as in Gloss's
   window. "End review" or `gloss close` ends the session and leaves the page.
   It needs a Gloss with `--host`; without `gloss` on your PATH the tab is a
-  plain preview. `REEVE_GLOSS` points Reeve at another `gloss`, such as a
+  plain preview.
+- **Gloss reviews designs in the Design tab.** The Design tab hosts a
+  second session, `--name design`, so it runs beside the Preview tab's: a
+  `gloss open --name design <link>` shows the design there with the bar
+  over it, and **Review in Gloss** starts one on the design on show. A card
+  started in Design is told, in a system prompt it gets every time it
+  starts, to take feedback this way rather than as comments on claude.ai:
+  once it has shared a design it opens it in Gloss and loops on `gloss wait
+  --name design`, republishing to the same link each round, and runs
+  `gloss close --name design` once you approve. That needs a
+  Gloss that Reeve can host (0.3.0 or later, as `gloss --version` says when
+  Reeve starts); with an older one, or none, the card isn't told. A
+  `REEVE_GLOSS` Gloss is named to Claude by its path, so it runs the one
+  Reeve checked. On claude.ai the
+  design itself sits in a frame of claude.ai's own, and Gloss takes
+  comments only from the top of the page, so a pin lands on the frame as a
+  whole rather than on an element in the design; general comments work as
+  ever. `REEVE_GLOSS` points Reeve at another `gloss`, such as a
   checkout's `bin/gloss.js`.
 - **Sessions survive restarts.** A card owns its session id (`--session-id`
   the first time, `--resume` after that). After a restart it sleeps until you
@@ -246,6 +267,46 @@ the switch was flipped and kept with the board.
 Under Reduce Motion the colours stay and the movement stops, except that a
 card still moves to its new column, quickly. The lights also hold still while
 a card is open, so the terminal stays quick.
+
+## Scheduled tasks
+
+Schedules in the header opens work that starts itself. A schedule is a cron
+expression, a prompt and a repo (with a lane, model and effort if you like).
+Each time it comes due, Reeve makes a card named after it and the time, in
+that repo's own worktree, straight into **In Progress** with VIBES MODE on
+for that card alone, whatever the board's switch says. The prompt is the
+first thing Claude is told.
+
+The cron is the usual five fields, minute hour day-of-month month
+day-of-week, in local time: `*`, values, ranges, lists and steps (`*/15`,
+`10-30/5`), month and weekday names (`jan`, `mon-fri`), Sunday as `0` or
+`7`, and `@hourly`, `@daily`, `@weekly`, `@monthly` and `@yearly`. Given
+both a day of month and a day of week, a day matching either runs, as in
+cron. A time the clocks skip for daylight saving doesn't run that day, and
+an hour they go back through runs once. The editor shows the next three
+times, or what is wrong. **Run Now**
+makes a card straight away.
+
+Each schedule keeps its last 50 runs:
+
+- **Running**: its card is on the board and hasn't shipped. It shows
+  **Needs you** while Claude Code is asking a person something (a
+  permission prompt still waits for one), and **Paused** when its session
+  isn't running, as after a relaunch: open the card to carry on.
+- **Succeeded**: the card shipped, as VIBES MODE counts it (merged, or with
+  Merge to Main off, its pull request is up), or its pull request merged
+  some other way.
+- **Failed**: no card could be made (the repo has gone, or git wouldn't make
+  a worktree; there is no asking about the folder, since nobody is there to
+  answer), VIBES MODE gave up on it, or it was closed before it shipped. One
+  that gave up and later ships after all turns to Succeeded.
+- **Skipped**: the last run's card hadn't shipped yet, so no new card was
+  made. Run Now doesn't wait.
+
+Reeve has to be running for a schedule to run. Times missed while it was
+closed or the Mac asleep come to one run when it is back, marked late. A
+changed cron, or a schedule turned back on, counts from then. Deleting a
+schedule leaves its cards on the board. Schedules are saved with the board.
 
 ## Build
 
@@ -426,8 +487,33 @@ on one `REEVE_DATA_DIR` to see the list kept.
 
 `REEVE_SMOKE_MODE=commandbar` asks the command bar to add a card in
 `REEVE_SMOKE_DIR` (or `REEVE_SMOKE_PROMPT`), then how the board stands, then
-for something it may not do, and checks the card started in that repo and
-nothing was closed. Claude takes real turns.
+for something it may not do, then to close the card by name. It checks the
+card started in that repo, that nothing was closed until asked, and that the
+named card closed. Claude takes real turns.
+
+`REEVE_SMOKE_MODE=schedules` adds a schedule that runs every minute in
+`REEVE_SMOKE_DIR` (on `REEVE_SMOKE_PROMPT`, `REEVE_SMOKE_MODEL` and
+`REEVE_SMOKE_EFFORT` if given), and checks its first run makes a card in In
+Progress with VIBES MODE on, the next is skipped while that card is going,
+Run Now on a schedule whose folder has gone fails, and the first run
+succeeds once VIBES MODE ships its card (within `REEVE_SMOKE_SECONDS`, 900
+by default). It saves a picture of the Schedules sheet at each step and a
+line per check in `timeline.txt`. Claude takes real turns.
+
+`REEVE_SMOKE_MODE=design` does the same in the Design tab, with `--name
+design`, then hands Reeve the link in `REEVE_SMOKE_DESIGN` (a claude.ai
+artifact, say) as Claude Code's hook would and checks the tab shows it.
+Then it presses Review in Gloss, opens the Preview tab's session beside
+it in the same folder, and checks Esc in the design page is the page's
+while Esc elsewhere closes the card. Both end with the reviewer approving
+from the bar.
+
+`REEVE_SMOKE_MODE=designflow` starts a card in Design with Claude taking
+real turns (`REEVE_SMOKE_PROMPT` is the brief), so it publishes a private
+artifact to your claude.ai account. It waits for Claude to open its design
+in the Design tab with Gloss, sends a round from the bar, waits for
+Claude's `gloss ready`, approves, and checks the session closed, Claude
+never used claude.ai's comments, and the card kept only the design it made.
 
 `REEVE_SMOKE_MODE=preview` checks the Preview tab instead, without Claude
 taking a turn. It makes a card with no prompt, then does what the card's

@@ -17,6 +17,9 @@ final class Board: ObservableObject {
     /// have no session or worktree any more; this is only a record.
     @Published private(set) var archive: [Card] = []
     @Published var showingArchive = false
+    /// Work that starts itself on a cron schedule, each with its runs.
+    @Published private(set) var schedules: [Schedule] = []
+    @Published var showingSchedules = false
     /// The swimlanes, top to bottom. Never empty.
     @Published private(set) var lanes: [Lane] = [Lane.starter()]
     /// The folders a new card can start in.
@@ -84,6 +87,8 @@ final class Board: ObservableObject {
 
     let terminals = Terminals()
     let previews = Previews()
+    /// Each card's Design tab: the design on show, in a Gloss session of its own.
+    let designViews = Previews(sessionName: Gloss.designSession)
     /// The field above the board that runs a request through `reeve`.
     let commandBar = CommandBarRunner()
     /// Claude Code is showing a dialog on these cards — a permission prompt,
@@ -140,6 +145,9 @@ final class Board: ObservableObject {
     /// Cards VIBES MODE has left alone because what they wait on hasn't
     /// merged, so the ledger says so once rather than at every sweep.
     private var vibesHeld: Set<UUID> = []
+    /// Looks for schedules that have come due, from once the shell
+    /// environment is in.
+    private var scheduleTimer: Timer?
     private let dataDir: URL
     /// Where the board lives, which the command bar's `reeve` is pointed at.
     var dataDirectory: URL { dataDir }
@@ -197,6 +205,7 @@ final class Board: ObservableObject {
             self.environment = env
             self.drainStarts()
             for card in self.cards { self.refreshPullRequest(card.id) }
+            self.startSchedules()
         }
     }
 
@@ -328,10 +337,11 @@ final class Board: ObservableObject {
     /// too, so it starts from HEAD as it is then.
     @discardableResult
     func createCard(cwd: String, title: String, prompt: String?, mode: StartMode?, model: String?, effort: String?,
-                    vibes: Bool = false, lane: UUID? = nil, open: Bool, inFolder: Bool) async throws -> Card {
+                    vibes: Bool = false, lane: UUID? = nil, open: Bool, inFolder: Bool, scheduleId: UUID? = nil) async throws -> Card {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         var card = Card(title: title, cwd: cwd, stage: .backlog)
         card.vibes = vibes ? true : nil
+        card.scheduleId = scheduleId
         card.laneId = lanes.contains { $0.id == lane } ? lane : nil
         card.model = model
         card.effort = effort
@@ -531,16 +541,45 @@ final class Board: ObservableObject {
         if preview.isRunning { preview.navigate(url) } else { preview.open(url, cwd: card.cwd, env: env) }
     }
 
+    /// Shows `url`, one of the card's designs, in its Design tab, in the
+    /// tab's Gloss session if one is up.
+    func showDesign(_ id: UUID, url: URL) {
+        designViews.preview(for: id).navigate(url)
+    }
+
+    /// Starts a Gloss session on the design the card's Design tab shows, for
+    /// Claude's `gloss wait --name design`.
+    func reviewDesign(_ id: UUID, url: URL) {
+        guard let card = card(id), let env = environment else { return }
+        designViews.preview(for: id).open(url, cwd: card.cwd, env: env)
+    }
+
+    /// Claude published a design: a new one goes on show in the Design tab,
+    /// and one published over is shown afresh. In a Gloss session,
+    /// `gloss open` and `gloss ready` move and reload the page instead.
+    private func designsShared(_ id: UUID) {
+        // The one just shared is the newest.
+        guard let view = designViews.existing(id), view.session != .live, view.session != .starting,
+              let newest = card(id)?.designs?.first, let url = URL(string: newest.url) else { return }
+        if view.requested == url { view.reload() } else { view.navigate(url) }
+    }
+
     /// A `gloss open` in the card, asking to show its page here rather than in
-    /// a window of Gloss's own. Gloss opens its window instead if this says no.
+    /// a window of Gloss's own: the Preview tab's session, or with `--name
+    /// design` the Design tab's. Gloss opens its window instead if this says no.
     private func hostGloss(_ id: UUID, _ body: Data, respond: @escaping (String?) -> Void) {
         guard card(id) != nil else { return respond("no such card") }
         guard let request = try? JSONDecoder().decode(Gloss.OpenRequest.self, from: body),
               let url = URL(string: request.url) else { return respond("Reeve could not read the request") }
-        guard request.name.isEmpty else { return respond("a card's preview holds one session, without --name") }
+        let (views, tab): (Previews, CardTab)
+        switch request.name {
+        case "": (views, tab) = (previews, .preview)
+        case Gloss.designSession: (views, tab) = (designViews, .design)
+        default: return respond("a card holds two sessions: its Preview tab's, without --name, and its Design tab's, --name \(Gloss.designSession)")
+        }
         guard let env = environment else { return respond("Reeve is still starting") }
-        previews.preview(for: id).open(url, cwd: request.cwd, live: request.live, env: env) { [weak self] error in
-            if error == nil { self?.tabs[id] = .preview }
+        views.preview(for: id).open(url, cwd: request.cwd, live: request.live, env: env) { [weak self] error in
+            if error == nil { self?.show(tab, for: id) }
             respond(error)
         }
     }
@@ -673,6 +712,14 @@ final class Board: ObservableObject {
     /// leaves the board comes through here.
     func close(_ id: UUID, archiving: Bool = false) {
         let closing = card(id)
+        // Archived, it merged. Closed before it shipped, its run came to nothing.
+        if let closing {
+            if archiving {
+                settleRun(of: closing, .succeeded, "Merged · archived")
+            } else if closing.shippedAt == nil {
+                settleRun(of: closing, .failed, "Closed before it shipped")
+            }
+        }
         if archiving, var kept = closing {
             kept.archivedAt = Date()
             kept.activity = .idle
@@ -682,6 +729,7 @@ final class Board: ObservableObject {
         }
         terminals.close(id)
         previews.close(id)
+        designViews.close(id)
         // Only ever a worktree Reeve made: a card without one works in the
         // person's own folder.
         if let closing, let path = closing.worktreePath, let repo = closing.repoPath {
@@ -896,6 +944,7 @@ final class Board: ObservableObject {
     func shutdown() {
         terminals.stopAll()
         previews.stopAll()
+        designViews.stopAll()
         server?.stop()
         ServerInfo.remove(dataDir: dataDir, pid: ProcessInfo.processInfo.processIdentifier)
         save()
@@ -956,12 +1005,14 @@ final class Board: ObservableObject {
     /// Claude Code spins a glyph at the front of its title while it works and
     /// puts ✳ there when it stops. No hook fires when a person presses Esc
     /// mid-turn, so the title is how a card learns its turn was interrupted.
+    /// A card still running after its Stop is running on its subagents, with
+    /// ✳ up while they work.
     private func titleChanged(_ id: UUID, _ title: String) {
         terminalTitles[id] = title
-        guard title.hasPrefix("\u{2733}"), card(id)?.activity == .running, !awaitingPrompt.contains(id) else { return }
+        guard title.hasPrefix("\u{2733}"), card(id)?.activity == .running, !awaitingPrompt.contains(id), !stopped.contains(id) else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             guard let self, self.terminalTitles[id]?.hasPrefix("\u{2733}") == true, self.card(id)?.activity == .running,
-                  !self.awaitingPrompt.contains(id) else { return }
+                  !self.awaitingPrompt.contains(id), !self.stopped.contains(id) else { return }
             self.update(id) { card in
                 card.activity = .idle
                 card.waitingOn = nil
@@ -1055,6 +1106,7 @@ final class Board: ObservableObject {
         let showing = selectedId == cardId ? tab(cardId) : nil
         if effect.plan != nil, showing != .plan { unseenPlans.insert(cardId) }
         if newDesign, showing != .design { unseenDesigns.insert(cardId) }
+        if effect.publishesDesign { designsShared(cardId) }
         if showing == .changes, event.hookEventName == "PostToolUse" || event.hookEventName == "Stop" {
             changeTicks[cardId, default: 0] += 1
         }
@@ -1328,6 +1380,7 @@ final class Board: ObservableObject {
             Task { await checkShipped(id, name: name) }
         case .giveUp:
             vibes?.note("Gave up pushing \(name) · left for you")
+            settleRun(of: card, .failed, "VIBES MODE gave up · left for you")
         }
         save()
     }
@@ -1363,6 +1416,7 @@ final class Board: ObservableObject {
             card.merged = merged
             card.vibesNudges = nil
         }
+        settleRun(of: card, .succeeded, merged ? "Merged → main" : "Pull request open · yours to merge")
         if merged {
             vibes?.merged += 1
             vibes?.note("Claude merged \(name) → main · 0 reviews")
@@ -1484,6 +1538,126 @@ final class Board: ObservableObject {
 
     private func count(_ n: Int, _ noun: String) -> String {
         "\(n) \(noun)\(n == 1 ? "" : "s")"
+    }
+
+    // MARK: Schedules
+
+    /// Looks for schedules come due now, at the top of every minute after
+    /// that, and on waking: a Mac asleep through a run time runs it once it wakes.
+    private func startSchedules() {
+        guard scheduleTimer == nil else { return }
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.tickSchedules() }
+        }
+        tickSchedules()
+        armScheduleTimer()
+    }
+
+    /// A second into the next minute, so a run due at 9:00 starts at 9:00.
+    private func armScheduleTimer() {
+        let now = Date()
+        let minute = Calendar.current.dateInterval(of: .minute, for: now)?.end ?? now.addingTimeInterval(60)
+        let timer = Timer(fire: minute.addingTimeInterval(1), interval: 0, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.tickSchedules()
+                self?.armScheduleTimer()
+            }
+        }
+        timer.tolerance = 1
+        RunLoop.main.add(timer, forMode: .common)
+        scheduleTimer = timer
+    }
+
+    /// Runs every schedule that has come due, once however many times it
+    /// was missed. One whose last card hasn't shipped is skipped, and says so.
+    private func tickSchedules(now: Date = Date()) {
+        for schedule in schedules {
+            guard let due = schedule.due(now: now) else { continue }
+            updateSchedule(schedule.id) { $0.checkedThrough = now }
+            // A card gone some way other than `close` can't hold the schedule up.
+            if let running = schedule.runInFlight, let cardId = running.cardId, card(cardId) == nil, !archive.contains(where: { $0.id == cardId }) {
+                updateSchedule(schedule.id) { $0.settle(cardId: cardId, .failed, detail: "Its card has gone") }
+            }
+            if let running = schedules.first(where: { $0.id == schedule.id })?.runInFlight {
+                let paused = running.cardId.map { !live.contains($0) } ?? false
+                updateSchedule(schedule.id) {
+                    $0.record(ScheduleRun(scheduledFor: due.scheduledFor, status: .skipped,
+                                          detail: paused ? "The last run’s card is paused · open it to carry on" : "The last run is still going",
+                                          late: due.late))
+                }
+                continue
+            }
+            fire(schedule.id, scheduledFor: due.scheduledFor, late: due.late)
+        }
+    }
+
+    /// Run now: a card straight away, whatever the last run is doing.
+    func runSchedule(_ id: UUID) {
+        fire(id, scheduledFor: Date(), late: false, manual: true)
+    }
+
+    /// One run: a card in the schedule's repo, on its prompt, straight into
+    /// In Progress with VIBES MODE on. Never the dialog that offers to work
+    /// in the folder when git won't make a worktree: there is nobody to
+    /// answer it, so the run fails instead.
+    private func fire(_ id: UUID, scheduledFor: Date, late: Bool, manual: Bool = false) {
+        guard let schedule = schedules.first(where: { $0.id == id }) else { return }
+        guard FileManager.default.fileExists(atPath: schedule.repoPath) else {
+            return updateSchedule(id) {
+                $0.record(ScheduleRun(scheduledFor: scheduledFor, status: .failed, detail: "\(schedule.repoPath) isn’t there any more", late: late, manual: manual))
+            }
+        }
+        let name = schedule.name.isEmpty ? "Scheduled" : schedule.name
+        let title = "\(name) · \(scheduledFor.formatted(.dateTime.month(.abbreviated).day().hour().minute()))"
+        Task {
+            do {
+                let card = try await createCard(cwd: schedule.repoPath, title: title, prompt: schedule.prompt, mode: .build,
+                                                model: schedule.model, effort: schedule.effort, vibes: true, lane: schedule.laneId,
+                                                open: false, inFolder: false, scheduleId: id)
+                updateSchedule(id) { $0.record(ScheduleRun(scheduledFor: scheduledFor, cardId: card.id, status: .running, late: late, manual: manual)) }
+            } catch {
+                NSLog("Reeve: schedule \(id) couldn't start a card: \(error.localizedDescription)")
+                updateSchedule(id) {
+                    $0.record(ScheduleRun(scheduledFor: scheduledFor, status: .failed, detail: "Couldn’t start a card: \(error.localizedDescription)", late: late, manual: manual))
+                }
+            }
+        }
+    }
+
+    /// How a scheduled card's run came out. Nothing for any other card.
+    private func settleRun(of card: Card, _ status: ScheduleRun.Status, _ detail: String) {
+        guard let scheduleId = card.scheduleId else { return }
+        updateSchedule(scheduleId) { $0.settle(cardId: card.id, status, detail: detail) }
+    }
+
+    @discardableResult
+    func addSchedule(_ schedule: Schedule) -> Schedule {
+        var schedule = schedule
+        schedule.checkedThrough = Date()
+        schedules.append(schedule)
+        save()
+        return schedule
+    }
+
+    /// Saves a schedule's edits, onto its runs as they are now (see `Schedule.applying`).
+    func saveSchedule(_ edited: Schedule) {
+        updateSchedule(edited.id) { $0 = $0.applying(edited) }
+    }
+
+    /// Its cards stay on the board, as cards of nobody's.
+    func deleteSchedule(_ id: UUID) {
+        schedules.removeAll { $0.id == id }
+        for card in cards where card.scheduleId == id { update(card.id) { $0.scheduleId = nil } }
+        save()
+    }
+
+    private func updateSchedule(_ id: UUID, _ change: (inout Schedule) -> Void) {
+        guard let index = schedules.firstIndex(where: { $0.id == id }) else { return }
+        var schedule = schedules[index]
+        change(&schedule)
+        guard schedule != schedules[index] else { return }
+        schedules[index] = schedule
+        save()
     }
 
     // MARK: Review
@@ -1705,7 +1879,11 @@ final class Board: ObservableObject {
             if card.hasLivePullRequest, !card.stagePinned { card.stage = .release }
         }
         // Merged, whatever waited on it can go on.
-        if self.card(id)?.pullRequest?.state == .merged, cards.contains(where: { $0.dependsOnId == id }) { vibesSweep() }
+        if let card = self.card(id), card.pullRequest?.state == .merged {
+            // However it got there: a person may have seen it through.
+            settleRun(of: card, .succeeded, "Merged")
+            if cards.contains(where: { $0.dependsOnId == id }) { vibesSweep() }
+        }
     }
 
     /// GitHub works out whether a pull request merges cleanly only once it is
@@ -1864,6 +2042,7 @@ final class Board: ObservableObject {
         vibes = saved.vibes
         vibesOptions = saved.vibesOptions ?? VibesOptions()
         archive = saved.archive ?? []
+        schedules = saved.schedules ?? []
         pendingRemovals = saved.pendingRemovals ?? []
         pendingRemovals.forEach(removeWorktree)
     }
@@ -1881,7 +2060,7 @@ final class Board: ObservableObject {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(SavedBoard(cards: cards, archive: archive, selectedId: selectedId, pendingRemovals: pendingRemovals, vibes: vibes, vibesOptions: vibesOptions, repos: repos, lanes: lanes)) else { return }
+        guard let data = try? encoder.encode(SavedBoard(cards: cards, archive: archive, selectedId: selectedId, pendingRemovals: pendingRemovals, vibes: vibes, vibesOptions: vibesOptions, repos: repos, lanes: lanes, schedules: schedules)) else { return }
         try? data.write(to: storeURL, options: .atomic)
         // Every change comes through here, so the hooks never answer off a stale list.
         server?.vibesCards.set(Set(cards.filter(inVibes).map(\.id)))
@@ -1903,6 +2082,7 @@ final class Board: ObservableObject {
         var vibesOptions: VibesOptions?
         var repos: [Repo]?
         var lanes: [Lane]?
+        var schedules: [Schedule]?
     }
 
     private struct WorktreeRemoval: Codable, Equatable {

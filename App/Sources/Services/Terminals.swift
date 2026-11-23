@@ -42,7 +42,7 @@ final class Terminals: NSObject, LocalProcessTerminalViewDelegate {
         let view = view(for: card.id)
         guard !live.contains(card.id) else { return }
         let claude = env.claudePath ?? "claude"
-        let command = Launch.shellCommand(claude, Launch.claudeArguments(for: card, prompt: prompt, reviewsDir: reviewsDir), cliDirectory: Self.cliDirectory)
+        let command = Launch.shellCommand(claude, Launch.claudeArguments(for: card, prompt: prompt, reviewsDir: reviewsDir, gloss: env.glossHosts ? env.glossCommand : nil), cliDirectory: Self.cliDirectory)
         let environment = Launch.environment(base: env.baseEnvironment, hookPort: hookPort, cardId: card.id)
         if view.hasRun {
             view.feed(text: "\r\n\u{1b}[2m─── resuming session ───\u{1b}[0m\r\n")
