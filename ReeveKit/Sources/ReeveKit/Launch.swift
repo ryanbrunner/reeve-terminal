@@ -48,13 +48,16 @@ public enum Launch {
     /// The card's model and effort come along on a resume too, so a card woken
     /// after a restart keeps them. A prompt goes in either way: a resumed
     /// session takes it as its next turn.
-    public static func claudeArguments(for card: Card, prompt: String? = nil, reviewsDir: String? = nil) -> [String] {
+    /// With `gloss`, the command for a Gloss Reeve can host, a card started in
+    /// Design is told, every time it starts, to take feedback through Gloss.
+    public static func claudeArguments(for card: Card, prompt: String? = nil, reviewsDir: String? = nil, gloss: String? = nil) -> [String] {
         var args = card.hasConversation
             ? ["--resume", card.sessionId.uuidString.lowercased()]
             : ["--session-id", card.sessionId.uuidString.lowercased()]
         args += ["--settings", hookSettings(reviewsDir: reviewsDir)]
         if let model = card.model { args += ["--model", model] }
         if let effort = card.effort { args += ["--effort", effort] }
+        if let gloss, card.startMode == .design { args += ["--append-system-prompt", Gloss.designFeedback(gloss: gloss)] }
         // Only a fresh session: a resumed one is wherever the person left it,
         // and plan mode again would undo an approved plan.
         if let mode = card.startMode, !card.hasConversation {

@@ -74,9 +74,11 @@ public struct HookEvent: Decodable, Sendable {
         public let planFilePath: String?
         /// `Write` and `Edit`.
         public let filePath: String?
+        /// `Artifact`: publish (when missing), read, list, open and so on.
+        public let action: String?
 
         enum CodingKeys: String, CodingKey {
-            case questions, plan, planFilePath
+            case questions, plan, planFilePath, action
             case filePath = "file_path"
         }
 
@@ -97,14 +99,45 @@ public struct HookEvent: Decodable, Sendable {
     /// count: reading a file with a link in it makes no design. Nil when
     /// there are none.
     public var designs: [DesignArtifact]? {
-        let text: String
+        var links: [String]
         switch hookEventName {
-        case "PostToolUse" where agentId == nil && designTools.contains(toolName ?? ""): text = raw.replacingOccurrences(of: "\\/", with: "/")
-        case "Stop": text = lastAssistantMessage ?? ""
+        case "PostToolUse" where makesDesign && toolName == "Artifact":
+            // The one it made or published over: not the type it was made
+            // from, nor the design systems the response goes on to list.
+            links = publishedArtifact.map { [$0] } ?? []
+        case "PostToolUse" where makesDesign: links = DesignSighting.links(in: raw.replacingOccurrences(of: "\\/", with: "/"))
+        case "Stop": links = DesignSighting.links(in: lastAssistantMessage ?? "")
         default: return nil
         }
-        let links = DesignSighting.links(in: text)
         return links.isEmpty ? nil : links.map { DesignArtifact(url: $0) }
+    }
+
+    /// The artifact an `Artifact` call made or published over: its
+    /// response's own `url`, or, answered in text, the first link in it
+    /// ("Created a new Artifact at …", "Updated the Artifact at …").
+    private var publishedArtifact: String? {
+        guard let object = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any] else { return nil }
+        switch object["tool_response"] {
+        case let response as [String: Any]:
+            return (response["url"] as? String).flatMap { DesignSighting.links(in: $0).first }
+        case let text as String:
+            return DesignSighting.links(in: text).first
+        case let blocks as [[String: Any]]:
+            return blocks.compactMap { $0["text"] as? String }.lazy.compactMap { DesignSighting.links(in: $0).first }.first
+        default:
+            return nil
+        }
+    }
+
+    /// The main thread made or changed a design with a tool: not an artifact
+    /// it only looked up, and not one Claude only mentioned.
+    public var publishesDesign: Bool {
+        hookEventName == "PostToolUse" && makesDesign && designs != nil
+    }
+
+    private var makesDesign: Bool {
+        guard agentId == nil, let tool = toolName, designTools.contains(tool) else { return false }
+        return tool != "Artifact" || !artifactLookups.contains(toolInput?.action ?? "publish")
     }
 }
 
@@ -149,6 +182,8 @@ public struct HookEffect: Equatable, Sendable {
     public var plan: PlanSighting?
     /// Claude shared Claude Design projects or artifacts.
     public var designs: [DesignArtifact]?
+    /// It made or changed one, rather than mentioning one at the end of a turn.
+    public var publishesDesign = false
     /// Set to replace the background work the card is waiting on.
     public var background: [BackgroundWork]?
     /// A subagent used a tool: it is getting on with its work.
@@ -172,6 +207,8 @@ private let askingTools: Set<String> = ["AskUserQuestion", "ExitPlanMode"]
 
 /// Tools that make designs: `/design`'s Claude Design projects, and artifacts.
 private let designTools: Set<String> = ["DesignSync", "Artifact"]
+/// `Artifact` actions that only look at artifacts, the person's own or not.
+private let artifactLookups: Set<String> = ["list", "read", "open", "quickstart"]
 
 /// Tools that change files.
 private let editingTools: Set<String> = ["Edit", "MultiEdit", "Write", "NotebookEdit"]
@@ -219,6 +256,7 @@ extension HookEvent {
     public var effect: HookEffect {
         var effect = sessionEffect
         effect.designs = designs
+        effect.publishesDesign = publishesDesign
         return effect
     }
 

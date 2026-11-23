@@ -47,7 +47,7 @@ private struct PreviewBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            status
+            GlossStatus(session: preview.session)
             TextField("http://localhost:3000", text: $text)
                 .textFieldStyle(.plain)
                 .font(.mono(11.5))
@@ -93,21 +93,6 @@ private struct PreviewBar: View {
         }
     }
 
-    @ViewBuilder private var status: some View {
-        let (label, color, help): (String, Color, String) = switch preview.session {
-        case .none: ("Gloss", Theme.edgeStrong, "No Gloss session")
-        case .starting: ("Starting", Theme.sky400, "Starting a Gloss session")
-        case .live: ("Gloss", Color(hex: 0x10B981), "Under review: Claude's `gloss wait` gets the rounds you submit")
-        case .ended: ("Ended", Theme.edgeStrong, "The Gloss session has ended")
-        case let .failed(why): ("Gloss failed", Color(hex: 0xF87171), why)
-        }
-        HStack(spacing: 6) {
-            Circle().fill(color).frame(width: 7, height: 7)
-            Text(label).font(.geist(12, .medium)).foregroundStyle(Theme.muted)
-        }
-        .fixedSize()
-        .help(help)
-    }
 
     /// A bare `localhost:3000` is taken to mean http, as `gloss open` takes it.
     private func go() {
@@ -121,9 +106,32 @@ private struct PreviewBar: View {
     }
 }
 
+/// How the page's Gloss session stands.
+struct GlossStatus: View {
+    let session: Preview.Session
+    /// What Claude runs to take the rounds.
+    var wait = "gloss wait"
+
+    var body: some View {
+        let (label, color, help): (String, Color, String) = switch session {
+        case .none: ("Gloss", Theme.edgeStrong, "No Gloss session")
+        case .starting: ("Starting", Theme.sky400, "Starting a Gloss session")
+        case .live: ("Gloss", Color(hex: 0x10B981), "Under review: Claude's `\(wait)` gets the rounds you submit")
+        case .ended: ("Ended", Theme.edgeStrong, "The Gloss session has ended")
+        case let .failed(why): ("Gloss failed", Color(hex: 0xF87171), why)
+        }
+        HStack(spacing: 6) {
+            Circle().fill(color).frame(width: 7, height: 7)
+            Text(label).font(.geist(12, .medium)).foregroundStyle(Theme.muted)
+        }
+        .fixedSize()
+        .help(help)
+    }
+}
+
 /// Holds the card's web view. It lives in `Previews`, so switching tabs and
 /// cards keeps the page as it was.
-private struct WebViewHost: NSViewRepresentable {
+struct WebViewHost: NSViewRepresentable {
     let webView: WKWebView
 
     func makeNSView(context: Context) -> NSView {

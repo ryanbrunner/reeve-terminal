@@ -12,6 +12,12 @@ struct ShellEnvironment: Sendable {
     /// Gloss, for the Preview tab. Nil when it isn't installed.
     let glossPath: String?
     let path: String?
+    /// That Gloss can show its sessions in Reeve, rather than in a window of
+    /// its own: what a design card needs to be told to take feedback there.
+    var glossHosts = false
+    /// How the card's Claude runs that Gloss: `gloss`, as its PATH finds it,
+    /// or the one `REEVE_GLOSS` chose, by its path.
+    var glossCommand = "gloss"
 
     static func load() async -> ShellEnvironment {
         let shell = ProcessInfo.processInfo.environment["SHELL"].flatMap { $0.isEmpty ? nil : $0 } ?? "/bin/zsh"
@@ -28,15 +34,20 @@ struct ShellEnvironment: Sendable {
             path = lines.last(where: { $0.contains(":") })
         }
         // A gloss of your own choosing, such as a checkout's bin/gloss.js.
-        if let chosen = ProcessInfo.processInfo.environment["REEVE_GLOSS"], !chosen.isEmpty {
-            gloss = chosen
-        }
+        let chosen = ProcessInfo.processInfo.environment["REEVE_GLOSS"].flatMap { $0.isEmpty ? nil : $0 }
+        if let chosen { gloss = chosen }
         if claude == nil {
             let home = FileManager.default.homeDirectoryForCurrentUser.path
             claude = ["\(home)/.local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude", "\(home)/.claude/local/claude"]
                 .first { FileManager.default.isExecutableFile(atPath: $0) }
         }
-        return ShellEnvironment(shell: shell, claudePath: claude, glossPath: gloss, path: path)
+        var env = ShellEnvironment(shell: shell, claudePath: claude, glossPath: gloss, path: path)
+        if let chosen { env.glossCommand = Launch.shellQuote(chosen) }
+        if let gloss {
+            let version = try? await Subprocess.run(gloss, ["--version"], environment: env.baseEnvironment, timeout: 15)
+            env.glossHosts = version.map { $0.status == 0 && Gloss.canBeHosted(version: String(decoding: $0.stdout, as: UTF8.self)) } ?? false
+        }
+        return env
     }
 
     /// Reeve's environment with the person's PATH, for the processes it starts.

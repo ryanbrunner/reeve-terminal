@@ -84,6 +84,8 @@ final class Board: ObservableObject {
 
     let terminals = Terminals()
     let previews = Previews()
+    /// Each card's Design tab: the design on show, in a Gloss session of its own.
+    let designViews = Previews(sessionName: Gloss.designSession)
     /// The field above the board that runs a request through `reeve`.
     let commandBar = CommandBarRunner()
     /// Claude Code is showing a dialog on these cards — a permission prompt,
@@ -529,16 +531,45 @@ final class Board: ObservableObject {
         if preview.isRunning { preview.navigate(url) } else { preview.open(url, cwd: card.cwd, env: env) }
     }
 
+    /// Shows `url`, one of the card's designs, in its Design tab, in the
+    /// tab's Gloss session if one is up.
+    func showDesign(_ id: UUID, url: URL) {
+        designViews.preview(for: id).navigate(url)
+    }
+
+    /// Starts a Gloss session on the design the card's Design tab shows, for
+    /// Claude's `gloss wait --name design`.
+    func reviewDesign(_ id: UUID, url: URL) {
+        guard let card = card(id), let env = environment else { return }
+        designViews.preview(for: id).open(url, cwd: card.cwd, env: env)
+    }
+
+    /// Claude published a design: a new one goes on show in the Design tab,
+    /// and one published over is shown afresh. In a Gloss session,
+    /// `gloss open` and `gloss ready` move and reload the page instead.
+    private func designsShared(_ id: UUID) {
+        // The one just shared is the newest.
+        guard let view = designViews.existing(id), view.session != .live, view.session != .starting,
+              let newest = card(id)?.designs?.first, let url = URL(string: newest.url) else { return }
+        if view.requested == url { view.reload() } else { view.navigate(url) }
+    }
+
     /// A `gloss open` in the card, asking to show its page here rather than in
-    /// a window of Gloss's own. Gloss opens its window instead if this says no.
+    /// a window of Gloss's own: the Preview tab's session, or with `--name
+    /// design` the Design tab's. Gloss opens its window instead if this says no.
     private func hostGloss(_ id: UUID, _ body: Data, respond: @escaping (String?) -> Void) {
         guard card(id) != nil else { return respond("no such card") }
         guard let request = try? JSONDecoder().decode(Gloss.OpenRequest.self, from: body),
               let url = URL(string: request.url) else { return respond("Reeve could not read the request") }
-        guard request.name.isEmpty else { return respond("a card's preview holds one session, without --name") }
+        let (views, tab): (Previews, CardTab)
+        switch request.name {
+        case "": (views, tab) = (previews, .preview)
+        case Gloss.designSession: (views, tab) = (designViews, .design)
+        default: return respond("a card holds two sessions: its Preview tab's, without --name, and its Design tab's, --name \(Gloss.designSession)")
+        }
         guard let env = environment else { return respond("Reeve is still starting") }
-        previews.preview(for: id).open(url, cwd: request.cwd, live: request.live, env: env) { [weak self] error in
-            if error == nil { self?.tabs[id] = .preview }
+        views.preview(for: id).open(url, cwd: request.cwd, live: request.live, env: env) { [weak self] error in
+            if error == nil { self?.show(tab, for: id) }
             respond(error)
         }
     }
@@ -688,6 +719,7 @@ final class Board: ObservableObject {
         }
         terminals.close(id)
         previews.close(id)
+        designViews.close(id)
         // Only ever a worktree Reeve made: a card without one works in the
         // person's own folder.
         if let closing, let path = closing.worktreePath, let repo = closing.repoPath {
@@ -902,6 +934,7 @@ final class Board: ObservableObject {
     func shutdown() {
         terminals.stopAll()
         previews.stopAll()
+        designViews.stopAll()
         server?.stop()
         ServerInfo.remove(dataDir: dataDir, pid: ProcessInfo.processInfo.processIdentifier)
         save()
@@ -1063,6 +1096,7 @@ final class Board: ObservableObject {
         let showing = selectedId == cardId ? tab(cardId) : nil
         if effect.plan != nil, showing != .plan { unseenPlans.insert(cardId) }
         if newDesign, showing != .design { unseenDesigns.insert(cardId) }
+        if effect.publishesDesign { designsShared(cardId) }
         if showing == .changes, event.hookEventName == "PostToolUse" || event.hookEventName == "Stop" {
             changeTicks[cardId, default: 0] += 1
         }
