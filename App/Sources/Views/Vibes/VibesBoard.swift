@@ -262,7 +262,7 @@ private struct VibesCardSlot: View {
         let left = Vibe.hash(card.id.uuidString + card.stage.rawValue) < 0.5
         TimelineView(.animation(paused: still)) { context in
             let w = still ? 0.5 : Vibe.swing(context.date, 1.1, delay: delay)
-            CardFace(card: card, selected: card.id == board.selectedId, vibes: true, stamped: stamped)
+            CardFace(card: card, selected: card.id == board.cameBackFrom, vibes: true, stamped: stamped)
                 .hueRotation(.degrees(still || card.shippedAt != nil ? 0 : 360 * Vibe.phase(context.date, 1.8, delay: delay)))
                 .rotationEffect(.degrees(-1.2 + 2.4 * w))
                 .offset(y: -2 + 4 * w)

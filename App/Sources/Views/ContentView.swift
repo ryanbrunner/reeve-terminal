@@ -1,8 +1,9 @@
 import ReeveKit
 import SwiftUI
 
-/// The window: the board, filling it. Opening a card lays its terminal over
-/// the board; closing it goes back to the board and leaves the session running.
+/// The window: the header, and under it the board or the open card. Opening
+/// a card goes to its page; Back goes to the board and leaves the session
+/// running.
 struct ContentView: View {
     @EnvironmentObject var board: Board
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -10,7 +11,7 @@ struct ContentView: View {
     /// In VIBES MODE the lights go behind and in front of the stage, which
     /// jolts and shakes. The open card is a sibling of all of it, above the
     /// lights and outside every transform: anything that moved the terminal
-    /// would resize its PTY.
+    /// would resize its PTY. It starts under the header, which stays usable.
     var body: some View {
         let vibes = board.vibes != nil
         ZStack {
@@ -28,14 +29,20 @@ struct ContentView: View {
                 .overlay(alignment: .bottom) {
                     if let ledger = board.vibes { VibesHud(ledger: ledger, beat: board.shipBeat) }
                 }
+                // Still there under the open card, so going back finds it
+                // scrolled where it was, but out of reach until then.
+                .accessibilityHidden(board.selected != nil)
             }
             .modifier(VibesStage(on: vibes, beat: board.shipBeat))
             if vibes { VibesLightsOver(beat: board.shipBeat) }
             if board.vibesArming { VibesArming(options: board.vibesOptions) }
             ZStack {
                 if let card = board.selected {
-                    CardModal(card: card)
-                        .transition(.opacity)
+                    VStack(spacing: 0) {
+                        Color.clear.frame(height: Header.height).allowsHitTesting(false)
+                        CardPage(card: card)
+                    }
+                    .transition(.opacity)
                 }
             }
             // Opacity only: the terminal's frame never animates, since every
@@ -61,6 +68,9 @@ struct ContentView: View {
 private struct Header: View {
     @EnvironmentObject var board: Board
 
+    /// Its height, which the open card starts under.
+    static let height: CGFloat = 48
+
     var body: some View {
         let vibes = board.vibes != nil
         HStack(spacing: 10) {
@@ -83,7 +93,11 @@ private struct Header: View {
             }
             // Quiet until it is hovered: the one control here that changes
             // what Reeve is rather than what it shows.
-            VibesSwitch(on: vibes) { board.toggleVibes() }
+            // VIBES MODE plays out on the board, so it goes there to watch.
+            VibesSwitch(on: vibes) {
+                if board.selected != nil { board.dismissOpenCard() }
+                board.toggleVibes()
+            }
             let scheduled = board.schedules.filter(\.enabled).count
             Button(scheduled == 0 ? "Schedules" : "Schedules \(scheduled)") { board.showingSchedules = true }
                 .buttonStyle(SecondaryButtonStyle())
@@ -96,7 +110,7 @@ private struct Header: View {
         // Clear of the traffic lights, which sit over the header.
         .padding(.leading, 84)
         .padding(.trailing, 14)
-        .frame(height: 48)
+        .frame(height: Self.height)
         .background(vibes ? Vibe.ground.opacity(0.85) : .clear)
         .overlay(alignment: .bottom) {
             if vibes {

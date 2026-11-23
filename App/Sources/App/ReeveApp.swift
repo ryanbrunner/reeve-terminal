@@ -124,7 +124,10 @@ struct BoardCommands: Commands {
             }
         }
         CommandMenu("Vibes") {
-            Toggle("Vibes Mode", isOn: Binding(get: { board.vibes != nil }, set: { _ in board.toggleVibes() }))
+            Toggle("Vibes Mode", isOn: Binding(get: { board.vibes != nil }, set: { _ in
+                if board.selected != nil { board.dismissOpenCard() }
+                board.toggleVibes()
+            }))
                 .keyboardShortcut("v", modifiers: [.command, .shift])
             Divider()
             Toggle("Skip Planning", isOn: $board.vibesOptions.skipPlanning)

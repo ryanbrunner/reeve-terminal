@@ -39,6 +39,8 @@ struct CommandBarField: View {
         .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(focused ? Theme.sky600 : Theme.edge))
         .frame(minWidth: 220, maxWidth: 520)
         .onChange(of: bar.focusTick) { focused = true }
+        // Its answer shows over the board, so asking goes back there.
+        .onChange(of: focused) { if focused, board.selected != nil { board.dismissOpenCard() } }
     }
 }
 

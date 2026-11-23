@@ -113,12 +113,13 @@ struct CardFace: View {
             if stamped { ShippedStamp(merged: card.merged == true) }
         }
         .clipShape(RoundedRectangle(cornerRadius: 6))
-        // The open card is ringed, the way the web board rings a traced
-        // dependency: an outline, so the activity's border keeps its colour.
+        // The card just come back from is ringed, the way the web board
+        // rings a traced dependency: an outline, so the activity's border
+        // keeps its colour. It fades once you have found your place.
         .overlay {
-            if selected {
-                RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.sky400, lineWidth: 1.5).padding(-3)
-            }
+            RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.sky400, lineWidth: 1.5).padding(-3)
+                .opacity(selected ? 1 : 0)
+                .animation(.easeOut(duration: 0.4), value: selected)
         }
         .rotationEffect(.degrees(dragging ? 2 : 0))
         .shadow(color: .black.opacity(dragging ? 0.4 : 0), radius: 12, y: 6)

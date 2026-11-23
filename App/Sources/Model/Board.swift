@@ -29,8 +29,11 @@ final class Board: ObservableObject {
     @Published var pickedRepoId: UUID? {
         didSet { Preferences.store.set(pickedRepoId?.uuidString, forKey: "newCardRepo") }
     }
-    /// The card open over the board, if any.
+    /// The open card, in place of the board, if any.
     @Published var selectedId: UUID?
+    /// The card just gone back from, ringed on the board for a moment so
+    /// going back lands where you left.
+    @Published private(set) var cameBackFrom: UUID?
     /// Cards whose terminal has a live `claude` in it.
     @Published private(set) var live: Set<UUID> = []
     /// Cards Claude is working out the column of right now.
@@ -441,6 +444,7 @@ final class Board: ObservableObject {
 
     func select(_ id: UUID) {
         selectedId = id
+        cameBackFrom = nil
         refreshPullRequest(id)
         // What it waits on may have merged since the board last asked.
         if let blocker = blocker(of: id) { refreshPullRequest(blocker.id) }
@@ -455,6 +459,12 @@ final class Board: ObservableObject {
 
     /// Back to the board. The card's session keeps running.
     func dismissOpenCard() {
+        if let id = selectedId {
+            cameBackFrom = id
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                if self?.cameBackFrom == id { self?.cameBackFrom = nil }
+            }
+        }
         selectedId = nil
         save()
         // Nobody is typing into it any more, so VIBES MODE can.

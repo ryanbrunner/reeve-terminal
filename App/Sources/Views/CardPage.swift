@@ -22,74 +22,57 @@ enum CardTab: String, CaseIterable, Identifiable {
     }
 }
 
-/// The open card, over the board: the real Claude Code, where the work
+/// The open card, in place of the board: the real Claude Code, where the work
 /// happens, with its plan, its changes and its preview a tab away.
 ///
-/// Esc, the close button, ⌘B or a click outside goes back to the board. In a
-/// live terminal Esc belongs to Claude Code, where it interrupts a turn.
-struct CardModal: View {
+/// Board in its bar, ⌘B or Esc goes back to the board. In a live terminal Esc
+/// belongs to Claude Code, where it interrupts a turn.
+struct CardPage: View {
     @EnvironmentObject var board: Board
     let card: Card
 
     var body: some View {
         let tab = board.tab(card.id)
-        ZStack {
-            // Swallows clicks, drags and right-clicks meant for the cards behind.
-            Color.black.opacity(0.55)
-                .contentShape(Rectangle())
-                .onTapGesture { board.dismissOpenCard() }
-            VStack(spacing: 0) {
-                TerminalHeader(card: card)
-                if card.queued == true {
-                    // No worktree and no session: no terminal, plan or
-                    // changes yet, only a way to start it.
-                    BacklogPanel(card: card)
-                } else {
-                    CardTabBar(card: card, selected: tab)
-                    ZStack {
-                        // Always mounted, so the terminal keeps its size: every
-                        // resize makes `claude` redraw. The other tabs cover it.
-                        TerminalHost(cardId: card.id, focused: tab == .terminal)
-                            .padding(.leading, 10)
-                            .padding(.top, 6)
-                            .background(Theme.ink)
-                            .overlay {
-                                if tab == .terminal, !board.live.contains(card.id) {
-                                    SleepingOverlay(card: card)
-                                }
+        VStack(spacing: 0) {
+            CardBar(card: card)
+            if card.queued == true {
+                // No worktree and no session: no terminal, plan or
+                // changes yet, only a way to start it.
+                BacklogPanel(card: card)
+            } else {
+                CardTabBar(card: card, selected: tab)
+                ZStack {
+                    // Always mounted, so the terminal keeps its size: every
+                    // resize makes `claude` redraw. The other tabs cover it.
+                    TerminalHost(cardId: card.id, focused: tab == .terminal)
+                        .padding(.leading, 10)
+                        .padding(.top, 6)
+                        .background(Theme.ink)
+                        .overlay {
+                            if tab == .terminal, !board.live.contains(card.id) {
+                                SleepingOverlay(card: card)
                             }
-                        switch tab {
-                        case .terminal:
-                            EmptyView()
-                        case .plan:
-                            PlanView(card: card).id(card.id)
-                        case .changes:
-                            ChangesView(card: card).id(card.id)
-                        case .preview:
-                            PreviewView(card: card, preview: board.previews.preview(for: card.id)).id(card.id)
-                        case .prs:
-                            PullRequestsView(card: card).id(card.id)
-                        case .design:
-                            DesignView(card: card, viewer: board.designViews.preview(for: card.id)).id(card.id)
                         }
+                    switch tab {
+                    case .terminal:
+                        EmptyView()
+                    case .plan:
+                        PlanView(card: card).id(card.id)
+                    case .changes:
+                        ChangesView(card: card).id(card.id)
+                    case .preview:
+                        PreviewView(card: card, preview: board.previews.preview(for: card.id)).id(card.id)
+                    case .prs:
+                        PullRequestsView(card: card).id(card.id)
+                    case .design:
+                        DesignView(card: card, viewer: board.designViews.preview(for: card.id)).id(card.id)
                     }
                 }
             }
-            .background(Theme.ink)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.edgeStrong))
-            // A card that is going to ship itself wears the rainbow open too.
-            // An overlay, so the terminal's frame is untouched.
-            .overlay {
-                if board.inVibes(card) {
-                    FlowingRainbow(period: 2.4)
-                        .mask(RoundedRectangle(cornerRadius: 10).strokeBorder(lineWidth: 2))
-                        .allowsHitTesting(false)
-                }
-            }
-            .shadow(color: .black.opacity(0.5), radius: 24, y: 8)
-            .padding(28)
         }
+        .background(Theme.ink)
+        // Swallows clicks, drags and right-clicks meant for the board behind.
+        .contentShape(Rectangle())
         .modifier(EscapeGoesBack())
     }
 }
@@ -145,14 +128,33 @@ private struct EscapeGoesBack: ViewModifier {
     }
 }
 
-/// A line over the terminal naming the open card and where it is.
-private struct TerminalHeader: View {
+/// The open card's bar: the way back to the board, where the card is on it,
+/// and its neighbours either side.
+private struct CardBar: View {
     @EnvironmentObject var board: Board
     let card: Card
 
     var body: some View {
         let tone = GlowTone(card.activity)
         HStack(spacing: 10) {
+            Button {
+                board.dismissOpenCard()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
+                    Text("Board").font(.geist(13, .medium))
+                    Text("⌘B").font(.mono(11)).foregroundStyle(Theme.muted)
+                }
+                .foregroundStyle(Theme.textSoft)
+            }
+            .buttonStyle(SecondaryButtonStyle())
+            .help("Back to the board (⌘B). The session keeps running.")
+            // Where it is on the board: its lane, when there is more than
+            // one, and its column. Either goes back to the board too.
+            if board.lanes.count > 1 {
+                crumb(board.lane(of: card).name, dot: nil)
+            }
+            crumb(card.stage.label, dot: card.stage.tint)
             Circle()
                 .fill(tone?.mark ?? Theme.edgeStrong)
                 .frame(width: 7, height: 7)
@@ -161,7 +163,7 @@ private struct TerminalHeader: View {
                 .font(.geist(13, .medium))
                 .foregroundStyle(Theme.text)
                 .lineLimit(1)
-            SectionLabel(text: card.stage.label)
+                .layoutPriority(1)
             if let line = card.backgroundLine {
                 Text(line).font(.geist(12)).foregroundStyle(Theme.indigo200.opacity(0.85)).lineLimit(1)
             } else if let waiting = card.waitingOn {
@@ -192,19 +194,41 @@ private struct TerminalHeader: View {
             .menuIndicator(.hidden)
             .fixedSize()
             .help("Card actions")
+            Neighbours(card: card)
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 42)
+        .background(Theme.panel)
+        // The card's light, now there is no frame round it to wear it: the
+        // rainbow if it is going to ship itself, the rail while Claude works.
+        .overlay(alignment: .bottom) {
+            if board.inVibes(card) {
+                FlowingRainbow(period: 2.4).frame(height: 2)
+            } else if card.activity == .running {
+                RunningRail()
+            } else {
+                Rectangle().fill(Theme.edge).frame(height: 1)
+            }
+        }
+    }
+
+    /// A step of the bar's trail: a way back to the board, under its name.
+    private func crumb(_ name: String, dot: Color?) -> some View {
+        HStack(spacing: 8) {
             Button {
                 board.dismissOpenCard()
             } label: {
-                Image(systemName: "xmark").font(.system(size: 11, weight: .semibold))
+                HStack(spacing: 6) {
+                    if let dot { Circle().fill(dot).frame(width: 6, height: 6) }
+                    SectionLabel(text: name)
+                }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(Theme.muted)
-            .help("Back to the board (⌘B). The session keeps running.")
+            .help("Back to the board (⌘B)")
+            Text("/").font(.geist(13)).foregroundStyle(Theme.edgeStrong)
         }
-        .padding(.horizontal, 14)
-        .frame(height: 36)
-        .background(Theme.panel)
-        .overlay(alignment: .bottom) { Rectangle().fill(Theme.edge).frame(height: 1) }
+        .fixedSize()
     }
 
     private func abbreviate(_ path: String) -> String {
@@ -213,7 +237,46 @@ private struct TerminalHeader: View {
     }
 }
 
-/// The open card's tabs, under its header.
+/// The cards either side of the open one, in board order, as Next Card and
+/// Previous Card go, and where this one falls among them.
+private struct Neighbours: View {
+    @EnvironmentObject var board: Board
+    let card: Card
+
+    var body: some View {
+        let order = board.ordered
+        if order.count > 1, let at = order.firstIndex(where: { $0.id == card.id }) {
+            Rectangle().fill(Theme.edge).frame(width: 1, height: 16)
+            HStack(spacing: 2) {
+                step("chevron.left", label: "Previous card", key: "⇧⌘[", by: -1)
+                Text("\(at + 1) of \(order.count)")
+                    .font(.mono(11))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.muted)
+                    .frame(minWidth: 44)
+                step("chevron.right", label: "Next card", key: "⇧⌘]", by: 1)
+            }
+            .fixedSize()
+        }
+    }
+
+    private func step(_ symbol: String, label: String, key: String, by offset: Int) -> some View {
+        Button {
+            board.selectOffset(offset)
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Theme.muted)
+        .help("\(label) (\(key))")
+        .accessibilityLabel(label)
+    }
+}
+
+/// The open card's tabs, under its bar.
 private struct CardTabBar: View {
     @EnvironmentObject var board: Board
     let card: Card
@@ -321,7 +384,7 @@ private struct BacklogPanel: View {
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 460)
             } else {
-                Text("Or drag it to Design, Planning or In Progress.")
+                Text("Or go back to the board and drag it to Design, Planning or In Progress.")
                     .font(.geist(11))
                     .foregroundStyle(Theme.muted.opacity(0.8))
             }
