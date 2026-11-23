@@ -180,6 +180,8 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     public var ideasAsked: Bool?
     /// The card VIBES MODE thought of this one after, when it did.
     public var ideaFrom: UUID?
+    /// The schedule that made the card, whose run it is.
+    public var scheduleId: UUID?
     /// When the card was cleaned up into the archive. Nil for a card on the board.
     public var archivedAt: Date?
     public var createdAt: Date
