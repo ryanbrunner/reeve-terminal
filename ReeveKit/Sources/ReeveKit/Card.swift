@@ -36,7 +36,7 @@ public enum Stage: String, Codable, CaseIterable, Identifiable, Comparable, Send
 public enum Activity: String, Codable, Sendable {
     /// Nothing has happened, or the session has exited.
     case idle
-    /// Claude is working on a turn.
+    /// Claude is working on a turn, or its background subagents are.
     case running
     /// Claude finished its turn and has something to look at.
     case needsReview = "needs_review"

@@ -84,7 +84,7 @@ struct NewCardField: View {
             if !board.availableRepos.isEmpty { Divider() }
             Button("Add Repo…", action: addRepo)
         } label: {
-            Text(repo?.name ?? "Add a repo…").font(.geist(11))
+            Text(repo?.name ?? "Add a repo…").font(.geist(11)).lineLimit(1).truncationMode(.middle)
         }
         .modifier(MenuChip(muted: repo == nil))
         .help(repo?.path ?? "The repo the card works in")
@@ -157,7 +157,8 @@ struct MenuChip: ViewModifier {
             .font(.geist(11))
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
-            .fixedSize()
+            .fixedSize(horizontal: false, vertical: true)
+            .lineLimit(1)
             .foregroundStyle(muted ? Theme.muted : Theme.textSoft)
             .padding(.horizontal, 7)
             .frame(height: 20)

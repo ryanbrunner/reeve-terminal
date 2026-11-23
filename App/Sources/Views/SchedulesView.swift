@@ -342,6 +342,7 @@ private struct ScheduleEditor: View {
                 .font(.geist(11))
         }
         .modifier(MenuChip(muted: repo == nil))
+        .fixedSize()
         .help(draft.repoPath.isEmpty ? "The repo each run's card works in" : draft.repoPath)
     }
 
@@ -355,6 +356,7 @@ private struct ScheduleEditor: View {
             Text(lane.name).font(.geist(11))
         }
         .modifier(MenuChip(muted: false))
+        .fixedSize()
         .help("The swimlane each run's card goes in")
     }
 
