@@ -423,8 +423,9 @@ on one `REEVE_DATA_DIR` to see the list kept.
 
 `REEVE_SMOKE_MODE=commandbar` asks the command bar to add a card in
 `REEVE_SMOKE_DIR` (or `REEVE_SMOKE_PROMPT`), then how the board stands, then
-for something it may not do, and checks the card started in that repo and
-nothing was closed. Claude takes real turns.
+for something it may not do, then to close the card by name. It checks the
+card started in that repo, that nothing was closed until asked, and that the
+named card closed. Claude takes real turns.
 
 `REEVE_SMOKE_MODE=preview` checks the Preview tab instead, without Claude
 taking a turn. It makes a card with no prompt, then does what the card's
