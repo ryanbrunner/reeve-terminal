@@ -51,6 +51,9 @@ struct ContentView: View {
         .sheet(isPresented: $board.showingArchive) {
             ArchiveView().environmentObject(board)
         }
+        .sheet(isPresented: $board.showingSchedules) {
+            SchedulesView().environmentObject(board)
+        }
         .preferredColorScheme(.dark)
     }
 }
@@ -81,6 +84,10 @@ private struct Header: View {
             // Quiet until it is hovered: the one control here that changes
             // what Reeve is rather than what it shows.
             VibesSwitch(on: vibes) { board.toggleVibes() }
+            let scheduled = board.schedules.filter(\.enabled).count
+            Button(scheduled == 0 ? "Schedules" : "Schedules \(scheduled)") { board.showingSchedules = true }
+                .buttonStyle(SecondaryButtonStyle())
+                .help("Work that starts itself on a schedule")
             Button(board.archive.isEmpty ? "Archive" : "Archive \(board.archive.count)") { board.showingArchive = true }
                 .buttonStyle(SecondaryButtonStyle())
             Button("New Card") { board.compose() }

@@ -77,15 +77,25 @@ import Testing
     }
 
     @Test func stopWithBackgroundShellsIsWaiting() throws {
-        let e = try event(#"{"session_id":"s","hook_event_name":"Stop","last_assistant_message":"I'll report back.","background_tasks":[{"id":"a1","type":"subagent","status":"running","description":"Explore hooks","agent_type":"Explore"},{"id":"b1","type":"shell","status":"running","description":"swift test","command":"swift test"}]}"#)
+        let e = try event(#"{"session_id":"s","hook_event_name":"Stop","last_assistant_message":"I'll report back.","background_tasks":[{"id":"m1","type":"monitor","status":"running"},{"id":"b1","type":"shell","status":"running","description":"swift test","command":"swift test"}]}"#)
         #expect(e.effect.activity == .waiting)
         #expect(e.effect.classify)
         #expect(e.effect.waitingOn == .some(nil))
         #expect(e.effect.background == [BackgroundWork(id: "b1", type: "shell", description: "swift test")])
     }
 
-    @Test func stopWithOnlyAgentsAndMonitorsIsReview() throws {
-        let e = try event(#"{"session_id":"s","hook_event_name":"Stop","background_tasks":[{"id":"a1","type":"subagent","status":"running","description":"Explore hooks","agent_type":"Explore"},{"id":"w1","type":"workflow","status":"running"},{"id":"m1","type":"monitor","status":"running","description":"watch logs"}]}"#)
+    @Test func stopWithBackgroundAgentsKeepsRunning() throws {
+        for task in [#"{"id":"a1","type":"subagent","status":"running","agent_type":"Explore"}"#, #"{"id":"w1","type":"workflow","status":"running"}"#] {
+            let e = try event(#"{"session_id":"s","hook_event_name":"Stop","last_assistant_message":"I'll report back.","background_tasks":["# + task + #",{"id":"b1","type":"shell","status":"running"}]}"#)
+            #expect(e.effect.activity == .running)
+            #expect(e.effect.waitingOn == .some(nil))
+            #expect(e.effect.classify)
+            #expect(e.effect.background == [])
+        }
+    }
+
+    @Test func stopWithOnlyMonitorsIsReview() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"Stop","background_tasks":[{"id":"m1","type":"monitor","status":"running","description":"watch logs"},{"id":"t1","type":"teammate","status":"running"}]}"#)
         #expect(e.effect.activity == .needsReview)
         #expect(e.effect.background == [])
     }

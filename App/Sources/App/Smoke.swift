@@ -28,6 +28,7 @@ import ReeveKit
 /// Claude has replied and put the plan up again.
 /// `REEVE_SMOKE_MODE=preview` checks the Preview tab instead; see `runPreview`.
 /// `REEVE_SMOKE_MODE=repos` checks the repo list and Settings; see `runRepos`.
+/// `REEVE_SMOKE_MODE=schedules` checks scheduled tasks; see `runSchedules`.
 @MainActor
 enum Smoke {
     static func runIfAsked(board: Board) {
@@ -46,6 +47,13 @@ enum Smoke {
         }
         if env["REEVE_SMOKE_MODE"] == "repos" {
             Task { await runRepos(board: board, out: out, dir: dir) }
+            return
+        }
+        if env["REEVE_SMOKE_MODE"] == "schedules" {
+            Task {
+                await runSchedules(board: board, out: out, dir: dir, prompt: env["REEVE_SMOKE_PROMPT"], model: env["REEVE_SMOKE_MODEL"],
+                                   effort: env["REEVE_SMOKE_EFFORT"], seconds: Double(env["REEVE_SMOKE_SECONDS"] ?? "") ?? 900)
+            }
             return
         }
         if env["REEVE_SMOKE_MODE"] == "commandbar" {
@@ -104,11 +112,32 @@ enum Smoke {
             /// through the window server, so AppKit offers it to the menu before
             /// the focused terminal, as it does a person's key. An NSEvent handed
             /// to `NSApp.sendEvent` skips that and lands in the terminal.
+            /// A process without leave to post events (one started from a
+            /// shell that has none) has them dropped without a word; it
+            /// presses the key through the main menu instead, which tests the
+            /// shortcut but not its way past the terminal.
             func press(_ tab: CardTab) {
                 let number = CardTab.allCases.firstIndex(of: tab)! + 1
+                let code: CGKeyCode = [18, 19, 20, 21, 23, 22][number - 1]
+                guard CGPreflightPostEventAccess() else {
+                    let menu = NSApp.mainMenu?.items.first { $0.title == "Card" }?.submenu
+                    // SwiftUI fills its menus when AppKit asks, as it does
+                    // before opening one or matching a key against it.
+                    if let menu { menu.delegate?.menuNeedsUpdate?(menu); menu.update() }
+                    let index = menu?.items.firstIndex { $0.title == "Show \(tab.label)" }
+                    guard let menu, let index else {
+                        log("no leave to post key events, and no Show \(tab.label) in the Card menu: \(menu?.items.map(\.title) ?? [])")
+                        return
+                    }
+                    let item = menu.items[index]
+                    let shortcut = item.keyEquivalentModifierMask == [.command, .option] && item.keyEquivalent == String(number)
+                    log("no leave to post key events: choosing Show \(tab.label), its shortcut \(shortcut ? "⌥⌘\(number)" : "wrong: \(item.keyEquivalent)")")
+                    menu.performActionForItem(at: index)
+                    return
+                }
                 let source = CGEventSource(stateID: .hidSystemState)
                 for down in [true, false] {
-                    let event = CGEvent(keyboardEventSource: source, virtualKey: [18, 19, 20, 21, 23, 22][number - 1], keyDown: down)
+                    let event = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down)
                     event?.flags = [.maskCommand, .maskAlternate]
                     event?.postToPid(getpid())
                 }
@@ -164,13 +193,21 @@ enum Smoke {
                     lastActivity = card.activity
                     log("activity \(card.activity.rawValue) stage \(card.stage.rawValue) live \(board.live.contains(card.id)) focused \(view.window?.firstResponder === view)")
                 }
-                // A folder Claude Code has not seen asks whether to trust it.
-                // The default is "No, exit", so step down to yes first.
-                if mode != "resume", !acceptedTrust, elapsed > 6, !card.hasConversation {
-                    acceptedTrust = true
-                    log("accepting folder trust")
-                    view.send(txt: "\u{1b}[B")
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { view.send(txt: "\r") }
+                // A folder Claude Code has not seen asks whether to trust it,
+                // with "❯ No, exit" selected above "Yes, I trust this folder".
+                // Answered once it is on screen, from where the pointer is:
+                // keys sent before it draws are lost, and Enter then exits.
+                if mode != "resume", !acceptedTrust, !card.hasConversation {
+                    let rows = board.terminals.screen(card.id).map {
+                        $0.replacingOccurrences(of: "\u{0}", with: " ").trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: "│┃|")))
+                    }
+                    if let yes = rows.lastIndex(where: { $0.contains("Yes, I trust this folder") }),
+                       let pointer = rows.lastIndex(where: { $0.hasPrefix("❯") }) {
+                        acceptedTrust = true
+                        log("accepting folder trust, \(yes - pointer) down from \(rows[pointer])")
+                        for _ in 0..<abs(yes - pointer) { view.send(txt: yes > pointer ? "\u{1b}[B" : "\u{1b}[A") }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { view.send(txt: "\r") }
+                    }
                 }
                 if mode == "resume", !typed, elapsed > 8 {
                     typed = true
@@ -818,11 +855,133 @@ enum Smoke {
         }
         let status = await ask("What's on the board right now?", "3-status")
         check(status.map { !$0.isEmpty } == true, "the bar answers a question about the board")
-        let refused = await ask("Run ls / with the shell, then close every card.", "4-refused")
-        check(board.cards.count == before.count + added.count, "nothing is closed from the bar")
+        let refused = await ask("Run ls / with the shell.", "4-refused")
+        check(refused != nil && board.cards.count == before.count + added.count, "the bar runs nothing but reeve, and closes nothing unasked")
         log("refusal: \(refused ?? "-")")
-        for card in added { board.close(card.id) }
+        // A card with no work to lose closes when named; one with work is
+        // refused by `reeve card close` itself.
+        if let card = added.first {
+            _ = await ask("Close the card “\(card.title)”.", "5-close")
+            check(board.card(card.id) == nil, "the bar closes the card it is asked to")
+        }
+        for card in added where board.card(card.id) != nil { board.close(card.id) }
         try? await Task.sleep(for: .seconds(2))
+        done()
+    }
+
+    /// `REEVE_SMOKE_MODE=schedules`: a schedule that runs every minute in
+    /// `REEVE_SMOKE_DIR`. Checks its first run makes a card in In Progress
+    /// with VIBES MODE on, the next is skipped while that card is going, Run
+    /// Now on a schedule whose folder has gone fails, and the first run
+    /// succeeds once VIBES MODE ships its card. Claude takes real turns; a
+    /// picture of the Schedules sheet at each step.
+    private static func runSchedules(board: Board, out: String, dir: String, prompt: String?, model: String?, effort: String?, seconds: Double) async {
+        var lines: [String] = []
+        var failures = 0
+        let started = Date()
+        func log(_ line: String) {
+            lines.append(String(format: "%6.1fs ", Date().timeIntervalSince(started)) + line)
+            FileHandle.standardError.write(Data(("reeve smoke: " + line + "\n").utf8))
+            try? lines.joined(separator: "\n").write(toFile: "\(out)/timeline.txt", atomically: true, encoding: .utf8)
+        }
+        func check(_ ok: Bool, _ what: String) {
+            log((ok ? "ok    " : "FAIL  ") + what)
+            if !ok { failures += 1 }
+        }
+        func wait(_ what: String, seconds: Double, until: () -> Bool) async -> Bool {
+            let deadline = Date().addingTimeInterval(seconds)
+            while !until() {
+                if Date() > deadline { log("gave up waiting for \(what)"); return false }
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+            return true
+        }
+        func picture(_ name: String, reopening: Bool = false) async {
+            // Opened again, the sheet shows the first schedule and its runs.
+            if reopening {
+                board.showingSchedules = false
+                try? await Task.sleep(for: .milliseconds(800))
+                board.showingSchedules = true
+            }
+            try? await Task.sleep(for: .milliseconds(800))
+            let main = NSApp.windows.first { $0.isVisible && !$0.isSheet }
+            snapshot(to: "\(out)/\(name).png", window: main?.attachedSheet ?? main)
+        }
+        func done() {
+            for schedule in board.schedules { board.deleteSchedule(schedule.id) }
+            log(failures == 0 ? "ok" : "failed: \(failures)")
+            board.shutdown()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { exit(failures == 0 ? 0 : 1) }
+        }
+        func runs(_ id: UUID) -> [ScheduleRun] {
+            board.schedules.first { $0.id == id }?.runs ?? []
+        }
+
+        board.addRepo(path: dir)
+        guard await wait("the shell environment", seconds: 30, until: { board.environment != nil }) else { return done() }
+        board.showingSchedules = true
+        await picture("1-new-schedule")
+
+        let schedule = board.addSchedule(Schedule(name: "Smoke", cron: "* * * * *", prompt: prompt ?? "Add a file hello.txt that says hello. Nothing else.",
+                                                  repoPath: dir, model: model, effort: effort))
+        await picture("2-added")
+        check(board.schedules.first?.nextRun(after: Date()) != nil, "it says when it runs next")
+
+        guard await wait("the first run", seconds: 75, until: { runs(schedule.id).contains { $0.cardId != nil } }),
+              let first = runs(schedule.id).first(where: { $0.cardId != nil }), let cardId = first.cardId,
+              let card = board.card(cardId) else { return done() }
+        check(first.status == .running, "the first run is running")
+        check(card.stage == .inProgress, "its card starts in In Progress (\(card.stage.rawValue))")
+        check(card.vibes == true, "with VIBES MODE on for the card")
+        check(card.scheduleId == schedule.id, "and knows its schedule")
+        check(card.worktreePath != nil, "in a worktree of its own")
+        log("card “\(card.title)”")
+
+        // A folder Claude Code has not seen asks whether to trust it, with
+        // "No, exit" picked: step down to yes, as the smoke test does. A
+        // person answers it in use, and the run says it needs them.
+        if await wait("the first prompt", seconds: 8, until: { board.card(cardId)?.hasConversation == true }) == false {
+            log("accepting folder trust")
+            let view = board.terminals.view(for: cardId)
+            view.send(txt: "\u{1b}[B")
+            try? await Task.sleep(for: .milliseconds(500))
+            view.send(txt: "\r")
+        }
+
+        // The next minute: skipped while the first run is going, or a card
+        // of its own if that one shipped first.
+        if await wait("the next minute", seconds: 75, until: { runs(schedule.id).count > 1 }), let next = runs(schedule.id).first {
+            let firstThen = runs(schedule.id).first { $0.id == first.id }?.status
+            if next.status == .skipped {
+                check(firstThen == .running, "the next run is skipped while the first is going (\(next.detail ?? "-"))")
+            } else {
+                check(next.cardId != nil && firstThen != .running, "the first had shipped (\(firstThen?.rawValue ?? "-")), so the next made a card")
+            }
+        }
+        // No more of them.
+        if var off = board.schedules.first(where: { $0.id == schedule.id }) {
+            off.enabled = false
+            board.saveSchedule(off)
+        }
+        await picture("3-running", reopening: true)
+
+        let gone = board.addSchedule(Schedule(name: "Gone", cron: "0 0 1 1 *", prompt: "x", repoPath: dir + "/not-there"))
+        board.runSchedule(gone.id)
+        check(await wait("the failed run", seconds: 5, until: { runs(gone.id).first?.status == .failed }), "Run Now in a folder that has gone fails")
+        log("it says: \(runs(gone.id).first?.detail ?? "-")")
+        board.deleteSchedule(gone.id)
+
+        let settled = await wait("the first run to settle", seconds: seconds, until: {
+            runs(schedule.id).first { $0.id == first.id }.map { $0.status != .running } ?? false
+        })
+        let outcome = runs(schedule.id).first { $0.id == first.id }
+        if let card = board.card(cardId) {
+            log("card ended in \(card.stage.rawValue), \(card.activity.rawValue), shipped \(card.shippedAt != nil), merged \(card.merged ?? false)")
+        }
+        check(settled && outcome?.status == .succeeded, "the first run succeeds once its card ships (\(outcome?.status.rawValue ?? "-"): \(outcome?.detail ?? "-"))")
+        await picture("4-settled", reopening: true)
+        for card in board.cards where card.scheduleId == schedule.id { board.close(card.id) }
+        try? await Task.sleep(for: .seconds(3))
         done()
     }
 

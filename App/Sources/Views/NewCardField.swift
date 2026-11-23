@@ -84,7 +84,7 @@ struct NewCardField: View {
             if !board.availableRepos.isEmpty { Divider() }
             Button("Add Repo…", action: addRepo)
         } label: {
-            Text(repo?.name ?? "Add a repo…")
+            Text(repo?.name ?? "Add a repo…").font(.geist(11)).lineLimit(1).truncationMode(.middle)
         }
         .modifier(MenuChip(muted: repo == nil))
         .help(repo?.path ?? "The repo the card works in")
@@ -110,7 +110,7 @@ struct NewCardField: View {
 
     /// The same heat ramp the web card's effort slider uses: cool at Low,
     /// hottest at Max.
-    private static func effortTint(_ effort: String) -> Color {
+    static func effortTint(_ effort: String) -> Color {
         switch effort {
         case "low": Color(hex: 0x38BDF8)
         case "medium": Color(hex: 0x2DD4BF)
@@ -149,7 +149,7 @@ struct NewCardField: View {
 }
 
 /// A small menu under the new card's name.
-private struct MenuChip: ViewModifier {
+struct MenuChip: ViewModifier {
     let muted: Bool
 
     func body(content: Content) -> some View {
@@ -157,7 +157,8 @@ private struct MenuChip: ViewModifier {
             .font(.geist(11))
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
-            .fixedSize()
+            .fixedSize(horizontal: false, vertical: true)
+            .lineLimit(1)
             .foregroundStyle(muted ? Theme.muted : Theme.textSoft)
             .padding(.horizontal, 7)
             .frame(height: 20)
@@ -168,7 +169,7 @@ private struct MenuChip: ViewModifier {
 
 /// A slider over a few named stops, the first of which ("" — the person's own
 /// default) means nothing is pinned. Click or drag anywhere on the track.
-private struct StopSlider: View {
+struct StopSlider: View {
     let title: String
     let stops: [String]
     @Binding var selection: String

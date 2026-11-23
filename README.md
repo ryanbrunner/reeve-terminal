@@ -268,6 +268,46 @@ Under Reduce Motion the colours stay and the movement stops, except that a
 card still moves to its new column, quickly. The lights also hold still while
 a card is open, so the terminal stays quick.
 
+## Scheduled tasks
+
+Schedules in the header opens work that starts itself. A schedule is a cron
+expression, a prompt and a repo (with a lane, model and effort if you like).
+Each time it comes due, Reeve makes a card named after it and the time, in
+that repo's own worktree, straight into **In Progress** with VIBES MODE on
+for that card alone, whatever the board's switch says. The prompt is the
+first thing Claude is told.
+
+The cron is the usual five fields, minute hour day-of-month month
+day-of-week, in local time: `*`, values, ranges, lists and steps (`*/15`,
+`10-30/5`), month and weekday names (`jan`, `mon-fri`), Sunday as `0` or
+`7`, and `@hourly`, `@daily`, `@weekly`, `@monthly` and `@yearly`. Given
+both a day of month and a day of week, a day matching either runs, as in
+cron. A time the clocks skip for daylight saving doesn't run that day, and
+an hour they go back through runs once. The editor shows the next three
+times, or what is wrong. **Run Now**
+makes a card straight away.
+
+Each schedule keeps its last 50 runs:
+
+- **Running**: its card is on the board and hasn't shipped. It shows
+  **Needs you** while Claude Code is asking a person something (a
+  permission prompt still waits for one), and **Paused** when its session
+  isn't running, as after a relaunch: open the card to carry on.
+- **Succeeded**: the card shipped, as VIBES MODE counts it (merged, or with
+  Merge to Main off, its pull request is up), or its pull request merged
+  some other way.
+- **Failed**: no card could be made (the repo has gone, or git wouldn't make
+  a worktree; there is no asking about the folder, since nobody is there to
+  answer), VIBES MODE gave up on it, or it was closed before it shipped. One
+  that gave up and later ships after all turns to Succeeded.
+- **Skipped**: the last run's card hadn't shipped yet, so no new card was
+  made. Run Now doesn't wait.
+
+Reeve has to be running for a schedule to run. Times missed while it was
+closed or the Mac asleep come to one run when it is back, marked late. A
+changed cron, or a schedule turned back on, counts from then. Deleting a
+schedule leaves its cards on the board. Schedules are saved with the board.
+
 ## Build
 
 Needs Xcode (26 or newer) and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
@@ -444,8 +484,18 @@ on one `REEVE_DATA_DIR` to see the list kept.
 
 `REEVE_SMOKE_MODE=commandbar` asks the command bar to add a card in
 `REEVE_SMOKE_DIR` (or `REEVE_SMOKE_PROMPT`), then how the board stands, then
-for something it may not do, and checks the card started in that repo and
-nothing was closed. Claude takes real turns.
+for something it may not do, then to close the card by name. It checks the
+card started in that repo, that nothing was closed until asked, and that the
+named card closed. Claude takes real turns.
+
+`REEVE_SMOKE_MODE=schedules` adds a schedule that runs every minute in
+`REEVE_SMOKE_DIR` (on `REEVE_SMOKE_PROMPT`, `REEVE_SMOKE_MODEL` and
+`REEVE_SMOKE_EFFORT` if given), and checks its first run makes a card in In
+Progress with VIBES MODE on, the next is skipped while that card is going,
+Run Now on a schedule whose folder has gone fails, and the first run
+succeeds once VIBES MODE ships its card (within `REEVE_SMOKE_SECONDS`, 900
+by default). It saves a picture of the Schedules sheet at each step and a
+line per check in `timeline.txt`. Claude takes real turns.
 
 `REEVE_SMOKE_MODE=design` does the same in the Design tab, with `--name
 design`, then hands Reeve the link in `REEVE_SMOKE_DESIGN` (a claude.ai
