@@ -40,8 +40,10 @@ final class Board: ObservableObject {
     @Published private(set) var classifying: Set<UUID> = []
     /// Why the last classification of a card failed, until the next one works.
     @Published private(set) var classifyErrors: [UUID: String] = [:]
-    /// What `claude` last set as each terminal's title.
-    @Published private(set) var terminalTitles: [UUID: String] = [:]
+    /// What `claude` last set as each terminal's title. Published by hand,
+    /// only when more than its spinner changes: that turns many times a
+    /// second while Claude works, and would redraw everything watching the board.
+    private(set) var terminalTitles: [UUID: String] = [:]
     /// Which tab each open card shows. Every card starts on its terminal.
     @Published private(set) var tabs: [UUID: CardTab] = [:]
     /// Cards with a plan nobody has looked at in the Plan tab yet.
@@ -1008,6 +1010,7 @@ final class Board: ObservableObject {
     /// A card still running after its Stop is running on its subagents, with
     /// ✳ up while they work.
     private func titleChanged(_ id: UUID, _ title: String) {
+        if terminalTitles[id].map(cleanTerminalTitle) != cleanTerminalTitle(title) { objectWillChange.send() }
         terminalTitles[id] = title
         guard title.hasPrefix("\u{2733}"), card(id)?.activity == .running, !awaitingPrompt.contains(id), !stopped.contains(id) else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in

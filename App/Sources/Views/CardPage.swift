@@ -205,7 +205,8 @@ private struct CardBar: View {
             if board.inVibes(card) {
                 FlowingRainbow(period: 2.4).frame(height: 2)
             } else if card.activity == .running {
-                RunningRail()
+                // Moving: what's still is the board behind.
+                RunningRail().environment(\.vibesStill, false)
             } else {
                 Rectangle().fill(Theme.edge).frame(height: 1)
             }

@@ -242,14 +242,24 @@ private struct MarkShape: Shape {
 }
 
 /// The only thing on a card that animates: a light travelling along the
-/// bottom edge while Claude works.
+/// bottom edge while Claude works. Paused on the board behind an open card,
+/// where it would only cost the card's scrolling frames.
 struct RunningRail: View {
     /// VIBES MODE's is thicker, faster and in its colours.
     var vibes = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var travelling = false
+    @Environment(\.vibesStill) private var still
 
     var body: some View {
+        TimelineView(.animation(paused: still || reduceMotion)) { context in
+            rail(at: context.date)
+        }
+        .frame(height: vibes ? 3 : 2)
+        .clipped()
+        .accessibilityHidden(true)
+    }
+
+    private func rail(at date: Date) -> some View {
         GeometryReader { geo in
             let bar = geo.size.width * 0.4
             ZStack(alignment: .leading) {
@@ -269,16 +279,15 @@ struct RunningRail: View {
                     ], startPoint: .leading, endPoint: .trailing))
                     .frame(width: bar)
                     .shadow(color: vibes ? Vibe.r1 : Theme.sky400, radius: vibes ? 5 : 4)
-                    .offset(x: reduceMotion ? bar * 0.75 : (travelling ? bar * 2.5 : -bar))
+                    .offset(x: reduceMotion ? bar * 0.75 : -bar + bar * 3.5 * travelled(date))
             }
         }
-        .frame(height: vibes ? 3 : 2)
-        .clipped()
-        .onAppear {
-            guard !reduceMotion else { return }
-            withAnimation(.easeInOut(duration: vibes ? 0.45 : 1.6).repeatForever(autoreverses: false)) { travelling = true }
-        }
-        .accessibilityHidden(true)
+    }
+
+    /// How far through its pass the light is, eased in and out, from 0 to 1.
+    private func travelled(_ date: Date) -> Double {
+        let p = Vibe.phase(date, vibes ? 0.45 : 1.6)
+        return p < 0.5 ? 2 * p * p : 1 - 2 * (1 - p) * (1 - p)
     }
 }
 
