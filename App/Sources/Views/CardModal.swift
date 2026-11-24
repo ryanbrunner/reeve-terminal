@@ -87,7 +87,10 @@ struct CardModal: View {
                         .allowsHitTesting(false)
                 }
             }
-            .shadow(color: .black.opacity(0.5), radius: 24, y: 8)
+            // Cast by a plain shape behind, not by what's inside: a shadow
+            // of the content draws the whole card again, off screen, every
+            // frame it scrolls.
+            .background(RoundedRectangle(cornerRadius: 10).fill(Theme.ink).shadow(color: .black.opacity(0.5), radius: 24, y: 8))
             .padding(28)
         }
         .modifier(EscapeGoesBack())
