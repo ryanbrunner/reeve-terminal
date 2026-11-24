@@ -26,6 +26,28 @@ public enum Vibes {
         "There is nobody to ask: VIBES MODE is on and you are answering your own questions. " +
         "Make the call yourself, take whichever option keeps the work moving, and say what you chose and why."
 
+    /// What a question left in Claude's last message gets, typed in. It may
+    /// be no more than "anything else?" after the work is done, so Claude may
+    /// say so rather than make up something to do.
+    public static let answerYourself = nothingLeft + " Otherwise: " + noOneHome
+
+    /// Said first when a card is told to go on, so one whose request is
+    /// already done says so and stops, and is closed, rather than invent work.
+    static let nothingLeft =
+        "If everything asked for is already done and nothing needs a file changed, reply with just \"\(nothingLeftReply)\" and stop. Don't invent work."
+
+    /// The reply `nothingLeft` asks for.
+    static let nothingLeftReply = "Nothing left to do."
+
+    /// Whether Claude's last message is the reply `nothingLeft` asks for:
+    /// done, whatever the classifier made of a session of VIBES MODE's own
+    /// prompts.
+    public static func saysNothingLeft(_ message: String?) -> Bool {
+        guard let message else { return false }
+        return message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            .hasPrefix(nothingLeftReply.dropLast().lowercased())
+    }
+
     /// What Claude Code is told when it asks a hook, for a card in VIBES MODE.
     /// Nil leaves the hook silent, and Claude Code carries on as it would.
     public static func reply(to event: HookEvent) -> VibesReply? {
@@ -50,8 +72,17 @@ public enum Vibes {
     /// pull request — but not whether it was tested, so the card remembers
     /// what it was told. Once told to ship, whether it did is git's to say,
     /// not the column's: a branch merged with no remote never reaches Release.
-    public static func next(stage: Stage, waitingOn: String?, nudges: VibesNudges?, options: VibesOptions) -> VibesStep {
+    ///
+    /// `done` is the classifier, or Claude's own "Nothing left to do.", saying
+    /// everything asked for is so: "say hi" answered with a hi. With nothing
+    /// changed, In Progress or Planning, there is nothing to build or ship, so
+    /// the card is finished. Not from Design, whose work goes on to be built,
+    /// nor once there are changes: those ship. Done wins over a question left
+    /// in the message: one Claude needs answered isn't done, so what is left
+    /// is a closing "anything else?".
+    public static func next(stage: Stage, waitingOn: String?, done: Bool = false, nudges: VibesNudges?, options: VibesOptions) -> VibesStep {
         let here = nudges?.stage == stage
+        if done, stage == .inProgress || stage == .planning || stage == .backlog { return .finish }
         if let waitingOn {
             return (here ? nudges?.answers ?? 0 : 0) >= maxNudges ? .giveUp : .answer(waitingOn)
         }
@@ -59,7 +90,7 @@ public enum Vibes {
         if nudges?.askedToShip == true { return .checkShipped }
         switch stage {
         case .backlog, .inProgress:
-            return .nudge(build, step: .build)
+            return .nudge(nothingLeft + " Otherwise: " + build, step: .build)
         case .design:
             return .nudge(options.skipPlanning ? build : planDesign, step: .build)
         case .planning:
@@ -133,6 +164,8 @@ public enum VibesStep: Equatable, Sendable {
     case nudge(String, step: Kind)
     /// It was told to ship: see whether it landed, and push again if not.
     case checkShipped
+    /// Done, with nothing changed to ship: close it.
+    case finish
     /// Pushed from the same column too many times. Left for a person.
     case giveUp
 

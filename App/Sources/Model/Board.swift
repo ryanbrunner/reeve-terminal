@@ -126,6 +126,10 @@ final class Board: ObservableObject {
     /// read it. Not the card's: only a dialog makes a card wait on a person.
     /// VIBES MODE answers it, as it would have been answered in the terminal.
     private var leftQuestions: [UUID: String] = [:]
+    /// Stopped cards read as done: by the classifier, or by Claude replying
+    /// "Nothing left to do." as VIBES MODE asks. VIBES MODE closes them, if
+    /// nothing in them changed, rather than push them on.
+    private var leftDone: Set<UUID> = []
     /// What VIBES MODE last typed into each card, so its prompt is told apart
     /// from a person's when the hook reports it.
     private var vibesPrompts: [UUID: String] = [:]
@@ -689,6 +693,7 @@ final class Board: ObservableObject {
         acceptingPlans.remove(id)
         answeringPlans.remove(id)
         vibesPrompts[id] = nil
+        leftDone.remove(id)
         vibesStartFailed.remove(id)
         vibesHeld.remove(id)
         launching.remove(id)
@@ -977,6 +982,7 @@ final class Board: ObservableObject {
             stopped.remove(cardId)
             settled.remove(cardId)
             leftQuestions[cardId] = nil
+            leftDone.remove(cardId)
         }
         if let reply { noteVibesReply(reply, on: before) }
         if Vibes.showsPlanDialog(event) {
@@ -1114,6 +1120,7 @@ final class Board: ObservableObject {
                 if current, card.activity == .needsReview {
                     card.waitingOn = nil
                     leftQuestions[id] = result.waitingOn
+                    if result.done || Vibes.saysNothingLeft(lastMessage) { leftDone.insert(id) } else { leftDone.remove(id) }
                 }
             }
             updateBadge()
@@ -1306,9 +1313,10 @@ final class Board: ObservableObject {
         }
         vibesHeld.remove(id)
         settled.remove(id)
-        switch Vibes.next(stage: card.stage, waitingOn: leftQuestions.removeValue(forKey: id), nudges: card.vibesNudges, options: vibesOptions) {
+        let done = leftDone.remove(id) != nil
+        switch Vibes.next(stage: card.stage, waitingOn: leftQuestions.removeValue(forKey: id), done: done, nudges: card.vibesNudges, options: vibesOptions) {
         case .answer:
-            type(Vibes.noOneHome, into: id)
+            type(Vibes.answerYourself, into: id)
             update(id) { $0.vibesNudges = ($0.vibesNudges ?? VibesNudges(stage: $0.stage)).answering(in: $0.stage) }
             vibes?.questionsSelfAnswered += 1
             vibes?.note("Claude answered its own question on \(name)")
@@ -1316,6 +1324,8 @@ final class Board: ObservableObject {
             push(id, prompt, step: step, name: name)
         case .checkShipped:
             Task { await checkShipped(id, name: name) }
+        case .finish:
+            Task { await finishDone(id, name: name) }
         case .giveUp:
             vibes?.note("Gave up pushing \(name) · left for you")
         }
@@ -1367,6 +1377,22 @@ final class Board: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) { [weak self] in self?.justShipped.remove(id) }
         // It may have been the repo's last card.
         thinkOfIdeas()
+    }
+
+    /// The classifier read the card as done, with nothing that needed a file
+    /// changed: it is closed into the Archive, summary and all. Only once git
+    /// agrees nothing would be lost, and only while nothing has happened since.
+    private func finishDone(_ id: UUID, name: String) async {
+        let turn = turns[id, default: 0]
+        if let lose = await closeWouldLose(id) {
+            vibes?.note("\(name) looks done, but \(lose.summary) · left for you")
+            save()
+            return
+        }
+        guard let card = card(id), inVibes(card), card.activity == .needsReview,
+              turns[id, default: 0] == turn, selectedId != id else { return }
+        vibes?.note("\(name) done · nothing to ship, closed")
+        close(id, archiving: true)
     }
 
     /// The plan dialog, approved unread. Enter takes its first option, a yes,

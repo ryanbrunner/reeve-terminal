@@ -8,16 +8,22 @@ public struct Classification: Decodable, Equatable, Sendable {
     /// The question Claude's last message leaves a person to answer, if any.
     /// It doesn't make the card wait on them: only a dialog does that.
     public var waitingOn: String?
+    /// Whether everything the person asked for is so, with nothing left for
+    /// anyone to do: a question answered, a greeting returned. VIBES MODE
+    /// closes a card like that, if nothing in it changed, rather than tell it
+    /// to build something.
+    public var done: Bool
 
     enum CodingKeys: String, CodingKey {
-        case title, summary
+        case title, summary, done
         case waitingOn = "waiting_on"
     }
 
-    public init(title: String, summary: String, waitingOn: String?) {
+    public init(title: String, summary: String, waitingOn: String?, done: Bool = false) {
         self.title = title
         self.summary = summary
         self.waitingOn = waitingOn
+        self.done = done
     }
 
     public init(from decoder: Decoder) throws {
@@ -28,6 +34,7 @@ public struct Classification: Decodable, Equatable, Sendable {
         // Only a question is something to answer. Haiku sometimes describes
         // what Claude itself is waiting for ("Both agents to finish") instead.
         waitingOn = waiting?.hasSuffix("?") == true ? waiting : nil
+        done = try c.decodeIfPresent(Bool.self, forKey: .done) ?? false
     }
 }
 
@@ -36,10 +43,11 @@ public enum Classifier {
     public static let model = "haiku"
 
     public static let schema = """
-    {"type":"object","additionalProperties":false,"required":["title","summary","waiting_on"],"properties":{\
+    {"type":"object","additionalProperties":false,"required":["title","summary","waiting_on","done"],"properties":{\
     "title":{"type":"string","description":"2 to 6 words naming the piece of work, like a ticket title"},\
     "summary":{"type":"string","description":"One short line, under 90 characters, on where the work stands now"},\
-    "waiting_on":{"type":["string","null"],"description":"If Claude's last message asks the person a question or for a decision, that question as a question addressed to them (e.g. 'Go ahead and create hello.txt?'), under 90 characters; otherwise null. Also null when Claude is only waiting on agents, workflows or background tasks it launched itself"}}}
+    "waiting_on":{"type":["string","null"],"description":"If Claude's last message asks the person a question or for a decision, that question as a question addressed to them (e.g. 'Go ahead and create hello.txt?'), under 90 characters; otherwise null. Also null when Claude is only waiting on agents, workflows or background tasks it launched itself"},\
+    "done":{"type":"boolean","description":"True only when everything the person asked for has been achieved and nothing is left for anyone to do: a question answered, a greeting given, something run and reported, or a change found to be already in place. False when what they wanted isn't so yet: a feature not built, a bug not fixed (including one Claude couldn't reproduce or find), files still to change, a plan or description in place of the work, anything left to decide, or agents still running"}}}
     """
 
     /// Arguments after the `claude` executable. The transcript digest goes on stdin.

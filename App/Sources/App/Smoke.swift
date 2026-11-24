@@ -144,6 +144,14 @@ enum Smoke {
                     snapshot(to: "\(out)/arming.png")
                 }
                 if cardId == nil { cardId = board.selectedId }
+                // VIBES MODE closes a card that was done with nothing to ship.
+                if vibes, let id = cardId, board.card(id) == nil, board.archive.contains(where: { $0.id == id }) {
+                    timer.invalidate()
+                    log("done: closed with nothing to ship")
+                    snapshot(to: "\(out)/final.png")
+                    finish(id)
+                    return
+                }
                 guard let card = cardId.flatMap(board.card) else { return }
                 let view = board.terminals.view(for: card.id)
                 if Int(elapsed) % 3 == 0 {
