@@ -76,7 +76,8 @@ feature parity. What Reeve adds is the board.
   moves on the next prompt or tool call.
 - **The title and summary come from Claude.** When a turn ends, Reeve digests
   the session's transcript and asks `claude -p --model haiku` for structured
-  output: a title, a one-line summary, and any question Claude left you. This
+  output: a title, a one-line summary, any question Claude left you, and
+  whether everything you asked for is done. This
   uses your existing Claude login, with no tools, no session saved and no
   settings loaded.
 - **Ask Reeve from the header.** The field at the top of the board (⌘K)
@@ -118,7 +119,8 @@ feature parity. What Reeve adds is the board.
   (the one on its current branch is merged and none it opened is still open
   or a draft). It asks first, ends each card's session, deletes its worktree
   and moves the card to the Archive, opened from the button in the header. A
-  card whose worktree has uncommitted changes stays on the board. The Archive
+  card whose worktree has uncommitted changes stays on the board. VIBES MODE
+  files a card there too once it is done with nothing to ship. The Archive
   lists each card with a link to its pull request, and you can remove entries
   from it.
 - **Each open card has six tabs.** Terminal is the session. Plan shows the
@@ -230,6 +232,18 @@ For a card in VIBES MODE, Reeve does what you would otherwise have to:
   checked-out branch or its pull request merged (or, with Merge to Main off,
   when its pull request is up). Otherwise it is told to ship again. A card
   pushed from the same column three times running is left for you.
+- **Done means done.** A card asked for something that never needed a file
+  changed ("say hi", a question answered) isn't told to build anything. When
+  its turn ends in In Progress or Planning, with nothing changed, and the
+  classifier reads everything asked for as done (a closing "anything else?"
+  doesn't count against it, a question Claude needs answered does), the
+  card is closed into the Archive, summary and all. A bug Claude couldn't
+  find or a feature only described isn't done. Each push and each typed
+  answer starts by telling Claude that if everything is already done it
+  should reply "Nothing left to do." and stop, rather than invent work; that
+  reply closes the card too. Only if its worktree has nothing uncommitted,
+  unmerged or in an open pull request; otherwise it is left for you. A card
+  in Design still goes on to be built, and one with changes still ships.
 - **Waiting still means waiting.** A started card waiting on another that
   hasn't merged isn't pushed on when its turn ends, and its chip names the
   card it waits on. Once that card merges, it is picked up. A waiting card in

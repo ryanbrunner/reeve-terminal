@@ -318,6 +318,14 @@ import Testing
         #expect(try Classifier.parse(Data(out.utf8)).waitingOn == nil)
     }
 
+    @Test func readsDone() throws {
+        let done = #"{"type":"result","is_error":false,"result":"","structured_output":{"title":"Say hi","summary":"Said hi","waiting_on":null,"done":true}}"#
+        #expect(try Classifier.parse(Data(done.utf8)).done)
+        // An answer from before there was a `done` isn't one.
+        let older = #"{"type":"result","is_error":false,"result":"","structured_output":{"title":"X","summary":"Y","waiting_on":null}}"#
+        #expect(try !Classifier.parse(Data(older.utf8)).done)
+    }
+
     @Test func reportsErrors() {
         let out = #"{"type":"result","is_error":true,"result":"Not logged in"}"#
         #expect(throws: ClassifierError.self) { try Classifier.parse(Data(out.utf8)) }
@@ -653,6 +661,44 @@ import Testing
         #expect(nudges.adding(from: .testing, step: .test).count == 1)
         if case .nudge = Vibes.next(stage: .testing, waitingOn: nil, nudges: nudges, options: VibesOptions()) {} else {
             Issue.record("a new column should be pushed again")
+        }
+    }
+
+    @Test func closesACardDoneWithNothingChanged() {
+        let options = VibesOptions()
+        #expect(Vibes.next(stage: .inProgress, waitingOn: nil, done: true, nudges: nil, options: options) == .finish)
+        #expect(Vibes.next(stage: .planning, waitingOn: nil, done: true, nudges: nil, options: options) == .finish)
+        // However many times it was pushed before.
+        var nudges = VibesNudges(stage: .inProgress)
+        for _ in 0..<Vibes.maxNudges { nudges = nudges.adding(from: .inProgress, step: .build) }
+        #expect(Vibes.next(stage: .inProgress, waitingOn: nil, done: true, nudges: nudges, options: options) == .finish)
+        // A closing "anything else?" doesn't keep it open.
+        #expect(Vibes.next(stage: .inProgress, waitingOn: "Anything else?", done: true, nudges: nil, options: options) == .finish)
+        #expect(Vibes.next(stage: .inProgress, waitingOn: "Which folder?", done: false, nudges: nil, options: options) == .answer("Which folder?"))
+        // Told to go on, it may say there is nothing to do, in one line.
+        guard case .nudge(let build, .build) = Vibes.next(stage: .inProgress, waitingOn: nil, nudges: nil, options: options) else {
+            Issue.record("nothing changed yet: build it"); return
+        }
+        #expect(build.contains("Don't invent work"))
+        #expect(!build.contains("\n"))
+        #expect(Vibes.answerYourself.contains("Don't invent work"))
+        #expect(Vibes.saysNothingLeft("Nothing left to do."))
+        #expect(Vibes.saysNothingLeft("  nothing left to do — it was only a hello\n"))
+        #expect(!Vibes.saysNothingLeft("Built it. Nothing left to do but test."))
+        #expect(!Vibes.saysNothingLeft("What would you like to work on?"))
+        #expect(!Vibes.saysNothingLeft(nil))
+    }
+
+    @Test func doneIsNoShortcutPastShippingOrBuilding() {
+        let options = VibesOptions()
+        // Changes ship, whatever Claude thinks of them.
+        guard case .nudge(_, .test) = Vibes.next(stage: .testing, waitingOn: nil, done: true, nudges: nil, options: options) else {
+            Issue.record("changes made: test them"); return
+        }
+        #expect(Vibes.next(stage: .release, waitingOn: nil, done: true, nudges: VibesNudges(stage: .release, askedToShip: true), options: options) == .checkShipped)
+        // A design goes on to be built.
+        guard case .nudge(_, .build) = Vibes.next(stage: .design, waitingOn: nil, done: true, nudges: nil, options: options) else {
+            Issue.record("a design is built"); return
         }
     }
 
