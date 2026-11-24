@@ -344,19 +344,23 @@ final class Board: ObservableObject {
         }
         let start = startingMode(mode, vibes: vibes)
         card.stage = start.stage
-        card.startMode = start
-        if let made = try await makeWorktree(for: card.id, in: cwd, inFolder: inFolder) {
-            card.cwd = made.cwd
-            card.repoPath = made.repo
-            card.worktreePath = made.path
-            card.branch = made.branch
-            card.baseCommit = made.base
-        }
+        // On the board straight away, making its worktree, and started once
+        // git is done. A card git can't make one for goes again.
+        card.queued = true
+        launching.insert(card.id)
+        defer { launching.remove(card.id) }
         cards.append(card)
         if open { selectedId = card.id }
         save()
-        begin(card.id, prompt: prompt)
-        return card
+        do {
+            try await makeWorktreeAndBegin(card.id, start: start, inFolder: inFolder) { _ in prompt }
+        } catch {
+            cards.removeAll { $0.id == card.id }
+            if selectedId == card.id { selectedId = nil }
+            save()
+            throw error
+        }
+        return self.card(card.id) ?? card
     }
 
     /// VIBES MODE flies over Planning unless its options say otherwise. A
@@ -397,7 +401,16 @@ final class Board: ObservableObject {
         if let refusal = startRefusal(id) { throw refusal }
         launching.insert(id)
         defer { launching.remove(id) }
-        let start = startingMode(mode, vibes: card.vibes == true)
+        try await makeWorktreeAndBegin(id, start: startingMode(mode, vibes: card.vibes == true), inFolder: inFolder) { card in
+            card.brief ?? (card.title.isEmpty ? nil : card.title)
+        }
+    }
+
+    /// Makes a queued card its worktree from HEAD as it is now, then takes it
+    /// off the queue and starts its session in `start`, on what `prompt` says
+    /// for it. The caller marks it `launching` while this runs.
+    private func makeWorktreeAndBegin(_ id: UUID, start: StartMode, inFolder: Bool, prompt: (Card) -> String?) async throws {
+        guard let card = card(id) else { return }
         let made = try await makeWorktree(for: id, in: card.cwd, inFolder: inFolder)
         // Closed while git was busy: the worktree has nobody to go to.
         guard let card = self.card(id), card.queued == true else {
@@ -416,9 +429,9 @@ final class Board: ObservableObject {
             card.startMode = start
             if card.stage == .backlog { card.stage = start.stage }
         }
-        let prompt = card.brief ?? (card.title.isEmpty ? nil : card.title)
+        let told = prompt(card)
         update(id) { $0.brief = nil }
-        begin(id, prompt: prompt)
+        begin(id, prompt: told)
     }
 
     /// `launch`, from the board, asking about the folder if git says no.
