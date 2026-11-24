@@ -97,9 +97,32 @@ public enum Gloss {
         return name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "$") }
     }
 
-    /// `gloss`'s arguments for a session Reeve hosts, in `cwd`, opened on `url`.
-    public static func sessionArguments(cwd: String, url: String, live: Bool) -> [String] {
-        ["__session", "--host", "--cwd", cwd, "--url", url] + (live ? ["--live"] : [])
+    /// `gloss`'s arguments for a session Reeve hosts, in `cwd`, opened on `url`,
+    /// under `name` (none for the folder's own session).
+    public static func sessionArguments(cwd: String, url: String, live: Bool, name: String = "") -> [String] {
+        ["__session", "--host", "--cwd", cwd, "--url", url] + (name.isEmpty ? [] : ["--name", name]) + (live ? ["--live"] : [])
+    }
+
+    /// The session a card's Design tab hosts, beside its Preview tab's, which
+    /// has no name: `gloss open --name design` shows a design there.
+    public static let designSession = "design"
+
+    /// What a design card's Claude is told, so feedback on its designs comes
+    /// as Gloss rounds from the card's Design tab, not claude.ai comments.
+    /// `gloss` is the command for the Gloss Reeve checked it can host.
+    public static func designFeedback(gloss: String = "gloss") -> String {
+        let name = "--name \(designSession)"
+        return """
+            This session runs in Reeve, which shows the designs you share in its Design tab. Take the person's feedback on them through Gloss there, not through comments on claude.ai. Once you have shared a design, run `\(gloss) open \(name) <its link>`, then `\(gloss) wait \(name)`. For each round, run `\(gloss) working \(name)`, make the changes and publish them to the same link, then `\(gloss) ready \(name) "<what changed>"` and wait again. Only `"approved": true` from a wait that exits 0 is approval: then run `\(gloss) close \(name)` and sum up what changed. A wait that fails means the person ended the review.
+            """
+    }
+
+    /// A Gloss that can be hosted (`__session --host`, from 0.3.0), going by
+    /// what `gloss --version` printed.
+    public static func canBeHosted(version: String) -> Bool {
+        guard let match = version.firstMatch(of: #/(\d+)\.(\d+)\.(\d+)/#),
+              let major = Int(match.1), let minor = Int(match.2) else { return false }
+        return (major, minor) >= (0, 3)
     }
 
     /// What `gloss open` posts to `GLOSS_HOST` to have Reeve host the session.

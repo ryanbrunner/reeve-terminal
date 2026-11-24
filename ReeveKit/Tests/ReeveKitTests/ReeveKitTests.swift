@@ -77,15 +77,25 @@ import Testing
     }
 
     @Test func stopWithBackgroundShellsIsWaiting() throws {
-        let e = try event(#"{"session_id":"s","hook_event_name":"Stop","last_assistant_message":"I'll report back.","background_tasks":[{"id":"a1","type":"subagent","status":"running","description":"Explore hooks","agent_type":"Explore"},{"id":"b1","type":"shell","status":"running","description":"swift test","command":"swift test"}]}"#)
+        let e = try event(#"{"session_id":"s","hook_event_name":"Stop","last_assistant_message":"I'll report back.","background_tasks":[{"id":"m1","type":"monitor","status":"running"},{"id":"b1","type":"shell","status":"running","description":"swift test","command":"swift test"}]}"#)
         #expect(e.effect.activity == .waiting)
         #expect(e.effect.classify)
         #expect(e.effect.waitingOn == .some(nil))
         #expect(e.effect.background == [BackgroundWork(id: "b1", type: "shell", description: "swift test")])
     }
 
-    @Test func stopWithOnlyAgentsAndMonitorsIsReview() throws {
-        let e = try event(#"{"session_id":"s","hook_event_name":"Stop","background_tasks":[{"id":"a1","type":"subagent","status":"running","description":"Explore hooks","agent_type":"Explore"},{"id":"w1","type":"workflow","status":"running"},{"id":"m1","type":"monitor","status":"running","description":"watch logs"}]}"#)
+    @Test func stopWithBackgroundAgentsKeepsRunning() throws {
+        for task in [#"{"id":"a1","type":"subagent","status":"running","agent_type":"Explore"}"#, #"{"id":"w1","type":"workflow","status":"running"}"#] {
+            let e = try event(#"{"session_id":"s","hook_event_name":"Stop","last_assistant_message":"I'll report back.","background_tasks":["# + task + #",{"id":"b1","type":"shell","status":"running"}]}"#)
+            #expect(e.effect.activity == .running)
+            #expect(e.effect.waitingOn == .some(nil))
+            #expect(e.effect.classify)
+            #expect(e.effect.background == [])
+        }
+    }
+
+    @Test func stopWithOnlyMonitorsIsReview() throws {
+        let e = try event(#"{"session_id":"s","hook_event_name":"Stop","background_tasks":[{"id":"m1","type":"monitor","status":"running","description":"watch logs"},{"id":"t1","type":"teammate","status":"running"}]}"#)
         #expect(e.effect.activity == .needsReview)
         #expect(e.effect.background == [])
     }
@@ -359,6 +369,34 @@ import Testing
         #expect(StartMode.design.stage == .design)
     }
 
+    @Test func aDesignCardWithGlossIsToldToTakeFeedbackThere() {
+        var card = Card(cwd: "/tmp")
+        card.startMode = .design
+        let args = Launch.claudeArguments(for: card, prompt: "a login page", gloss: "gloss")
+        // The brief goes to /design as it was; the rest is in the system prompt.
+        #expect(args.last == "/design a login page")
+        let told = args.firstIndex(of: "--append-system-prompt").map { args[$0 + 1] } ?? ""
+        #expect(told.contains("gloss open --name design <its link>"))
+        #expect(told.contains("gloss wait --name design"))
+        #expect(told.contains("gloss close --name design"))
+        // The Gloss Reeve checked, when it isn't the one on PATH.
+        #expect(Launch.claudeArguments(for: card, gloss: "/opt/gloss/bin/gloss.js").contains { $0.contains("`/opt/gloss/bin/gloss.js wait --name design`") })
+        // Every time it starts, so a resumed session still knows.
+        card.hasConversation = true
+        #expect(Launch.claudeArguments(for: card, gloss: "gloss").contains("--append-system-prompt"))
+        // Not without a Gloss to host, and not a card started some other way.
+        #expect(!Launch.claudeArguments(for: card).contains("--append-system-prompt"))
+        card.startMode = .build
+        #expect(!Launch.claudeArguments(for: card, gloss: "gloss").contains("--append-system-prompt"))
+    }
+
+    @Test func onlyAGlossFromBeforeHostingIsTurnedAway() {
+        #expect(Gloss.canBeHosted(version: "0.3.0\n"))
+        #expect(Gloss.canBeHosted(version: "gloss 1.0.2"))
+        #expect(!Gloss.canBeHosted(version: "0.2.0"))
+        #expect(!Gloss.canBeHosted(version: "No version is set for command gloss"))
+    }
+
     @Test func modelAndEffortRideAlongWhenSet() {
         var card = Card(cwd: "/tmp")
         let plain = Launch.claudeArguments(for: card, prompt: "go")
@@ -475,6 +513,8 @@ import Testing
     @Test func sessionArguments() {
         #expect(Gloss.sessionArguments(cwd: "/w", url: "http://localhost/", live: true)
             == ["__session", "--host", "--cwd", "/w", "--url", "http://localhost/", "--live"])
+        #expect(Gloss.sessionArguments(cwd: "/w", url: "https://claude.ai/artifact/a", live: false, name: Gloss.designSession)
+            == ["__session", "--host", "--cwd", "/w", "--url", "https://claude.ai/artifact/a", "--name", "design"])
     }
 }
 
@@ -1800,6 +1840,33 @@ import Testing
         #expect(read.effect.designs == nil)
         let bash = try event(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Bash","tool_response":"https://claude.ai/design/p/p5"}"#)
         #expect(bash.effect.designs == nil)
+    }
+
+    @Test func onlyMakingOneIsPublishingADesign() throws {
+        let published = try event(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Artifact","tool_input":{"file_path":"a.html"},"tool_response":"https://claude.ai/artifact/a1"}"#)
+        #expect(published.effect.publishesDesign)
+        #expect(published.effect.designs?.map(\.url) == ["https://claude.ai/artifact/a1"])
+        let project = try event(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"DesignSync","tool_input":{"operation":"create_project"},"tool_response":"https://claude.ai/design/p/p1"}"#)
+        #expect(project.effect.publishesDesign)
+        // Listing or reading the person's artifacts makes none of them the card's.
+        for action in ["list", "read", "open"] {
+            let lookup = try event(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Artifact","tool_input":{"action":"\#(action)"},"tool_response":"https://claude.ai/artifact/a2"}"#)
+            #expect(!lookup.effect.publishesDesign)
+            #expect(lookup.effect.designs == nil)
+        }
+        // Made from a type: the new one is the design, not the type, nor the design systems listed after it.
+        let fromType = try event(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Artifact","tool_input":{"action":"publish","type_url":"https://claude.ai/artifact/type1","title":"Sign-in"},"tool_response":"Created a new Artifact at https://claude.ai/artifact/new1 from the Artifact type https://claude.ai/artifact/type1. Design systems: Reeve https://claude.ai/artifact/system1"}"#)
+        #expect(fromType.effect.designs?.map(\.url) == ["https://claude.ai/artifact/new1"])
+        let asBlocks = try event(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Artifact","tool_input":{"url":"https://claude.ai/artifact/new1"},"tool_response":[{"type":"text","text":"Updated the Artifact at https:\/\/claude.ai\/artifact\/new1 (Version 2)"}]}"#)
+        #expect(asBlocks.effect.designs?.map(\.url) == ["https://claude.ai/artifact/new1"])
+        // As Claude Code's hook has it: the response's own url, whatever else it lists.
+        let structured = try event(#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Artifact","tool_input":{"action":"publish","type_url":"https://claude.ai/artifact/type1"},"tool_response":{"created_from_type":true,"design_systems":[{"url":"https://claude.ai/artifact/system1"}],"type":{"url":"https://claude.ai/artifact/type1"},"url":"https://claude.ai/artifact/new1"}}"#)
+        #expect(structured.effect.designs?.map(\.url) == ["https://claude.ai/artifact/new1"])
+        #expect(structured.effect.publishesDesign)
+        // A link in Claude's closing message is a design, but nothing new was published.
+        let stop = try event(#"{"session_id":"s","hook_event_name":"Stop","last_assistant_message":"Here: https://claude.ai/artifact/a1"}"#)
+        #expect(stop.effect.designs != nil)
+        #expect(!stop.effect.publishesDesign)
     }
 
     @Test func mergingKeepsOneOfEachNewestFirst() {

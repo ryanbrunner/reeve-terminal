@@ -242,8 +242,8 @@ private struct MarkShape: Shape {
 }
 
 /// The only thing on a card that animates: a light travelling along the
-/// bottom edge while Claude works. Paused behind an open card, where it
-/// would only cost the card's scrolling frames.
+/// bottom edge while Claude works. Paused on the board behind an open card,
+/// where it would only cost the card's scrolling frames.
 struct RunningRail: View {
     /// VIBES MODE's is thicker, faster and in its colours.
     var vibes = false

@@ -14,7 +14,7 @@ struct BoardView: View {
         } else {
             VStack(spacing: 6) {
                 // Each column's heading, once, over every lane.
-                HStack(spacing: 10) {
+                Columns {
                     ForEach(Stage.allCases) { ColumnHeading(stage: $0) }
                 }
                 .padding(.horizontal, 10)
@@ -44,6 +44,32 @@ struct BoardView: View {
         let titles: CGFloat = board.lanes.count > 1 ? 26 * count : 0
         let addButton: CGFloat = 28
         return max(140, (height - titles - addButton - 10 * count) / count)
+    }
+}
+
+/// The board's columns, side by side and all the same width whatever is in
+/// them, so a long title or the new card field never widens its column.
+/// Every column is as tall as the tallest, so a lane's row reads as one.
+private struct Columns: Layout {
+    var spacing: CGFloat = 10
+
+    private func columnWidth(_ width: CGFloat, count: Int) -> CGFloat {
+        max(0, (width - spacing * CGFloat(count - 1)) / CGFloat(max(count, 1)))
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? 800
+        let column = columnWidth(width, count: subviews.count)
+        let height = subviews.map { $0.sizeThatFits(ProposedViewSize(width: column, height: nil)).height }.max() ?? 0
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let column = columnWidth(bounds.width, count: subviews.count)
+        for (index, subview) in subviews.enumerated() {
+            let x = bounds.minX + CGFloat(index) * (column + spacing)
+            subview.place(at: CGPoint(x: x, y: bounds.minY), proposal: ProposedViewSize(width: column, height: bounds.height))
+        }
     }
 }
 
@@ -79,13 +105,11 @@ private struct LaneView: View {
         VStack(alignment: .leading, spacing: 6) {
             if titled { LaneTitle(lane: lane, collapsed: $collapsed) }
             if !titled || !collapsed {
-                HStack(alignment: .top, spacing: 10) {
+                Columns {
                     ForEach(Stage.allCases) { stage in
                         CellView(spot: NewCardSpot(lane: lane.id, stage: stage), minHeight: minHeight)
                     }
                 }
-                // Every cell as tall as the lane's tallest, so the row reads as one.
-                .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -214,7 +238,7 @@ private struct CellView: View {
     var body: some View {
         VStack(spacing: 8) {
             ForEach(board.cards(in: spot.stage, lane: spot.lane)) { card in
-                CardFace(card: card, selected: card.id == board.selectedId)
+                CardFace(card: card, selected: card.id == board.cameBackFrom)
                     .onTapGesture { board.select(card.id) }
                     .draggable(card.id.uuidString) {
                         CardFace(card: card, dragging: true)

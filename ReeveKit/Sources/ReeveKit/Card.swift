@@ -36,7 +36,7 @@ public enum Stage: String, Codable, CaseIterable, Identifiable, Comparable, Send
 public enum Activity: String, Codable, Sendable {
     /// Nothing has happened, or the session has exited.
     case idle
-    /// Claude is working on a turn.
+    /// Claude is working on a turn, or its background subagents are.
     case running
     /// Claude finished its turn and has something to look at.
     case needsReview = "needs_review"
@@ -180,6 +180,8 @@ public struct Card: Codable, Identifiable, Equatable, Sendable {
     public var ideasAsked: Bool?
     /// The card VIBES MODE thought of this one after, when it did.
     public var ideaFrom: UUID?
+    /// The schedule that made the card, whose run it is.
+    public var scheduleId: UUID?
     /// When the card was cleaned up into the archive. Nil for a card on the board.
     public var archivedAt: Date?
     public var createdAt: Date
